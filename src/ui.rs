@@ -98,6 +98,9 @@ pub struct Root {
     /// True while a sync is fetching drive contents — shows the footer
     /// activity bar.
     syncing: bool,
+    /// Folder navigation history — M4/M5 (browser back/forward).
+    nav_back: Vec<String>,
+    nav_fwd: Vec<String>,
 }
 
 impl Root {
@@ -156,6 +159,8 @@ impl Root {
             last_view_key: String::new(),
             auto_open_done: false,
             syncing: false,
+            nav_back: Vec::new(),
+            nav_fwd: Vec::new(),
         };
 
         match AppConfig::load() {
@@ -240,6 +245,8 @@ impl Root {
                 self.pending_uploads = pending_uploads;
                 self.screen = Screen::Drive;
                 self.cwd = String::new();
+                self.nav_back.clear();
+                self.nav_fwd.clear();
                 self.trash = false;
                 self.modal = None;
                 self.selected = None;
@@ -472,6 +479,41 @@ impl Root {
             }
         })
         .detach();
+    }
+
+    /// Descend/breadcrumb navigation — records history for M4/M5.
+    fn set_cwd(&mut self, id: String) {
+        if id != self.cwd {
+            self.nav_back.push(self.cwd.clone());
+            self.nav_fwd.clear();
+            self.cwd = id;
+            self.selected = None;
+        }
+    }
+
+    /// M4 — history back; falls back to parent-up when history is empty.
+    fn navigate_back(&mut self) {
+        if let Some(prev) = self.nav_back.pop() {
+            self.nav_fwd.push(self.cwd.clone());
+            self.cwd = prev;
+        } else {
+            self.cwd = self
+                .namespace
+                .folders
+                .get(&self.cwd)
+                .map(|d| d.parent.clone())
+                .unwrap_or_default();
+        }
+        self.selected = None;
+    }
+
+    /// M5 — history forward.
+    fn navigate_fwd(&mut self) {
+        if let Some(next) = self.nav_fwd.pop() {
+            self.nav_back.push(self.cwd.clone());
+            self.cwd = next;
+        }
+        self.selected = None;
     }
 
     fn confirm_mkdir(&mut self, cx: &mut Context<Self>) {
@@ -1234,6 +1276,20 @@ impl Root {
             .size_full()
             .bg(rgb(BG))
             .track_focus(&self.drive_focus)
+            .on_mouse_down(
+                MouseButton::Navigate(NavigationDirection::Back),
+                cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                    this.navigate_back();
+                    cx.notify();
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Navigate(NavigationDirection::Forward),
+                cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                    this.navigate_fwd();
+                    cx.notify();
+                }),
+            )
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
                 if this.modal.is_some() || this.f_search.read(cx).is_focused(window) {
                     return;
@@ -1266,8 +1322,7 @@ impl Root {
                     "enter" => {
                         let Some(sel) = this.selected.clone() else { return };
                         if sel.starts_with('d') {
-                            this.cwd = sel;
-                            this.selected = None;
+                            this.set_cwd(sel);
                         } else if let Some(f) = this.namespace.files.get(&sel).cloned() {
                             if !this.trash {
                                 this.pick_download_dest(f.id, f.name, cx);
@@ -1550,8 +1605,7 @@ impl Root {
                 cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
                     this.drive_focus.focus(window);
                     if ev.click_count == 2 && is_folder {
-                        this.cwd = click_id.clone();
-                        this.selected = None;
+                        this.set_cwd(click_id.clone());
                     } else {
                         this.selected = Some(click_id.clone());
                     }
@@ -1623,8 +1677,7 @@ impl Root {
                 cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
                     this.drive_focus.focus(window);
                     if ev.click_count == 2 && is_folder {
-                        this.cwd = id_click.clone();
-                        this.selected = None;
+                        this.set_cwd(id_click.clone());
                     } else {
                         this.selected = Some(id_click.clone());
                         this.send(Command::FetchThumbnail { file_id: id_click.clone() });
