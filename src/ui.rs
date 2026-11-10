@@ -88,6 +88,9 @@ pub struct Root {
     /// Auto-open the last drive only on the first channel list — a relist
     /// after "Drives" must not reopen it and bounce back.
     auto_open_done: bool,
+    /// True while a sync is fetching drive contents — shows the footer
+    /// activity bar.
+    syncing: bool,
 }
 
 impl Root {
@@ -144,6 +147,7 @@ impl Root {
             list_scroll: UniformListScrollHandle::new(),
             last_view_key: String::new(),
             auto_open_done: false,
+            syncing: false,
         };
 
         match AppConfig::load() {
@@ -265,6 +269,12 @@ impl Root {
             }
             Event::ThumbnailReady { file_id, path } => {
                 self.thumbnails.insert(file_id, path);
+            }
+            Event::ThumbnailFailed { file_id } => {
+                self.thumb_requested.remove(&file_id);
+            }
+            Event::SyncState { active } => {
+                self.syncing = active;
             }
             Event::MountState { dir } => {
                 self.mount_dir = dir.map(|d| d.display().to_string());
@@ -1294,6 +1304,45 @@ impl Root {
                     .border_color(rgb(BORDER))
                     .bg(rgb(PANEL))
                     .child(transfers)
+                    .child({
+                        let pending = self
+                            .thumb_requested
+                            .len()
+                            .saturating_sub(self.thumbnails.len());
+                        let label = if self.syncing && pending > 0 {
+                            format!("Fetching files… · {pending} thumbnails in flight")
+                        } else if self.syncing {
+                            "Fetching files…".to_string()
+                        } else if pending > 0 {
+                            format!("Fetching thumbnails · {pending} in flight")
+                        } else {
+                            String::new()
+                        };
+                        if label.is_empty() {
+                            div().into_any_element()
+                        } else {
+                            div()
+                                .h(px(28.))
+                                .w_full()
+                                .px_3()
+                                .flex()
+                                .items_center()
+                                .gap_3()
+                                .border_t_1()
+                                .border_color(rgb(BORDER))
+                                .child(
+                                    div()
+                                        .w(px(90.))
+                                        .h(px(3.))
+                                        .rounded_sm()
+                                        .bg(rgb(ACCENT)),
+                                )
+                                .child(
+                                    div().text_xs().text_color(rgb(DIM)).child(label),
+                                )
+                                .into_any_element()
+                        }
+                    })
                     .child(
                         div()
                             .px_4()

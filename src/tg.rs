@@ -130,6 +130,9 @@ pub enum Event {
     VaultState { configured: bool, unlocked: bool, hint: String },
     InviteLink { link: String },
     ThumbnailReady { file_id: String, path: PathBuf },
+    ThumbnailFailed { file_id: String },
+    /// Sync started/finished — drives the UI's fetch indicator.
+    SyncState { active: bool },
     StreamUrl { url: String },
     DavUrl { url: String },
     MountState { dir: Option<PathBuf> },
@@ -833,6 +836,13 @@ impl Worker {
     /// History scan of the open drive. A full scan runs when the namespace
     /// is empty; later refreshes apply only messages past the watermark.
     async fn sync(&mut self) -> Result<()> {
+        self.emit(Event::SyncState { active: true });
+        let r = self.sync_inner().await;
+        self.emit(Event::SyncState { active: false });
+        r
+    }
+
+    async fn sync_inner(&mut self) -> Result<()> {
         let client = self.client()?.clone();
         let peer = self.channel()?;
         let watermark = self.namespace.last_msg_id;
@@ -2094,14 +2104,16 @@ impl Worker {
                     } else {
                         client.download_media(&media, &out).await.is_ok()
                     };
-                    if ok {
-                        let _ = tx
-                            .send(Event::ThumbnailReady {
+                    let _ = tx
+                        .send(if ok {
+                            Event::ThumbnailReady {
                                 file_id,
                                 path: out,
-                            })
-                            .await;
-                    }
+                            }
+                        } else {
+                            Event::ThumbnailFailed { file_id }
+                        })
+                        .await;
                 }
             }
         });
