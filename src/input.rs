@@ -41,6 +41,10 @@ impl TextField {
         self.text.clone()
     }
 
+    pub fn is_focused(&self, window: &Window) -> bool {
+        self.focus.is_focused(window)
+    }
+
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.text.clear();
         self.cursor = 0;

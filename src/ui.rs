@@ -67,6 +67,7 @@ pub struct Root {
     vault_unlocked: bool,
     vault_hint: String,
     trash: bool,
+    drive_focus: FocusHandle,
 }
 
 impl Root {
@@ -112,6 +113,7 @@ impl Root {
             vault_unlocked: false,
             vault_hint: String::new(),
             trash: false,
+            drive_focus: cx.focus_handle(),
         };
 
         match AppConfig::load() {
@@ -954,6 +956,66 @@ impl Root {
             .flex_col()
             .size_full()
             .bg(rgb(BG))
+            .track_focus(&self.drive_focus)
+            .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
+                if this.modal.is_some() || this.f_search.read(cx).is_focused(window) {
+                    return;
+                }
+                let ids = this.visible_ids(cx);
+                match e.keystroke.key.as_str() {
+                    "up" | "down" => {
+                        if ids.is_empty() {
+                            return;
+                        }
+                        let idx = ids
+                            .iter()
+                            .position(|i| Some(i) == this.selected.as_ref())
+                            .map(|i| {
+                                if e.keystroke.key == "up" {
+                                    i.saturating_sub(1)
+                                } else {
+                                    (i + 1).min(ids.len() - 1)
+                                }
+                            })
+                            .unwrap_or(0);
+                        this.selected = Some(ids[idx].clone());
+                    }
+                    "enter" => {
+                        let Some(sel) = this.selected.clone() else { return };
+                        if sel.starts_with('d') {
+                            this.cwd = sel;
+                            this.selected = None;
+                        } else if let Some(f) = this.namespace.files.get(&sel).cloned() {
+                            if !this.trash {
+                                this.pick_download_dest(f.id, f.name, cx);
+                            }
+                        }
+                    }
+                    "backspace" => {
+                        let parent = this
+                            .namespace
+                            .folders
+                            .get(&this.cwd)
+                            .map(|d| d.parent.clone())
+                            .unwrap_or_default();
+                        this.cwd = parent;
+                        this.selected = None;
+                    }
+                    "delete" => {
+                        let Some(sel) = this.selected.clone() else { return };
+                        let name = this
+                            .namespace
+                            .files
+                            .get(&sel)
+                            .map(|f| f.name.clone())
+                            .or_else(|| this.namespace.folders.get(&sel).map(|d| d.name.clone()))
+                            .unwrap_or_default();
+                        this.modal = Some(Modal::Delete { obj: sel, name });
+                    }
+                    _ => return,
+                }
+                cx.notify();
+            }))
             .child(
                 div()
                     .flex()
@@ -1011,6 +1073,34 @@ impl Root {
             .child(self.render_modal(window, cx))
     }
 
+    /// Ordered object ids matching the visible listing (folders first),
+    /// for keyboard navigation.
+    fn visible_ids(&self, cx: &App) -> Vec<String> {
+        let search = self.f_search.read(cx).text().trim().to_lowercase();
+        if self.trash {
+            return self.namespace.list_trash().iter().map(|t| t.object_id.clone()).collect();
+        }
+        if !search.is_empty() {
+            let mut files: Vec<_> = self
+                .namespace
+                .files
+                .values()
+                .filter(|f| !f.tombstoned && f.name.to_lowercase().contains(&search))
+                .map(|f| f.id.clone())
+                .collect();
+            files.sort();
+            return files;
+        }
+        self.namespace
+            .list(&self.cwd)
+            .iter()
+            .map(|e| match e {
+                Entry::Folder(d) => d.id.clone(),
+                Entry::File(f) => f.id.clone(),
+            })
+            .collect()
+    }
+
     fn render_row(&mut self, entry: &Entry, cx: &mut Context<Self>) -> impl IntoElement {
         let (id, name, meta, icon, is_folder) = match entry {
             Entry::Folder(f) => (
@@ -1049,7 +1139,8 @@ impl Root {
             .cursor_pointer()
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
+                cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
+                    this.drive_focus.focus(window);
                     if ev.click_count == 2 && is_folder {
                         this.cwd = id_click.clone();
                         this.selected = None;
