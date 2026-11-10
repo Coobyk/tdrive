@@ -739,7 +739,11 @@ impl Worker {
             .client()?
             .send_message(self.channel()?, InputMessage::new().text(header))
             .await?;
-        Ok(msg.id() as i64)
+        let id = msg.id() as i64;
+        if id <= 0 {
+            anyhow::bail!("send outcome unknown (msg id 0)");
+        }
+        Ok(id)
     }
 
     /// Send a control op and fold it into the local namespace.
@@ -747,7 +751,9 @@ impl Worker {
         let header = wire::format(op);
         let msg_id = self.send_op(&header).await?;
         let mut ns = (*self.namespace).clone();
-        ns.apply_message(msg_id, &header);
+        if !ns.apply_message(msg_id, &header) {
+            anyhow::bail!("op emitted but rejected by projection");
+        }
         self.namespace = Arc::new(ns);
         self.save_namespace();
         self.push_namespace();
@@ -1054,7 +1060,11 @@ impl Worker {
                 InputMessage::new().document(uploaded).text(caption),
             )
             .await?;
-        Ok(msg.id() as i64)
+        let id = msg.id() as i64;
+        if id <= 0 {
+            anyhow::bail!("send outcome unknown (msg id 0)");
+        }
+        Ok(id)
     }
 
     /// Continue (or start) a multipart journal job until the manifest lands.
@@ -1331,7 +1341,11 @@ impl Worker {
                 InputMessage::new().document(uploaded).text(caption),
             )
             .await?;
-        Ok(msg.id() as i64)
+        let id = msg.id() as i64;
+        if id <= 0 {
+            anyhow::bail!("send outcome unknown (msg id 0)");
+        }
+        Ok(id)
     }
 
     // ---------------- downloads ----------------
@@ -1630,7 +1644,9 @@ impl Worker {
     /// Pause suspends the transfer but keeps journal state, unlike cancel
     /// which discards it — the same distinction TDrive makes.
     async fn pause(&mut self, id: &str) -> Result<()> {
-        if let Some(token) = self.cancels.get(id) {
+        if let Some(token) = self.cancels.remove(id) {
+            // Drop the cancelled token — resume must mint a fresh one or
+            // is_cancelled() fires instantly and the job can never resume.
             token.cancel();
         }
         if let Some(fid) = id.strip_prefix("dl:") {
@@ -1658,8 +1674,18 @@ impl Worker {
         if id.starts_with("up:") {
             return self.resume_uploads().await;
         }
-        if let Some((file_id, dir)) = self.paused_downloads.remove(id) {
-            return self.download(file_id, dir).await;
+        if let Some((file_id, _dir)) = self.paused_downloads.remove(id) {
+            // Reuse the existing journal row — a fresh DownloadJob would
+            // reset confirmed_bytes and re-download from scratch.
+            let job = self
+                .journal
+                .downloads
+                .iter()
+                .find(|j| j.file_id == file_id)
+                .cloned();
+            if let Some(job) = job {
+                return self.run_download(&job).await;
+            }
         }
         Err(anyhow!("nothing to resume"))
     }
@@ -2207,8 +2233,14 @@ impl Worker {
         if let Some(client) = &self.client {
             let _ = client.sign_out().await;
         }
-        self.client = None;
+        // Keep the client — grammers supports re-login on the same pool;
+        // dropping it strands the worker with no path back.
         self.channel = None;
+        self.channel_id = 0;
+        self.login_token = None;
+        self.password_token = None;
+        *self.master_key.lock().unwrap() = None;
+        self.namespace = Arc::new(Namespace::new());
         self.emit(Event::SignedOut);
         Ok(())
     }
