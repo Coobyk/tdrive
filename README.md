@@ -12,36 +12,47 @@ with either client are readable by the other.
 
 ## Status
 
-MVP: Telegram sign-in (phone + code + 2FA), drive (channel) selection and
-creation, full-history scan of TDX1 ops, folder-aware file browsing,
-resumable chunked uploads/downloads, rename/move/delete/mkdir.
+Working client: Telegram sign-in (phone + code + 2FA), personal and shared
+drives (broadcast channels / megagroups + invite links), folder browsing,
+resumable chunked and encrypted uploads/downloads, mkdir/rename/move,
+trash/restore/purge, search, incremental and live sync.
 
-## Wire format
+## TDX1 compatibility
 
-Every operation is a `TDX1|t=<op>|key=value|...` header in the first line of a
-message text or document caption (see `src/wire.rs`, a port of TDrive's
-`backend/projection/wire.go`).
+`src/wire.rs` is a port of TDrive's `backend/projection/wire.go`. All 17 op
+types parse and format; emitted strings are verified **byte-for-byte** against
+the Go `projection.Format` output in the `golden_format_parity` test
+(regenerate the table with `go run /tmp/wiregen/main.go` inside a TDrive
+checkout). `deterministic_op_id` matches `projection.DeterministicOpID`.
 
-| Op | Meaning |
-| --- | --- |
-| `f` | file upload — the document message itself is the file body |
-| `part` | hidden part of a multipart upload (`u=` uuid, `pix=` index) |
-| `manifest` | visibility boundary for a multipart file |
-| `mkdir` / `rmdir` | folder create/delete |
-| `rename` / `move` / `meta` / `tomb` | namespace mutations |
-| `fcommit` / `freplace` / `dcommit` / `relocate` / `trash` / `harddel` / `untrash` | versioned writable ops (parsed, projected) |
-| `encfg` | encryption config (parsed; decryption not implemented) |
+`src/project.rs` ports `apply.go` semantics: versioned-op `oid` dedup,
+expected-revision compare-and-swap, trash entries (original parent/name for
+restore landing), subtree tombstone/restore, move-cycle rejection,
+first-write-wins mkdir/parts, live-only rename/move, and `meta` upsert merging.
+Deleting emits the same `trash` op TDrive writes (deterministic id, `del`,
+30-day `purge`); restore emits `untrash`; purge emits `harddel` and deletes
+the Telegram body messages.
 
-Files larger than ~1.9 GiB are split into parts plus a manifest, matching
-TDrive's limits (1900 MiB/part, 40 GiB/file, 32 parts max).
+Encryption (`src/crypto.rs`) implements TDE1 exactly: 50-byte header,
+64 KiB chunks, XChaCha20-Poly1305, HKDF-SHA256 file keys
+(`tdrive/file/v1`), and the Argon2id password vault (`encfg`). Unlocked
+drives encrypt uploads and decrypt downloads; encrypted empty files are
+allowed like TDrive.
+
+Not yet covered: thumbnail/rendition display (`rend=` is parsed and
+preserved), media streaming, photo backup, mounts, and file adoption —
+the mount-write ops (`fcommit`/`freplace`/`dcommit`/`relocate`) are fully
+parsed, projected and formatted.
 
 ## Architecture
 
 - `src/tg.rs` — [grammers](https://github.com/Lonami/grammers) client on a
   dedicated tokio thread; the UI sends commands and receives events.
-- `src/project.rs` — folds ordered ops into an in-memory namespace.
-- `src/journal.rs` — persists part receipts / confirmed download blocks so
-  transfers survive restarts.
+- `src/project.rs` — folds ordered ops into a namespace; persisted per
+  channel under `~/.local/share/tdrive-rs/namespaces/` for incremental sync.
+- `src/journal.rs` — persists part receipts / confirmed download blocks /
+  sync watermarks so transfers and scans survive restarts.
+- `src/crypto.rs`, `src/wire.rs` — format ports (see above).
 - `src/ui.rs`, `src/input.rs` — GPUI views.
 
 ## Build & run
