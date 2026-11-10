@@ -1252,7 +1252,21 @@ impl Worker {
         let pt_len = jpeg.len() as i64;
         let (body, stored) = if encrypted {
             let master = (*self.master_key.lock().unwrap()).context("drive locked")?;
-            let ct = tokio::task::spawn_blocking(move || crypto::encrypt_bytes(&master, &jpeg))
+            // TDrive wraps encrypted renditions in a TDR1 envelope binding
+            // the descriptor (s=0) — Go's decryptRendition requires it.
+            let desc = serde_json::json!({
+                "c": self.channel_id, "f": file_msg_id, "m": content_msg_id,
+                "u": upload_uuid, "k": kind, "v": 1, "s": 0,
+                "p": pt_len, "w": w, "h": h, "e": true,
+            });
+            let desc_bytes = serde_json::to_vec(&desc)?;
+            let mut plain =
+                Vec::with_capacity(8 + desc_bytes.len() + jpeg.len());
+            plain.extend_from_slice(b"TDR1");
+            plain.extend_from_slice(&(desc_bytes.len() as u32).to_be_bytes());
+            plain.extend_from_slice(&desc_bytes);
+            plain.extend_from_slice(&jpeg);
+            let ct = tokio::task::spawn_blocking(move || crypto::encrypt_bytes(&master, &plain))
                 .await??;
             let len = ct.len() as i64;
             (ct, len)
@@ -1858,7 +1872,21 @@ impl Worker {
                                     let out2 = out.clone();
                                     let staging2 = staging.clone();
                                     let dec = tokio::task::spawn_blocking(move || {
-                                        crypto::decrypt_file(&key, &staging2, &out2)
+                                        crypto::decrypt_file(&key, &staging2, &out2)?;
+                                        // Encrypted renditions are TDR1-
+                                        // enveloped — strip to the JPEG.
+                                        let data = std::fs::read(&out2)?;
+                                        if data.len() > 8
+                                            && &data[..4] == b"TDR1"
+                                        {
+                                            let n = u32::from_be_bytes(
+                                                data[4..8].try_into().unwrap(),
+                                            ) as usize;
+                                            if 8 + n <= data.len() {
+                                                std::fs::write(&out2, &data[8 + n..])?;
+                                            }
+                                        }
+                                        Ok::<_, anyhow::Error>(())
                                     })
                                     .await;
                                     let _ = std::fs::remove_file(&staging);

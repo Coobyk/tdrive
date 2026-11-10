@@ -228,6 +228,11 @@ impl Root {
                 self.pending_uploads = pending_uploads;
                 self.screen = Screen::Drive;
                 self.cwd = String::new();
+                self.trash = false;
+                self.modal = None;
+                self.selected = None;
+                self.thumbnails.clear();
+                self.thumb_requested.clear();
                 self.status = format!("opened {}", info.title);
                 if let Some(cfg) = &mut self.config {
                     cfg.last_channel_id = Some(info.id);
@@ -816,6 +821,7 @@ impl Root {
                         MouseButton::Left,
                         cx.listener(|this, _, _, cx| {
                             this.cwd = String::new();
+                            this.selected = None;
                             cx.notify();
                         }),
                     ),
@@ -841,9 +847,11 @@ impl Root {
 
         // File rows — trash view, search results, or folder listing.
         let view_key = format!(
-            "{}|{}|{}",
+            "{}|{}|{}|{}|{}",
             self.cwd,
             self.trash,
+            self.grid,
+            self.f_search.read(cx).text(),
             self.channel.as_ref().map(|c| c.id).unwrap_or(0)
         );
         if view_key != self.last_view_key {
@@ -1683,7 +1691,7 @@ impl Root {
                             .items_center()
                             .gap_2()
                             .child(div().flex_1().text_sm().child(format!("{name} ({})", human_size(*size))))
-                            .child(tool_button("Adopt", ab)),
+                            .child(tool_button_id(format!("adopt-{id}"), "Adopt", ab)),
                     );
                 }
                 ("Unadopted attachments".into(), list.into_any_element())
@@ -1791,8 +1799,16 @@ fn tool_button(
     label: &str,
     on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
+    tool_button_id(format!("tb-{label}"), label, on_click)
+}
+
+fn tool_button_id(
+    id: String,
+    label: &str,
+    on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
     div()
-        .id(SharedString::from(format!("tb-{label}")))
+        .id(SharedString::from(id))
         .px_3()
         .py_1()
         .rounded_md()
@@ -1834,7 +1850,7 @@ pub fn human_size(n: i64) -> String {
         div *= UNIT as f64;
         exp += 1;
     }
-    format!("{:.1} {}B", n as f64 / div, "KMGTPE".chars().nth(exp).unwrap())
+    format!("{:.1} {}B", n as f64 / div, "KMGTPE".chars().nth(exp.min(5)).unwrap_or('E'))
 }
 
 impl Render for Root {
@@ -1852,7 +1868,15 @@ impl Render for Root {
                 self.render_auth(window, cx).into_any_element()
             }
             Screen::Picker => self.render_picker(window, cx).into_any_element(),
-            Screen::Drive => self.render_drive(window, cx).into_any_element(),
+            Screen::Drive => {
+                if self.modal.is_none()
+                    && !self.drive_focus.is_focused(window)
+                    && !self.f_search.read(cx).is_focused(window)
+                {
+                    self.drive_focus.focus(window);
+                }
+                self.render_drive(window, cx).into_any_element()
+            }
         };
 
         div()
