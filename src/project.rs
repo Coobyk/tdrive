@@ -117,7 +117,13 @@ impl Namespace {
             Err(_) => return false,
         };
         self.apply(msg_id, &op);
-        self.unadopted.retain(|(id, _, _, _, _)| *id != msg_id);
+        // Projection-owned messages aren't adoptable: the op itself, body
+        // messages bound by fcommit/freplace, and meta targets.
+        self.unadopted.retain(|(id, _, _, _, _)| {
+            *id != msg_id
+                && *id != op.content_msg_id
+                && file_msg_id(&op.obj) != Some(*id)
+        });
         true
     }
 
@@ -588,6 +594,11 @@ impl Namespace {
         if live_rev != op.expected_revision {
             return;
         }
+        // Go requires a trash entry — objects tombstoned by legacy means
+        // (tomb/rmdir) stay dead.
+        if !self.trash.contains_key(&op.obj) {
+            return;
+        }
         let obj = op.obj.clone();
         if is_folder {
             self.restore_subtree_folder(&obj);
@@ -732,17 +743,19 @@ impl Namespace {
             d.tombstoned = false;
             d.revision += 1;
         }
+        // Children trashed independently keep their own trash entry and
+        // stay dead when the parent restores (Go's withRestorable).
         let children: Vec<String> = self
             .folders
             .values()
-            .filter(|c| c.parent == root && c.tombstoned)
+            .filter(|c| c.parent == root && c.tombstoned && !self.trash.contains_key(&c.id))
             .map(|c| c.id.clone())
             .collect();
         for c in children {
             self.restore_subtree_folder(&c);
         }
         for f in self.files.values_mut() {
-            if f.parent == root && f.tombstoned {
+            if f.parent == root && f.tombstoned && !self.trash.contains_key(&f.id) {
                 f.tombstoned = false;
                 f.revision += 1;
             }

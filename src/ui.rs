@@ -461,6 +461,52 @@ impl Root {
         self.modal = None;
     }
 
+    /// Enter key = the modal's confirm button, Escape = cancel.
+    fn modal_confirm(&mut self, cx: &mut Context<Self>) {
+        match &self.modal {
+            Some(Modal::NewFolder) => self.confirm_mkdir(cx),
+            Some(Modal::Rename { obj }) => {
+                let obj = obj.clone();
+                self.confirm_rename(&obj, cx)
+            }
+            Some(Modal::Delete { obj, .. }) => {
+                let obj = obj.clone();
+                self.confirm_delete(&obj)
+            }
+            Some(Modal::Unlock { .. }) => {
+                let pw = self.f_password.read(cx).text();
+                self.send(Command::Unlock { password: pw });
+                self.f_password.update(cx, |f, cx| f.clear(cx));
+                self.modal = None;
+            }
+            Some(Modal::Encrypt) => {
+                let pw = self.f_password.read(cx).text();
+                if !pw.is_empty() {
+                    let hint = self.f_channel.read(cx).text();
+                    self.send(Command::EnableEncryption { password: pw, hint });
+                    self.f_password.update(cx, |f, cx| f.clear(cx));
+                    self.modal = None;
+                }
+            }
+            Some(Modal::Mount) => {
+                let dir = std::path::PathBuf::from(
+                    self.f_name.read(cx).text().trim().to_string(),
+                );
+                self.send(Command::Mount { dir });
+                self.modal = None;
+            }
+            Some(Modal::WatchBackup) => {
+                let dir = std::path::PathBuf::from(
+                    self.f_name.read(cx).text().trim().to_string(),
+                );
+                self.send(Command::WatchBackup { dir });
+                self.modal = None;
+            }
+            _ => {}
+        }
+        cx.notify();
+    }
+
     fn confirm_delete(&mut self, obj: &str) {
         self.send(Command::Delete {
             obj: obj.to_string(),
@@ -1747,6 +1793,16 @@ impl Root {
                     .on_mouse_down(MouseButton::Left, |_, _, cx| {
                         cx.stop_propagation();
                     })
+                    .on_key_down(cx.listener(|this, e: &KeyDownEvent, _, cx| {
+                        match e.keystroke.key.as_str() {
+                            "escape" => {
+                                this.modal = None;
+                                cx.notify();
+                            }
+                            "enter" => this.modal_confirm(cx),
+                            _ => {}
+                        }
+                    }))
                     .child(div().font_weight(FontWeight::BOLD).child(title))
                     .child(body),
             )
