@@ -85,6 +85,9 @@ pub struct Root {
     /// a deep scroll in one folder can't point past the next folder's
     /// end and show a blank list.
     last_view_key: String,
+    /// Auto-open the last drive only on the first channel list — a relist
+    /// after "Drives" must not reopen it and bounce back.
+    auto_open_done: bool,
 }
 
 impl Root {
@@ -140,6 +143,7 @@ impl Root {
             grid_cols: 4,
             list_scroll: UniformListScrollHandle::new(),
             last_view_key: String::new(),
+            auto_open_done: false,
         };
 
         match AppConfig::load() {
@@ -204,8 +208,10 @@ impl Root {
             }
             Event::Channels(list) => {
                 self.channels = list;
-                // Auto-open the last used drive if it's still there.
-                if self.channel.is_none() {
+                // Auto-open the last used drive once at sign-in — not on
+                // every relist, or the drive reopens behind the picker.
+                if self.channel.is_none() && !self.auto_open_done {
+                    self.auto_open_done = true;
                     if let Some(last) = self.config.as_ref().and_then(|c| c.last_channel_id) {
                         if let Some(info) = self.channels.iter().find(|c| c.id == last).cloned() {
                             self.open_channel(info);
