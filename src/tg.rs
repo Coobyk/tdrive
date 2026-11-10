@@ -743,8 +743,16 @@ impl Worker {
         }
 
         let res = if size <= MAX_PART_BYTES {
-            self.upload_single(source.clone(), name, parent, size, encrypted, plaintext_size)
-                .await
+            self.upload_single(
+                source.clone(),
+                path.clone(),
+                name,
+                parent,
+                size,
+                encrypted,
+                plaintext_size,
+            )
+            .await
         } else {
             let channel_id = self.channel()?.id.bare_id_unchecked();
             let part_count = (size + MAX_PART_BYTES - 1) / MAX_PART_BYTES;
@@ -790,7 +798,7 @@ impl Worker {
         res
     }
 
-    async fn upload_single(&mut self, path: PathBuf, name: String, parent: String, size: i64, encrypted: bool, plaintext_size: i64) -> Result<()> {
+    async fn upload_single(&mut self, path: PathBuf, pt_source: PathBuf, name: String, parent: String, size: i64, encrypted: bool, plaintext_size: i64) -> Result<()> {
         let id = format!("up:{}", name);
         self.cancels.insert(id.clone(), CancellationToken::new());
         self.upload_update(&id, &name, 0, size, TransferState::Active);
@@ -811,6 +819,8 @@ impl Worker {
                 self.namespace = Arc::new(ns);
                 self.emit(Event::Namespace(self.namespace.clone()));
                 self.upload_update(&id, &name, size, size, TransferState::Done);
+                self.publish_renditions(&pt_source, &name, msg_id, msg_id, "", encrypted)
+                    .await;
                 Ok(())
             }
             Err(e) => {
@@ -969,6 +979,109 @@ impl Worker {
         self.journal.uploads.retain(|j| j.upload_uuid != uuid);
         self.save_journal();
         self.upload_update(&transfer_id, &job.name, job.stored_size, job.stored_size, TransferState::Done);
+        self.publish_renditions(&job.source_path, &job.name, msg_id, 0, &job.upload_uuid, job.encrypted)
+            .await;
+        Ok(())
+    }
+
+    /// Best-effort rendition publish — TDrive generates a 512px "thumb" and
+    /// 1600px "preview" JPEG for image uploads, sent as `rend` part ops.
+    /// Failures never invalidate the stored original.
+    async fn publish_renditions(
+        &mut self,
+        source: &PathBuf,
+        name: &str,
+        file_msg_id: i64,
+        content_msg_id: i64,
+        upload_uuid: &str,
+        encrypted: bool,
+    ) {
+        if !is_image_name(name) {
+            return;
+        }
+        for (kind, edge) in [("thumb", 512u32), ("preview", 1600u32)] {
+            if let Err(e) = self
+                .publish_rendition(
+                    source,
+                    file_msg_id,
+                    content_msg_id,
+                    upload_uuid,
+                    encrypted,
+                    kind,
+                    edge,
+                )
+                .await
+            {
+                self.emit(Event::Error {
+                    context: "rendition",
+                    message: format!("{e:#}"),
+                });
+            }
+        }
+    }
+
+    async fn publish_rendition(
+        &self,
+        source: &PathBuf,
+        file_msg_id: i64,
+        content_msg_id: i64,
+        upload_uuid: &str,
+        encrypted: bool,
+        kind: &str,
+        edge: u32,
+    ) -> Result<()> {
+        let src = source.clone();
+        let (jpeg, w, h) = tokio::task::spawn_blocking(move || {
+            let img = image::open(&src).context("decode")?;
+            let t = img.thumbnail(edge, edge);
+            let mut cur = std::io::Cursor::new(Vec::new());
+            t.write_to(&mut cur, image::ImageFormat::Jpeg)
+                .context("jpeg encode")?;
+            Ok::<_, anyhow::Error>((cur.into_inner(), t.width(), t.height()))
+        })
+        .await??;
+        let pt_len = jpeg.len() as i64;
+        let (body, stored) = if encrypted {
+            let master = (*self.master_key.lock().unwrap()).context("drive locked")?;
+            let ct = tokio::task::spawn_blocking(move || crypto::encrypt_bytes(&master, &jpeg))
+                .await??;
+            let len = ct.len() as i64;
+            (ct, len)
+        } else {
+            (jpeg, pt_len)
+        };
+        let rend = wire::Rendition {
+            channel_id: self.channel_id,
+            file_msg_id,
+            content_msg_id,
+            upload_uuid: upload_uuid.to_string(),
+            kind: kind.to_string(),
+            version: 1,
+            size: stored,
+            plaintext_size: pt_len,
+            width: w as i32,
+            height: h as i32,
+            encrypted,
+        };
+        let mut reader = std::io::Cursor::new(&body);
+        let uploaded = self
+            .client()?
+            .upload_stream(&mut reader, body.len(), "rendition.jpg".to_string())
+            .await?;
+        let caption = wire::format(&Op {
+            op_type: OpTypeOrUnknown::Known(OpType::FilePart),
+            upload_uuid: uuid::Uuid::new_v4().to_string(),
+            part_index: 0,
+            file_size: stored,
+            rendition: rend.encode(),
+            ..Default::default()
+        });
+        self.client()?
+            .send_message(
+                self.channel()?,
+                InputMessage::new().document(uploaded).text(caption),
+            )
+            .await?;
         Ok(())
     }
 
@@ -1644,4 +1757,11 @@ impl<R: AsyncRead + Unpin> AsyncRead for ProgressReader<R> {
             other => other,
         }
     }
+}
+
+fn is_image_name(name: &str) -> bool {
+    matches!(
+        name.rsplit('.').next().unwrap_or("").to_lowercase().as_str(),
+        "jpg" | "jpeg" | "png" | "webp" | "gif"
+    )
 }

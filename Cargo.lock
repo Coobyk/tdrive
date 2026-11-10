@@ -5991,6 +5991,7 @@ dependencies = [
  "grammers-client",
  "grammers-session",
  "hkdf 0.13.0",
+ "image",
  "rand 0.10.3",
  "serde",
  "serde_json",

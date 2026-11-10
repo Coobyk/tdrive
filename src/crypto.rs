@@ -499,6 +499,46 @@ impl RangeDecryptor {
     }
 }
 
+/// Encrypt a plaintext buffer to a full TDE1 stream — for rendition bodies
+/// and other small payloads.
+pub fn encrypt_bytes(master: &[u8; MASTER_KEY_LEN], plaintext: &[u8]) -> Result<Vec<u8>> {
+    let plaintext_size = plaintext.len() as u64;
+    let mut salt = [0u8; 16];
+    rand::fill(&mut salt);
+    let mut nonce_prefix = [0u8; NONCE_PREFIX_LEN];
+    rand::fill(&mut nonce_prefix);
+    let key = derive_file_key(master, &salt);
+    let aead = XChaCha20Poly1305::new_from_slice(&key).context("crypto: key")?;
+    let mut out = Vec::with_capacity(ciphertext_size(plaintext_size) as usize);
+    out.extend_from_slice(b"TDE1");
+    out.push(0);
+    out.push(CHUNK_EXP);
+    out.extend_from_slice(&salt);
+    out.extend_from_slice(&nonce_prefix);
+    out.extend_from_slice(&plaintext_size.to_le_bytes());
+    let total = chunk_count(plaintext_size);
+    for i in 0..total {
+        let is_final = i == total - 1;
+        let want = if is_final {
+            (plaintext_size % CHUNK_SIZE as u64) as usize
+        } else {
+            CHUNK_SIZE
+        };
+        let begin = i as usize * CHUNK_SIZE;
+        let end = begin + want;
+        let counter = (i as u32) | if is_final { FINAL_BIT } else { 0 };
+        let nonce = chunk_nonce(&nonce_prefix, counter);
+        let ct = aead
+            .encrypt(
+                <&XNonce>::try_from(&nonce[..]).expect("nonce"),
+                &plaintext[begin..end],
+            )
+            .map_err(|_| anyhow!("crypto: encryption failed"))?;
+        out.extend_from_slice(&ct);
+    }
+    Ok(out)
+}
+
 /// Encrypt a plaintext file to a TDE1 ciphertext file. Returns the stored
 /// (ciphertext) size.
 pub fn encrypt_file(

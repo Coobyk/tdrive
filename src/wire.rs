@@ -194,6 +194,13 @@ impl Rendition {
             .ok()?;
         serde_json::from_slice(&bytes).ok()
     }
+
+    /// Encode to the raw `rend=` field (base64url JSON, no padding).
+    pub fn encode(&self) -> String {
+        use base64::Engine;
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(self).unwrap_or_default())
+    }
 }
 
 /// Unknown op types parse as `Unknown` so a newer TDrive's messages are
