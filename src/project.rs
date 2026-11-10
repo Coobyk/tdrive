@@ -70,6 +70,8 @@ pub struct NamespaceSnapshot {
     seen_ops: HashSet<String>,
     pub last_msg_id: i64,
     pub encfg: Option<Op>,
+    #[serde(default)]
+    pub renditions: HashMap<String, HashMap<String, (i64, wire::Rendition)>>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -85,6 +87,8 @@ pub struct Namespace {
     pub last_msg_id: i64,
     /// Latest `encfg` op seen — the drive's encryption vault, if configured.
     pub encfg: Option<Op>,
+    /// file id → kind ("thumb"|"preview") → (body msg id, descriptor)
+    pub renditions: HashMap<String, HashMap<String, (i64, wire::Rendition)>>,
 }
 
 /// A visible listing row.
@@ -148,6 +152,18 @@ impl Namespace {
                 self.apply_file_meta(file_msg_id, op, file_msg_id)
             }
             OpType::FilePart => {
+                // Rendition envelope: binds this part message to a logical
+                // file as a thumbnail/preview body.
+                if !op.rendition.is_empty() {
+                    if let Some(r) = wire::Rendition::decode(&op.rendition) {
+                        self.renditions
+                            .entry(wire::file_obj_id(r.file_msg_id))
+                            .or_default()
+                            .entry(r.kind.clone())
+                            .or_insert((msg_id, r));
+                    }
+                    return;
+                }
                 if op.part_index < 0 || op.upload_uuid.trim().is_empty() {
                     return;
                 }
@@ -809,6 +825,7 @@ impl Namespace {
             seen_ops: self.seen_ops.clone(),
             last_msg_id: self.last_msg_id,
             encfg: self.encfg.clone(),
+            renditions: self.renditions.clone(),
         }
     }
 
@@ -821,6 +838,7 @@ impl Namespace {
             seen_ops: s.seen_ops,
             last_msg_id: s.last_msg_id,
             encfg: s.encfg,
+            renditions: s.renditions,
         }
     }
 

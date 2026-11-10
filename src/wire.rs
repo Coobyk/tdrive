@@ -143,9 +143,57 @@ pub struct Op {
     pub config_version: i32,
 
     /// Raw `rend=` rendition envelope on `part` ops (base64url JSON).
-    /// Captured so rendition-bearing messages round-trip; display of
-    /// thumbnails is not implemented yet.
+    /// Captured so rendition-bearing messages round-trip.
     pub rendition: String,
+}
+
+/// TDrive `FileRendition` — a thumbnail/preview stored as a hidden `part`
+/// document carrying a `rend=` envelope.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct Rendition {
+    /// `c`: channel id
+    #[serde(rename = "c")]
+    pub channel_id: i64,
+    /// `f`: logical file msg id
+    #[serde(rename = "f")]
+    pub file_msg_id: i64,
+    /// `m`: content msg id (single-body files)
+    #[serde(default, rename = "m")]
+    pub content_msg_id: i64,
+    /// `u`: upload uuid (multipart files)
+    #[serde(default, rename = "u")]
+    pub upload_uuid: String,
+    /// `k`: "thumb" | "preview"
+    #[serde(rename = "k")]
+    pub kind: String,
+    /// `v`: format version (1)
+    #[serde(rename = "v")]
+    pub version: i32,
+    /// `s`: stored bytes
+    #[serde(rename = "s")]
+    pub size: i64,
+    /// `p`: plaintext bytes
+    #[serde(rename = "p")]
+    pub plaintext_size: i64,
+    /// `w`/`h`: pixel dimensions
+    #[serde(rename = "w")]
+    pub width: i32,
+    #[serde(rename = "h")]
+    pub height: i32,
+    /// `e`: TDE1-encrypted body
+    #[serde(default, rename = "e")]
+    pub encrypted: bool,
+}
+
+impl Rendition {
+    /// Decode a raw `rend=` field (base64url JSON).
+    pub fn decode(raw: &str) -> Option<Self> {
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(raw)
+            .ok()?;
+        serde_json::from_slice(&bytes).ok()
+    }
 }
 
 /// Unknown op types parse as `Unknown` so a newer TDrive's messages are
