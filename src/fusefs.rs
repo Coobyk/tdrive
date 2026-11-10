@@ -665,13 +665,27 @@ impl Filesystem for TdFs {
         &self,
         _req: &Request,
         ino: INodeNo,
-        _fh: FileHandle,
+        fh: FileHandle,
         offset: u64,
         size: u32,
         _flags: OpenFlags,
         _lock_owner: Option<fuser::LockOwner>,
         reply: ReplyData,
     ) {
+        // Read-back on an open write handle serves the buffered data.
+        {
+            let bufs = self.write_bufs.lock().unwrap();
+            if let Some(p) = bufs.get(&fh.0) {
+                let off = offset as usize;
+                if off >= p.data.len() {
+                    reply.data(&[]);
+                } else {
+                    let end = (off + size as usize).min(p.data.len());
+                    reply.data(&p.data[off..end]);
+                }
+                return;
+            }
+        }
         let Some(file) = self.file_for_ino(ino.0) else {
             reply.error(Errno::EBADF);
             return;
