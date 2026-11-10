@@ -56,6 +56,10 @@ pub enum Command {
     },
     Sync,
     Upload { path: PathBuf, parent: String },
+    /// Upload a local folder — preserves structure via mkdir ops.
+    UploadDir { dir: PathBuf, parent: String },
+    /// 7z-archive a local folder, then upload the archive.
+    UploadArchive { dir: PathBuf, parent: String },
     ResumeUploads,
     Download { file_id: String, dest: PathBuf },
     Mkdir { parent: String, name: String },
@@ -367,6 +371,10 @@ impl Worker {
             } => self.open_channel(id, access_hash, title, kind).await,
             Command::Sync => self.sync().await,
             Command::Upload { path, parent } => self.upload(path, parent).await,
+            Command::UploadDir { dir, parent } => self.upload_dir(dir, parent).await,
+            Command::UploadArchive { dir, parent } => {
+                self.upload_archive(dir, parent).await
+            }
             Command::ResumeUploads => self.resume_uploads().await,
             Command::Download { file_id, dest } => self.download(file_id, dest).await,
             Command::Mkdir { parent, name } => self.mkdir(parent, name).await,
@@ -935,11 +943,12 @@ impl Worker {
             .client()?
             .send_message(self.channel()?, InputMessage::new().text(header))
             .await?;
-        let id = msg.id() as i64;
-        if id <= 0 {
-            anyhow::bail!("send outcome unknown (msg id 0)");
-        }
-        Ok(id)
+        // grammers may return Empty{id:0} when the send outcome isn't in
+        // the response updates — the op IS on the channel, so id 0 is
+        // only "uncertain", never fatal. Control ops still apply locally
+        // (the next sync dedupes), while f:-id consumers treat 0 as
+        // "wait for sync".
+        Ok(msg.id() as i64)
     }
 
     /// Send a control op and fold it into the local namespace.
@@ -1182,6 +1191,69 @@ impl Worker {
             Ok(())
         };
         res
+    }
+
+    /// Upload a local directory tree: mkdir ops for each subdir (the obj
+    /// id is client-generated so we know parents before files go up),
+    /// then a spawned upload task per file.
+    async fn upload_dir(&mut self, dir: PathBuf, parent: String) -> Result<()> {
+        if !dir.is_dir() {
+            return Err(anyhow!("not a directory"));
+        }
+        let mut queue = vec![(dir, parent)];
+        let mut files = 0usize;
+        while let Some((d, pid)) = queue.pop() {
+            let mut entries: Vec<_> = std::fs::read_dir(&d)?
+                .filter_map(|e| e.ok())
+                .collect();
+            entries.sort_by_key(|e| e.file_name());
+            for e in entries {
+                let p = e.path();
+                if p.is_dir() {
+                    let obj = wire::new_folder_id();
+                    let op = Op {
+                        op_type: OpTypeOrUnknown::Known(OpType::Mkdir),
+                        obj: obj.clone(),
+                        parent: pid.clone(),
+                        name: e.file_name().to_string_lossy().to_string(),
+                        ..Default::default()
+                    };
+                    self.send_and_project(&op).await?;
+                    queue.push((p, obj));
+                } else if p.is_file() {
+                    self.upload(p, pid.clone()).await?;
+                    files += 1;
+                }
+            }
+        }
+        let _ = files;
+        Ok(())
+    }
+
+    /// `7z a` the folder to staging, then upload the archive.
+    async fn upload_archive(&mut self, dir: PathBuf, parent: String) -> Result<()> {
+        let name = dir
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "archive".into());
+        let out = config::staging_dir()
+            .unwrap_or_else(|_| std::env::temp_dir())
+            .join(format!("{name}.7z"));
+        let out2 = out.clone();
+        let dir2 = dir.clone();
+        let status = tokio::task::spawn_blocking(move || {
+            std::process::Command::new("7z")
+                .arg("a")
+                .arg("-t7z")
+                .arg(&out2)
+                .arg(&dir2)
+                .status()
+        })
+        .await??;
+        if !status.success() {
+            return Err(anyhow!("7z archive failed (exit {status})"));
+        }
+        self.upload(out, parent).await
     }
 
     async fn upload_single_task(
