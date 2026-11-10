@@ -39,8 +39,8 @@ enum Modal {
     Adopt,
     WatchBackup,
     Mount,
-    /// Folder picked for upload — choose structure vs archive.
-    UploadDir { path: PathBuf },
+    /// Folders picked for upload — choose structure vs archive.
+    UploadDirs { dirs: Vec<PathBuf> },
 }
 
 pub struct Root {
@@ -395,40 +395,33 @@ impl Root {
         self.send(Command::CreateChannel { title });
     }
 
+    /// One picker for files AND folders — files queue directly, folders
+    /// get the structure-vs-archive choice.
     fn pick_upload(&mut self, cx: &mut Context<Self>) {
         let task = cx.prompt_for_paths(PathPromptOptions {
             files: true,
-            directories: false,
+            directories: true,
             multiple: true,
-            prompt: Some("Select files to upload".into()),
+            prompt: Some("Select files or folders to upload".into()),
         });
         let cwd = self.cwd.clone();
         let tx = self.tg.clone();
-        cx.spawn(async move |_, _| {
-            if let Ok(Ok(Some(paths))) = task.await {
-                for path in paths {
-                    let _ = tx.send(Command::Upload {
-                        path,
-                        parent: cwd.clone(),
-                    });
-                }
-            }
-        })
-        .detach();
-    }
-
-    fn pick_folder_upload(&mut self, cx: &mut Context<Self>) {
-        let task = cx.prompt_for_paths(PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: false,
-            prompt: Some("Select a folder to upload".into()),
-        });
         cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(paths))) = task.await {
-                if let Some(path) = paths.into_iter().next() {
+                let mut dirs = Vec::new();
+                for path in paths {
+                    if path.is_dir() {
+                        dirs.push(path);
+                    } else {
+                        let _ = tx.send(Command::Upload {
+                            path,
+                            parent: cwd.clone(),
+                        });
+                    }
+                }
+                if !dirs.is_empty() {
                     let _ = this.update(cx, |this, cx| {
-                        this.modal = Some(Modal::UploadDir { path });
+                        this.modal = Some(Modal::UploadDirs { dirs });
                         cx.notify();
                     });
                 }
@@ -542,11 +535,13 @@ impl Root {
                 self.send(Command::Mount { dir });
                 self.modal = None;
             }
-            Some(Modal::UploadDir { path }) => {
-                self.send(Command::UploadDir {
-                    dir: path.clone(),
-                    parent: self.cwd.clone(),
-                });
+            Some(Modal::UploadDirs { dirs }) => {
+                for dir in dirs.clone() {
+                    self.send(Command::UploadDir {
+                        dir,
+                        parent: self.cwd.clone(),
+                    });
+                }
                 self.modal = None;
             }
             Some(Modal::WatchBackup) => {
@@ -792,9 +787,6 @@ impl Root {
 
         // Toolbar
         let upload = cx.listener(|this, _: &MouseDownEvent, _, cx| this.pick_upload(cx));
-        let upload_dir = cx.listener(|this, _: &MouseDownEvent, _, cx| {
-            this.pick_folder_upload(cx)
-        });
         let backup = cx.listener(|this, _: &MouseDownEvent, _, cx| this.pick_backup(cx));
         let watch = cx.listener(|this, _: &MouseDownEvent, _, cx| {
             this.modal = Some(Modal::WatchBackup);
@@ -851,7 +843,6 @@ impl Root {
             .items_center()
             .gap_2()
             .child(tool_button("↑ Upload", upload))
-            .child(tool_button("↑ Folder", upload_dir))
             .child(tool_button("+ Folder", new_folder))
             .child(tool_button("📷 Backup", backup))
             .child(tool_button("👁 Watch", watch))
@@ -1839,35 +1830,36 @@ impl Root {
                 }
                 ("Unadopted attachments".into(), list.into_any_element())
             }
-            Modal::UploadDir { path } => {
-                let name = path
-                    .file_name()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "folder".into());
-                let dir = path.clone();
-                let dir2 = path.clone();
+            Modal::UploadDirs { dirs } => {
+                let label = if dirs.len() == 1 {
+                    dirs[0]
+                        .file_name()
+                        .map(|s| format!("Upload “{}” as:", s.to_string_lossy()))
+                        .unwrap_or_else(|| "Upload folder as:".into())
+                } else {
+                    format!("Upload {} folders as:", dirs.len())
+                };
+                let dirs2 = dirs.clone();
+                let dirs3 = dirs.clone();
                 (
                     "Upload folder".into(),
                     div()
                         .flex()
                         .flex_col()
                         .gap_3()
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(rgb(DIM))
-                                .child(format!("Upload “{name}” as:")),
-                        )
+                        .child(div().text_sm().text_color(rgb(DIM)).child(label))
                         .child(
                             div()
                                 .flex()
                                 .gap_2()
                                 .child({
                                     let ok = cx.listener(move |this, _: &MouseDownEvent, _, cx| {
-                                        this.send(Command::UploadDir {
-                                            dir: dir.clone(),
-                                            parent: this.cwd.clone(),
-                                        });
+                                        for dir in dirs2.clone() {
+                                            this.send(Command::UploadDir {
+                                                dir,
+                                                parent: this.cwd.clone(),
+                                            });
+                                        }
                                         this.modal = None;
                                         cx.notify();
                                     });
@@ -1875,10 +1867,12 @@ impl Root {
                                 })
                                 .child({
                                     let ok = cx.listener(move |this, _: &MouseDownEvent, _, cx| {
-                                        this.send(Command::UploadArchive {
-                                            dir: dir2.clone(),
-                                            parent: this.cwd.clone(),
-                                        });
+                                        for dir in dirs3.clone() {
+                                            this.send(Command::UploadArchive {
+                                                dir,
+                                                parent: this.cwd.clone(),
+                                            });
+                                        }
                                         this.modal = None;
                                         cx.notify();
                                     });
