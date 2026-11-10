@@ -691,7 +691,9 @@ impl Worker {
 
     async fn upload(&mut self, path: PathBuf, parent: String) -> Result<()> {
         let plaintext_size = std::fs::metadata(&path).context("stat upload")?.len() as i64;
-        if plaintext_size == 0 {
+        // TDrive rejects empty plaintext only when unencrypted — the TDE1
+        // header makes the stored ciphertext non-empty.
+        if plaintext_size == 0 && self.master_key.is_none() {
             return Err(anyhow!("empty files can't be uploaded"));
         }
         let name = path
