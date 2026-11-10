@@ -36,6 +36,7 @@ enum Modal {
     Delete { obj: String, name: String },
     Unlock { hint: String },
     Encrypt,
+    Adopt,
 }
 
 pub struct Root {
@@ -691,7 +692,19 @@ impl Root {
         };
         toolbar = toolbar.child(tool_button(lock_label, lock_btn));
         toolbar = toolbar
-            .child(div().w(px(150.)).child(self.f_search.clone()))
+            .child(div().w(px(150.)).child(self.f_search.clone()));
+        if !self.namespace.unadopted.is_empty() && !self.trash {
+            let n = self.namespace.unadopted.len();
+            let ad = cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                this.modal = Some(Modal::Adopt);
+                cx.notify();
+            });
+            toolbar = toolbar.child(tool_button(
+                &format!("Unadopted ({n})"),
+                ad,
+            ));
+        }
+        toolbar = toolbar
             .child(div().flex_1())
             .child(tool_button("Drives", back))
             .child(tool_button("Sign out", sign_out));
@@ -1295,6 +1308,27 @@ impl Root {
                     })
                     .into_any_element(),
             ),
+            Modal::Adopt => {
+                let mut list = div().flex().flex_col().gap_1();
+                for (id, name, size) in self.namespace.unadopted.iter() {
+                    let msg_id = *id;
+                    let parent = self.cwd.clone();
+                    let ab = cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                        this.send(Command::Adopt { msg_id, parent: parent.clone() });
+                        this.modal = None;
+                        cx.notify();
+                    });
+                    list = list.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(div().flex_1().text_sm().child(format!("{name} ({})", human_size(*size))))
+                            .child(tool_button("Adopt", ab)),
+                    );
+                }
+                ("Unadopted attachments".into(), list.into_any_element())
+            }
             Modal::Delete { obj, name } => {
                 let obj = obj.clone();
                 (
