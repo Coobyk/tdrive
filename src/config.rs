@@ -54,6 +54,13 @@ pub fn session_path() -> Result<PathBuf> {
 }
 
 /// Resumable-transfer journal file.
+/// Per-channel projected namespace snapshot (durable projection).
+pub fn namespace_path(channel_id: i64) -> Result<PathBuf> {
+    let dir = data_dir()?.join("namespaces");
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir.join(format!("{channel_id}.json")))
+}
+
 pub fn journal_path() -> Result<PathBuf> {
     Ok(data_dir()?.join("journal.json"))
 }

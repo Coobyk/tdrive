@@ -6,9 +6,10 @@
 //! subtree tombstone/restore semantics.
 
 use crate::wire::{self, Op, OpType, OpTypeOrUnknown};
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FolderEntry {
     pub id: String,
     pub name: String,
@@ -17,7 +18,7 @@ pub struct FolderEntry {
     pub revision: i64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileEntry {
     /// Object id, `f:<msg_id>` of the uploading/manifest message.
     pub id: String,
@@ -41,7 +42,7 @@ pub struct FileEntry {
 }
 
 /// Restorable-trash record created by a `trash` op.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrashEntry {
     pub object_id: String,
     pub is_folder: bool,
@@ -52,10 +53,23 @@ pub struct TrashEntry {
     pub purge_after: i64,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct PartGroup {
     /// pix -> (msg_id, size)
     parts: HashMap<i32, (i64, i64)>,
+}
+
+/// Persisted projection snapshot (excludes the encfg op — it re-parses from
+/// history on the next incremental scan anyway).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct NamespaceSnapshot {
+    pub folders: HashMap<String, FolderEntry>,
+    pub files: HashMap<String, FileEntry>,
+    parts: HashMap<String, PartGroup>,
+    pub trash: HashMap<String, TrashEntry>,
+    seen_ops: HashSet<String>,
+    pub last_msg_id: i64,
+    pub encfg: Option<Op>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -783,6 +797,31 @@ impl Namespace {
             }
         }
         name.to_string()
+    }
+
+    /// Snapshot for durable storage — mirrors TDrive's persisted projection.
+    pub fn snapshot(&self) -> NamespaceSnapshot {
+        NamespaceSnapshot {
+            folders: self.folders.clone(),
+            files: self.files.clone(),
+            parts: self.parts.clone(),
+            trash: self.trash.clone(),
+            seen_ops: self.seen_ops.clone(),
+            last_msg_id: self.last_msg_id,
+            encfg: self.encfg.clone(),
+        }
+    }
+
+    pub fn restore_snapshot(s: NamespaceSnapshot) -> Self {
+        Self {
+            folders: s.folders,
+            files: s.files,
+            parts: s.parts,
+            trash: s.trash,
+            seen_ops: s.seen_ops,
+            last_msg_id: s.last_msg_id,
+            encfg: s.encfg,
+        }
     }
 
     /// Breadcrumb path from root to a folder id.

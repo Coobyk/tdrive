@@ -30,7 +30,7 @@ pub enum WireError {
     BadParent,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum OpType {
     FileUpload,
     Mkdir,
@@ -100,7 +100,7 @@ impl OpType {
 
 /// A parsed TDX1 operation. Fields mirror TDrive's `projection.Op`; the ones
 /// the MVP never reads (renditions, encryption config bodies) are kept raw.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Op {
     pub op_type: OpTypeOrUnknown,
     pub protocol_version: i32,
@@ -145,7 +145,7 @@ pub struct Op {
 
 /// Unknown op types parse as `Unknown` so a newer TDrive's messages are
 /// skipped instead of breaking the scan.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum OpTypeOrUnknown {
     Known(OpType),
     #[default]

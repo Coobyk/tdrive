@@ -42,6 +42,8 @@ pub enum Command {
     SubmitPassword { password: String },
     ListChannels,
     CreateChannel { title: String },
+    CreateSharedChannel { title: String },
+    EmptyTrash,
     OpenChannel { id: i64, access_hash: i64, title: String },
     Sync,
     Upload { path: PathBuf, parent: String },
@@ -91,6 +93,7 @@ pub enum Event {
     JournalChanged,
     Error { context: &'static str, message: String },
     VaultState { configured: bool, unlocked: bool, hint: String },
+    InviteLink { link: String },
     SignedOut,
 }
 
@@ -194,6 +197,8 @@ impl Worker {
             Command::SubmitPassword { password } => self.submit_password(password).await,
             Command::ListChannels => self.list_channels().await,
             Command::CreateChannel { title } => self.create_channel(title).await,
+            Command::CreateSharedChannel { title } => self.create_channel_inner(title, true).await,
+            Command::EmptyTrash => self.empty_trash().await,
             Command::OpenChannel {
                 id,
                 access_hash,
@@ -353,11 +358,16 @@ impl Worker {
     }
 
     async fn create_channel(&mut self, title: String) -> Result<()> {
+        self.create_channel_inner(title, false).await
+    }
+
+    /// `shared`: megagroup + exported invite link (TDrive shared drive).
+    async fn create_channel_inner(&mut self, title: String, shared: bool) -> Result<()> {
         let client = self.client()?.clone();
         let updates = client
             .invoke(&grammers_client::tl::functions::channels::CreateChannel {
-                broadcast: true,
-                megagroup: false,
+                broadcast: !shared,
+                megagroup: shared,
                 for_import: false,
                 forum: false,
                 title: title.clone(),
@@ -377,10 +387,34 @@ impl Worker {
             if let grammers_client::tl::enums::Chat::Channel(c) = chat {
                 self.open_channel(c.id, c.access_hash.unwrap_or(0), c.title)
                     .await?;
+                if shared {
+                    self.export_invite().await?;
+                }
                 return Ok(());
             }
         }
         Err(anyhow!("channel not found in create response"))
+    }
+
+    /// Export the invite link for a shared drive and surface it to the UI.
+    async fn export_invite(&mut self) -> Result<()> {
+        use grammers_client::tl::enums::ExportedChatInvite;
+        let invite = self
+            .client()?
+            .invoke(&grammers_client::tl::functions::messages::ExportChatInvite {
+                peer: self.channel()?.into(),
+                legacy_revoke_permanent: false,
+                request_needed: false,
+                expire_date: None,
+                usage_limit: None,
+                title: None,
+                subscription_pricing: None,
+            })
+            .await?;
+        if let ExportedChatInvite::ChatInviteExported(i) = invite {
+            self.emit(Event::InviteLink { link: i.link });
+        }
+        Ok(())
     }
 
     async fn open_channel(&mut self, id: i64, access_hash: i64, title: String) -> Result<()> {
@@ -395,7 +429,15 @@ impl Worker {
         }
         self.channel_id = id;
         self.channel_title = title.clone();
-        self.namespace = Arc::new(Namespace::new());
+        // Load the persisted projection so the first sync is incremental.
+        self.namespace = Arc::new(
+            config::namespace_path(id)
+                .ok()
+                .and_then(|p| std::fs::read_to_string(p).ok())
+                .and_then(|s| serde_json::from_str::<crate::project::NamespaceSnapshot>(&s).ok())
+                .map(crate::project::Namespace::restore_snapshot)
+                .unwrap_or_default(),
+        );
         let pending = self
             .journal
             .uploads
@@ -462,6 +504,7 @@ impl Worker {
             self.save_journal();
         }
         self.namespace = Arc::new(ns);
+        self.save_namespace();
         self.emit(Event::Namespace(self.namespace.clone()));
 
         // Retention sweep: physically purge entries past purge_after, like
@@ -485,6 +528,17 @@ impl Worker {
         Ok(())
     }
 
+    fn save_namespace(&self) {
+        if self.channel_id == 0 {
+            return;
+        }
+        if let Ok(path) = config::namespace_path(self.channel_id) {
+            if let Ok(json) = serde_json::to_string(&self.namespace.snapshot()) {
+                let _ = std::fs::write(path, json);
+            }
+        }
+    }
+
     async fn send_op(&self, header: &str) -> Result<i64> {
         let msg = self
             .client()?
@@ -500,6 +554,7 @@ impl Worker {
         let mut ns = (*self.namespace).clone();
         ns.apply_message(msg_id, &header);
         self.namespace = Arc::new(ns);
+        self.save_namespace();
         self.emit(Event::Namespace(self.namespace.clone()));
         Ok(())
     }
@@ -1175,6 +1230,19 @@ impl Worker {
         self.send_and_project(&op).await?;
         self.master_key = Some(master);
         self.emit_vault_state();
+        Ok(())
+    }
+
+    async fn empty_trash(&mut self) -> Result<()> {
+        let ids: Vec<String> = self.namespace.trash.keys().cloned().collect();
+        for obj in ids {
+            if let Err(e) = self.purge(obj.clone()).await {
+                self.emit(Event::Error {
+                    context: "empty trash",
+                    message: format!("{obj}: {e:#}"),
+                });
+            }
+        }
         Ok(())
     }
 

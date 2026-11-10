@@ -220,6 +220,9 @@ impl Root {
                 self.vault_unlocked = unlocked;
                 self.vault_hint = hint;
             }
+            Event::InviteLink { link } => {
+                self.status = format!("invite link: {link}");
+            }
             Event::JournalChanged => {}
             Event::Error { context, message } => {
                 self.status = format!("{context}: {message}");
@@ -577,6 +580,18 @@ impl Root {
                 )
                 .child(self.f_channel.clone())
                 .child(button("Create new drive", ACCENT, create))
+                .child(button(
+                    "New shared drive",
+                    ACCENT,
+                    cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                        let title = this.f_channel.read(cx).text().trim().to_string();
+                        if !title.is_empty() {
+                            this.send(Command::CreateSharedChannel { title });
+                            this.status = "creating shared drive…".into();
+                        }
+                        cx.notify();
+                    }),
+                ))
                 .child(self.f_invite.clone())
                 .child(button(
                     "Join shared drive",
@@ -651,6 +666,13 @@ impl Root {
                 if self.trash { "Files" } else { "Trash" },
                 trash_toggle,
             ));
+        if self.trash {
+            let et = cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                this.send(Command::EmptyTrash);
+                cx.notify();
+            });
+            toolbar = toolbar.child(tool_button_danger("Empty trash", et));
+        }
         let lock_label = if self.vault_configured {
             if self.vault_unlocked {
                 "🔓 Unlocked"
