@@ -127,20 +127,17 @@ impl TdFs {
 
     /// Commit a pending write buffer through fcommit/freplace.
     fn commit_pending(&self, fh: u64) -> Result<(), Errno> {
-        let p = match self.write_bufs.lock().unwrap().get_mut(&fh) {
-            Some(p) if !p.committed => {
-                p.committed = true;
-                PendingWrite {
-                    parent: p.parent.clone(),
-                    name: p.name.clone(),
-                    data: std::mem::take(&mut p.data),
-                    obj: p.obj.clone(),
-                    committed: true,
-                }
-            }
+        let p = match self.write_bufs.lock().unwrap().get(&fh) {
+            Some(p) if !p.committed => PendingWrite {
+                parent: p.parent.clone(),
+                name: p.name.clone(),
+                data: p.data.clone(),
+                obj: p.obj.clone(),
+                committed: true,
+            },
             _ => return Ok(()),
         };
-        self.write_op(match p.obj {
+        let res = self.write_op(match p.obj {
             Some(obj) => DavOp::Replace {
                 obj,
                 bytes: p.data,
@@ -150,7 +147,15 @@ impl TdFs {
                 name: p.name,
                 bytes: p.data,
             },
-        })
+        });
+        // Only mark committed after the op succeeded — otherwise later
+        // flushes would skip retrying and the data would be lost.
+        if res.is_ok() {
+            if let Some(p) = self.write_bufs.lock().unwrap().get_mut(&fh) {
+                p.committed = true;
+            }
+        }
+        res
     }
 
     fn take_fh(&self) -> u64 {
@@ -240,7 +245,7 @@ impl TdFs {
 }
 
 impl TdFs {
-    fn remove_entry(&self, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
+    fn remove_entry(&self, parent: INodeNo, name: &OsStr, dir_only: bool, reply: ReplyEmpty) {
         let Some(dir) = self.dir_id(parent.0) else {
             reply.error(Errno::ENOENT);
             return;
@@ -256,6 +261,24 @@ impl TdFs {
             .obj(ino)
             .unwrap_or_default()
             .to_string();
+        // unlink on a dir → EISDIR; rmdir on a file or non-empty dir →
+        // ENOTDIR/ENOTEMPTY (never hard-delete a live subtree).
+        let is_folder = obj.starts_with('d');
+        if !dir_only && is_folder {
+            reply.error(Errno::EISDIR);
+            return;
+        }
+        if dir_only {
+            if !is_folder {
+                reply.error(Errno::ENOTDIR);
+                return;
+            }
+            let ns = self.ns.lock().unwrap();
+            if !ns.list(&obj).is_empty() {
+                reply.error(Errno::ENOTEMPTY);
+                return;
+            }
+        }
         match self.write_op(DavOp::Delete { obj }) {
             Ok(()) => reply.ok(),
             Err(e) => reply.error(e),
@@ -444,6 +467,12 @@ impl Filesystem for TdFs {
         };
         let off = offset as usize;
         let end = off + data.len();
+        // Writes are buffered whole — a sparse write at a huge offset
+        // would otherwise allocate unbounded memory.
+        if end > 512 * 1024 * 1024 {
+            reply.error(Errno::EFBIG);
+            return;
+        }
         if end > p.data.len() {
             p.data.resize(end, 0);
         }
@@ -518,11 +547,11 @@ impl Filesystem for TdFs {
     }
 
     fn unlink(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
-        self.remove_entry(parent, name, reply);
+        self.remove_entry(parent, name, false, reply);
     }
 
     fn rmdir(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
-        self.remove_entry(parent, name, reply);
+        self.remove_entry(parent, name, true, reply);
     }
 
     fn rename(
@@ -588,6 +617,10 @@ impl Filesystem for TdFs {
         if let Some(sz) = size {
             if let Some(h) = fh {
                 if let Some(p) = self.write_bufs.lock().unwrap().get_mut(&h.0) {
+                    if sz > 512 * 1024 * 1024 {
+                        reply.error(Errno::EFBIG);
+                        return;
+                    }
                     p.data.resize(sz as usize, 0);
                     reply.attr(&TTL, &FileAttr {
                         ino,

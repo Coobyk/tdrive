@@ -576,14 +576,15 @@ impl Worker {
             id: peer_id,
             auth: PeerAuth::from_hash(access_hash),
         });
-        // Read-only WebDAV surface for this drive.
+        // Read-write WebDAV surface for this drive.
         dav::ensure_server(
             self.client()?.clone(),
             self.channel()?,
             self.ns_shared.clone(),
             self.master_key.clone(),
             self.cmd_tx.clone(),
-        );
+        )
+        .await;
         if let Some(url) = dav::url() {
             self.emit(Event::DavUrl { url });
         }

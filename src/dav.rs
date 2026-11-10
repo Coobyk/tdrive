@@ -16,35 +16,46 @@ static PORT: OnceLock<u16> = OnceLock::new();
 static STARTED: OnceLock<()> = OnceLock::new();
 static CMD: OnceLock<tokio::sync::mpsc::UnboundedSender<crate::tg::Command>> =
     OnceLock::new();
+// The mounted drive's peer is swappable — switching drives must repoint
+// the server, not keep streaming the first drive forever.
+static PEER: OnceLock<std::sync::Mutex<PeerRef>> = OnceLock::new();
 
-/// Spawn the DAV listener once inside the worker's runtime.
-pub fn ensure_server(
+/// Spawn the DAV listener once inside the worker's runtime. Binds
+/// synchronously so `url()` is immediately valid; later calls just
+/// repoint the peer for a new drive.
+pub async fn ensure_server(
     client: Client,
     peer: PeerRef,
     ns: Arc<Mutex<Arc<Namespace>>>,
     master: Arc<Mutex<Option<[u8; crate::crypto::MASTER_KEY_LEN]>>>,
     cmd: tokio::sync::mpsc::UnboundedSender<crate::tg::Command>,
 ) {
-    if STARTED.set(()).is_err() {
+    if let Some(p) = PEER.get() {
+        *p.lock().unwrap() = peer;
         return;
     }
     let _ = CMD.set(cmd);
-    tokio::spawn(async move {
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
-        let _ = PORT.set(listener.local_addr()?.port());
-        loop {
-            let (sock, _) = listener.accept().await?;
-            tokio::spawn(handle(
-                sock,
-                client.clone(),
-                peer.clone(),
-                ns.clone(),
-                master.clone(),
-            ));
+    let _ = STARTED.set(());
+    if let Ok(listener) = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await {
+        if let Ok(addr) = listener.local_addr() {
+            let _ = PORT.set(addr.port());
         }
-        #[allow(unreachable_code)]
-        Ok::<(), anyhow::Error>(())
-    });
+        let _ = PEER.set(std::sync::Mutex::new(peer));
+        tokio::spawn(async move {
+            loop {
+                let (sock, _) = listener.accept().await?;
+                tokio::spawn(handle(
+                    sock,
+                    client.clone(),
+                    PEER.get().unwrap().lock().unwrap().clone(),
+                    ns.clone(),
+                    master.clone(),
+                ));
+            }
+            #[allow(unreachable_code)]
+            Ok::<(), anyhow::Error>(())
+        });
+    }
 }
 
 pub fn url() -> Option<String> {
@@ -103,7 +114,7 @@ fn propfind(ns: &Namespace, path: &str, depth: &str) -> String {
     };
     let base = format!("/dav{path}");
     if let Ok(file) = resolve_file(ns, path) {
-        emit(&escape(&base), false, file.plaintext_size.max(file.size));
+        emit(&escape(&base), false, if file.encrypted { file.plaintext_size } else { file.size });
         return format!("{xml}</D:multistatus>");
     }
     let Ok(dir) = resolve_dir(ns, path) else {
@@ -121,7 +132,7 @@ fn propfind(ns: &Namespace, path: &str, depth: &str) -> String {
                 Entry::File(f) => emit(
                     &escape(&format!("{base}/{}", f.name)),
                     false,
-                    f.plaintext_size.max(f.size),
+                    if f.encrypted { f.plaintext_size } else { f.size },
                 ),
             }
         }
@@ -256,9 +267,26 @@ async fn handle(
     master: Arc<Mutex<Option<[u8; crate::crypto::MASTER_KEY_LEN]>>>,
 ) -> Result<()> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let mut buf = vec![0u8; 16384];
-    let n = sock.read(&mut buf).await?;
-    let req = String::from_utf8_lossy(&buf[..n]);
+    // Read until the header terminator — a single read() can split
+    // headers across segments, silently dropping Range/Depth/Length.
+    let mut raw = Vec::with_capacity(16384);
+    let mut chunk = [0u8; 8192];
+    let header_end = loop {
+        if let Some(pos) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+            break pos;
+        }
+        if raw.len() > 65536 {
+            sock.write_all(b"HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Length: 0\r\n\r\n")
+                .await?;
+            return Ok(());
+        }
+        let n = sock.read(&mut chunk).await?;
+        if n == 0 {
+            break raw.len();
+        }
+        raw.extend_from_slice(&chunk[..n]);
+    };
+    let req = String::from_utf8_lossy(&raw[..header_end.min(raw.len())]);
     let mut lines = req.lines();
     let first = lines.next().unwrap_or("");
     let mut it = first.split_whitespace();
@@ -313,6 +341,15 @@ async fn handle(
                         .and_then(|v| v.parse::<u64>().ok())
                         .map(|e| e + 1)
                         .unwrap_or(total);
+                    if s >= total && s > 0 {
+                        // Range past EOF — 416, not an underflowed
+                        // Content-Length or an inverted Content-Range.
+                        let h = format!(
+                            "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{total}\r\nContent-Length: 0\r\n\r\n"
+                        );
+                        sock.write_all(h.as_bytes()).await?;
+                        return Ok(());
+                    }
                     (s, e.min(total), true)
                 }
                 None => (0, total, false),
@@ -323,11 +360,19 @@ async fn handle(
                 vec![(file.content_msg_id, file.size)]
             };
             let bytes = if method == "GET" {
-                stream::read_range(
+                match stream::read_range(
                     &client, &peer, &parts, start, end_excl, file.encrypted, &master,
                 )
                 .await
-                .unwrap_or_default()
+                {
+                    Ok(b) => b,
+                    Err(_) => {
+                        // Read failures must not look like an empty file.
+                        sock.write_all(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n")
+                            .await?;
+                        return Ok(());
+                    }
+                }
             } else {
                 Vec::new()
             };
@@ -349,14 +394,11 @@ async fn handle(
             }
         }
         "MKCOL" | "DELETE" | "MOVE" | "PUT" => {
-            // Request body starts after the \r\n\r\n header terminator.
-            let header_end = buf[..n]
-                .windows(4)
-                .position(|w| w == b"\r\n\r\n")
-                .map(|p| p + 4)
-                .unwrap_or(n);
+            // Request body starts after the \r\n\r\n header terminator —
+            // any bytes already read past it belong to the body.
+            let body_start = header_end + 4;
             let (code, body) = write_method(
-                method, &path, &req, &snapshot, &mut sock, &buf[..n], header_end,
+                method, &path, &req, &snapshot, &mut sock, &raw, body_start.min(raw.len()),
             )
             .await;
             let h = format!(

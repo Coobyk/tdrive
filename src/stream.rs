@@ -284,5 +284,10 @@ async fn part_read(
     }
     let rel = (start % CHUNK) as usize;
     let take = (end - start) as usize;
+    // A body shorter than the declared size must not panic — the slice
+    // would otherwise kill the FUSE dispatch thread.
+    if rel >= buf.len() {
+        return Ok(Vec::new());
+    }
     Ok(buf[rel..(rel + take).min(buf.len())].to_vec())
 }
