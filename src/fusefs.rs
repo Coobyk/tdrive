@@ -58,6 +58,8 @@ struct InoMap {
     next: u64,
     obj_to_ino: HashMap<String, u64>,
     ino_to_obj: HashMap<u64, String>,
+    /// Synthetic inos handed out by mknod before the file exists.
+    pending: HashMap<u64, (String, String)>,
 }
 
 impl InoMap {
@@ -73,6 +75,15 @@ impl InoMap {
     }
     fn obj(&self, ino: u64) -> Option<&str> {
         self.ino_to_obj.get(&ino).map(String::as_str)
+    }
+    fn pending_create(&mut self, dir: String, name: String) -> u64 {
+        self.next += 1;
+        let ino = ROOT_INO + self.next;
+        self.pending.insert(ino, (dir, name));
+        ino
+    }
+    fn pending_take(&mut self, ino: u64) -> Option<(String, String)> {
+        self.pending.remove(&ino)
     }
 }
 
@@ -289,18 +300,26 @@ impl Filesystem for TdFs {
     fn open(&self, _req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
         match flags.acc_mode() {
             fuser::OpenAccMode::O_WRONLY | fuser::OpenAccMode::O_RDWR => {
-                let Some(f) = self.file_for_ino(ino.0) else {
-                    reply.error(Errno::ENOENT);
-                    return;
+                // Either an existing file (replace-write) or a node created
+                // via mknod that hasn't been opened yet.
+                let (parent, name, obj) = match self.file_for_ino(ino.0) {
+                    Some(f) => (f.parent.clone(), f.name.clone(), Some(f.id.clone())),
+                    None => match self.inos.lock().unwrap().pending_take(ino.0) {
+                        Some((dir, name)) => (dir, name, None),
+                        None => {
+                            reply.error(Errno::ENOENT);
+                            return;
+                        }
+                    },
                 };
                 let fh = self.take_fh();
                 self.write_bufs.lock().unwrap().insert(
                     fh,
                     PendingWrite {
-                        parent: f.parent.clone(),
-                        name: f.name.clone(),
+                        parent,
+                        name,
                         data: Vec::new(),
-                        obj: Some(f.id.clone()),
+                        obj,
                         committed: false,
                     },
                 );
@@ -308,6 +327,48 @@ impl Filesystem for TdFs {
             }
             _ => reply.opened(FileHandle(0), FopenFlags::empty()),
         }
+    }
+
+    fn mknod(
+        &self,
+        _req: &Request,
+        parent: INodeNo,
+        name: &OsStr,
+        _mode: u32,
+        _umask: u32,
+        _rdev: u32,
+        reply: ReplyEntry,
+    ) {
+        let Some(dir) = self.dir_id(parent.0) else {
+            reply.error(Errno::ENOENT);
+            return;
+        };
+        let Some(name) = name.to_str().map(str::to_string) else {
+            reply.error(Errno::EINVAL);
+            return;
+        };
+        if self.resolve_name(&dir, OsStr::new(&name)).is_some() {
+            reply.error(Errno::EEXIST);
+            return;
+        }
+        let ino = self.inos.lock().unwrap().pending_create(dir, name);
+        reply.entry(&TTL, &FileAttr {
+            ino: INodeNo(ino),
+            size: 0,
+            blocks: 0,
+            atime: SystemTime::now(),
+            mtime: SystemTime::now(),
+            ctime: SystemTime::now(),
+            crtime: SystemTime::now(),
+            kind: FileType::RegularFile,
+            perm: 0o644,
+            nlink: 1,
+            uid: self.uid,
+            gid: self.gid,
+            rdev: 0,
+            blksize: 4096,
+            flags: 0,
+        }, Generation(0));
     }
 
     fn create(
@@ -665,6 +726,15 @@ impl Filesystem for TdFs {
 
     fn releasedir(&self, _req: &Request, _ino: INodeNo, _fh: FileHandle, _flags: OpenFlags, reply: fuser::ReplyEmpty) {
         reply.ok();
+    }
+
+    fn forget(&self, _req: &Request, ino: INodeNo, _nlookup: u64) {
+        // Bound the inode map — forget clears lookup references.
+        let mut m = self.inos.lock().unwrap();
+        if let Some(obj) = m.ino_to_obj.remove(&ino.0) {
+            m.obj_to_ino.remove(&obj);
+        }
+        m.pending.remove(&ino.0);
     }
 
     fn statfs(&self, _req: &Request, _ino: INodeNo, reply: fuser::ReplyStatfs) {
