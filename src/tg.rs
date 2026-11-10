@@ -1127,9 +1127,22 @@ impl Worker {
         upload_uuid: &str,
         encrypted: bool,
     ) {
-        if !is_image_name(name) {
+        let owned_source;
+        let source = if is_image_name(name) {
+            source
+        } else if is_video_name(name) {
+            // TDrive renders video thumbs through ffmpeg; extract a frame
+            // locally and feed the same rendition pipeline.
+            match extract_video_frame(source).await {
+                Some(p) => {
+                    owned_source = p;
+                    &owned_source
+                }
+                None => return,
+            }
+        } else {
             return;
-        }
+        };
         for (kind, edge) in [("thumb", 512u32), ("preview", 1600u32)] {
             if let Err(e) = self
                 .publish_rendition(
@@ -2133,6 +2146,35 @@ impl<R: AsyncRead + Unpin> AsyncRead for ProgressReader<R> {
             other => other,
         }
     }
+}
+
+/// Extract a mid-video frame to a temp JPEG via ffmpeg (TDrive's video
+/// thumbnail approach — best-effort, returns None without ffmpeg).
+async fn extract_video_frame(source: &PathBuf) -> Option<PathBuf> {
+    let out = std::env::temp_dir().join(format!("tdrive-vf-{}.jpg", uuid::Uuid::new_v4()));
+    let src = source.clone();
+    let out2 = out.clone();
+    let status = tokio::task::spawn_blocking(move || {
+        std::process::Command::new("ffmpeg")
+            .args(["-ss", "10%", "-i"])
+            .arg(&src)
+            .args(["-frames:v", "1", "-q:v", "5", "-y"])
+            .arg(&out2)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+    })
+    .await
+    .ok()?
+    .ok()?;
+    (status.success() && out.exists()).then_some(out)
+}
+
+fn is_video_name(name: &str) -> bool {
+    matches!(
+        name.rsplit('.').next().unwrap_or("").to_lowercase().as_str(),
+        "mp4" | "mkv" | "webm" | "mov" | "m4v" | "avi" | "ts"
+    )
 }
 
 fn is_image_name(name: &str) -> bool {
