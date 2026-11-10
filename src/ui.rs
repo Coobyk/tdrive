@@ -70,6 +70,8 @@ pub struct Root {
     trash: bool,
     drive_focus: FocusHandle,
     thumbnails: std::collections::HashMap<String, std::path::PathBuf>,
+    thumb_requested: std::collections::HashSet<String>,
+    grid: bool,
 }
 
 impl Root {
@@ -117,6 +119,8 @@ impl Root {
             trash: false,
             drive_focus: cx.focus_handle(),
             thumbnails: Default::default(),
+            thumb_requested: Default::default(),
+            grid: false,
         };
 
         match AppConfig::load() {
@@ -710,6 +714,14 @@ impl Root {
                 ad,
             ));
         }
+        if !self.trash {
+            let label = if self.grid { "List" } else { "Grid" };
+            let gt = cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                this.grid = !this.grid;
+                cx.notify();
+            });
+            toolbar = toolbar.child(tool_button(label, gt));
+        }
         toolbar = toolbar
             .child(div().flex_1())
             .child(tool_button("Drives", back))
@@ -826,8 +838,16 @@ impl Root {
                     }),
             );
         }
-        for entry in &entries {
-            rows = rows.child(self.render_row(entry, cx));
+        if self.grid && !self.trash {
+            let mut grid = div().flex().flex_wrap().gap_2().p_2();
+            for entry in &entries {
+                grid = grid.child(self.render_cell(entry, cx));
+            }
+            rows = rows.child(grid);
+        } else {
+            for entry in &entries {
+                rows = rows.child(self.render_row(entry, cx));
+            }
         }
 
         // Selected actions
@@ -1133,6 +1153,70 @@ impl Root {
                 Entry::File(f) => f.id.clone(),
             })
             .collect()
+    }
+
+    /// Gallery-style cell: thumbnail (fetched on demand) or type icon.
+    fn render_cell(&mut self, entry: &Entry, cx: &mut Context<Self>) -> impl IntoElement {
+        let (id, name, is_folder) = match entry {
+            Entry::Folder(d) => (d.id.clone(), d.name.clone(), true),
+            Entry::File(f) => (f.id.clone(), f.name.clone(), false),
+        };
+        // Ask the worker for this file's rendition once.
+        if !is_folder
+            && self.namespace.renditions.contains_key(&id)
+            && !self.thumb_requested.contains(&id)
+        {
+            self.thumb_requested.insert(id.clone());
+            self.send(Command::FetchThumbnail { file_id: id.clone() });
+        }
+        let selected = self.selected.as_deref() == Some(id.as_str());
+        let click_id = id.clone();
+        let thumb = self.thumbnails.get(&id).cloned();
+        div()
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap_1()
+            .w(px(96.))
+            .p_2()
+            .bg(if selected { rgb(PANEL2) } else { rgb(BG) })
+            .hover(|s| s.bg(rgb(PANEL2)))
+            .cursor_pointer()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
+                    this.drive_focus.focus(window);
+                    if ev.click_count == 2 && is_folder {
+                        this.cwd = click_id.clone();
+                        this.selected = None;
+                    } else {
+                        this.selected = Some(click_id.clone());
+                    }
+                    cx.notify();
+                }),
+            )
+            .child(
+                div()
+                    .w(px(80.))
+                    .h(px(80.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_2xl()
+                    .child(if let Some(p) = thumb {
+                        img(p).w(px(80.)).h(px(80.)).into_any_element()
+                    } else {
+                        div().child(if is_folder { "📁" } else { "📄" }).into_any_element()
+                    }),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(TEXT))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .child(name),
+            )
     }
 
     fn render_row(&mut self, entry: &Entry, cx: &mut Context<Self>) -> impl IntoElement {
