@@ -84,7 +84,7 @@ pub struct Root {
     /// list can index them without rebuilding per row.
     entries_cache: Vec<Entry>,
     grid_cols: usize,
-    list_scroll: UniformListScrollHandle,
+    scroll_handle: ScrollHandle,
     /// View key (cwd/mode) — when it changes the scroll handle resets, so
     /// a deep scroll in one folder can't point past the next folder's
     /// end and show a blank list.
@@ -147,8 +147,9 @@ impl Root {
             channel_kind: String::new(),
             mount_dir: None,
             entries_cache: Vec::new(),
+            last_items_len: 0,
             grid_cols: 4,
-            list_scroll: UniformListScrollHandle::new(),
+            scroll_handle: ScrollHandle::new(),
             last_view_key: String::new(),
             auto_open_done: false,
             syncing: false,
@@ -964,10 +965,16 @@ impl Root {
             self.channel.as_ref().map(|c| c.id).unwrap_or(0)
         );
         if view_key != self.last_view_key {
-            self.list_scroll = UniformListScrollHandle::new();
+            self.scroll_handle = ScrollHandle::new();
             self.last_view_key = view_key;
         }
         self.entries_cache = self.current_entries(cx);
+        if self.entries_cache.len() != self.last_items_len {
+            // Content changed — a new folder/file may sit above the old
+            // scroll offset. Snap to the top so it's visible.
+            self.last_items_len = self.entries_cache.len();
+            self.scroll_handle.scroll_to_top_of_item(0);
+        }
         let mut rows = div()
             .id("rows")
             .flex()
@@ -990,57 +997,35 @@ impl Root {
                         "empty folder"
                     }),
             );
-        } else if self.grid && !self.trash {
-            // Grid rows are chunks of cells — virtualized the same way, so
-            // only visible cells exist (and only they request thumbnails).
-            self.grid_cols =
-                ((f32::from(window.viewport_size().width) / 110.) as usize).max(1);
-            let count = self.entries_cache.len().div_ceil(self.grid_cols);
-            rows = rows.child(
-                uniform_list(
-                    "grid-rows",
-                    count,
-                    cx.processor(|this, range: std::ops::Range<usize>, _w, cx| {
-                        let cols = this.grid_cols;
-                        let len = this.entries_cache.len();
-                        let cells: Vec<Entry> = range
-                            .flat_map(|row| row * cols..((row + 1) * cols).min(len))
-                            .filter_map(|i| this.entries_cache.get(i).cloned())
-                            .collect();
-                        cells
-                            .chunks(cols)
-                            .map(|chunk| {
-                                let mut r = div().flex().gap_2().p_1();
-                                for e in chunk {
-                                    r = r.child(this.render_cell(e, cx));
-                                }
-                                r.into_any_element()
-                            })
-                            .collect::<Vec<_>>()
-                    }),
-                )
-                .track_scroll(self.list_scroll.clone())
-                .h_full(),
-            );
         } else {
-            let count = self.entries_cache.len();
-            rows = rows.child(
-                uniform_list(
-                    "rows-list",
-                    count,
-                    cx.processor(|this, range: std::ops::Range<usize>, _w, cx| {
-                        let batch: Vec<Entry> = range
-                            .filter_map(|i| this.entries_cache.get(i).cloned())
-                            .collect();
-                        batch
-                            .iter()
-                            .map(|e| this.render_row(e, cx).into_any_element())
-                            .collect::<Vec<_>>()
-                    }),
-                )
-                .track_scroll(self.list_scroll.clone())
-                .h_full(),
-            );
+            // Plain scrollable list — no virtualization machinery that can
+            // silently drop items. For each entry render its row/cell; in
+            // grid mode entries are chunked into flex rows.
+            let mut body = div()
+                .id("entries-scroll")
+                .flex()
+                .flex_col()
+                .w_full()
+                .overflow_y_scroll()
+                .track_scroll(&self.scroll_handle)
+                .flex_1();
+            if self.grid && !self.trash {
+                self.grid_cols = ((f32::from(window.viewport_size().width)
+                    / 110.) as usize)
+                    .max(1);
+                for chunk in self.entries_cache.clone().chunks(self.grid_cols) {
+                    let mut r = div().flex().gap_2().p_1();
+                    for e in chunk {
+                        r = r.child(self.render_cell(e, cx));
+                    }
+                    body = body.child(r);
+                }
+            } else {
+                for e in self.entries_cache.clone() {
+                    body = body.child(self.render_row(&e, cx));
+                }
+            }
+            rows = rows.child(body);
         }
 
         // Selected actions
@@ -1273,8 +1258,7 @@ impl Root {
                         } else {
                             idx
                         };
-                        this.list_scroll
-                            .scroll_to_item(row, ScrollStrategy::Center);
+                        this.scroll_handle.scroll_to_top_of_item(row);
                     }
                     "enter" => {
                         let Some(sel) = this.selected.clone() else { return };
@@ -1396,6 +1380,14 @@ impl Root {
                                 .into_any_element()
                         }
                     })
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(DIM))
+                            .px_3()
+                            .py_1()
+                            .child(format!("{} items", self.entries_cache.len())),
+                    )
                     .child(
                         div()
                             .px_4()

@@ -1147,3 +1147,30 @@ mod mkdir_list_test {
         assert!(matches!(l[0], Entry::Folder(_)));
     }
 }
+
+#[cfg(test)]
+mod mkdir_pipeline_test {
+    use super::*;
+    use crate::wire::{format as wfmt, Op, OpType, OpTypeOrUnknown};
+
+    #[test]
+    fn mkdir_format_apply_list() {
+        // Exact send_and_project path: format -> apply_message -> list.
+        let op = Op {
+            op_type: OpTypeOrUnknown::Known(OpType::Mkdir),
+            obj: "d:test-uuid".into(),
+            parent: String::new(),
+            name: "Folder1".into(),
+            ..Default::default()
+        };
+        let header = wfmt(&op);
+        let mut ns = Namespace::new();
+        assert!(ns.apply_message(1, &header), "apply failed for: {header}");
+        let l = ns.list("");
+        assert_eq!(l.len(), 1, "list empty after mkdir");
+        match &l[0] {
+            Entry::Folder(d) => assert_eq!(d.name, "Folder1"),
+            _ => panic!("not a folder"),
+        }
+    }
+}
