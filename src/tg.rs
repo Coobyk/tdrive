@@ -1367,12 +1367,19 @@ impl Worker {
         let client = self.client()?.clone();
         let result = client
             .invoke(&grammers_client::tl::functions::messages::ImportChatInvite {
-                hash,
+                hash: hash.clone(),
             })
-            .await?;
+            .await;
         use grammers_client::tl::enums::{Updates, messages::ChatInviteJoinResult};
-        let ChatInviteJoinResult::Ok(ok) = result else {
-            return Err(anyhow!("invite requires an interactive join"));
+        let ok = match result {
+            Ok(ChatInviteJoinResult::Ok(ok)) => ok,
+            Err(e) if format!("{e}").contains("INVITE_REQUEST_SENT") => {
+                // Join-request links: poll CheckChatInvite until approved,
+                // mirroring TDrive's CheckPendingJoin loop.
+                self.poll_pending_join(&hash).await?;
+                return Ok(());
+            }
+            _ => return Err(anyhow!("invite requires an interactive join")),
         };
         let chats = match ok.updates {
             Updates::Combined(u) => u.chats,
@@ -1388,6 +1395,33 @@ impl Worker {
             }
         }
         Err(anyhow!("invite did not resolve to a channel"))
+    }
+
+    /// Poll `CheckChatInvite` until a join-request is approved (or give up).
+    async fn poll_pending_join(&mut self, hash: &str) -> Result<()> {
+        use grammers_client::tl::enums::{Chat, ChatInvite};
+        self.emit(Event::Error {
+            context: "join",
+            message: "waiting for admin approval…".to_string(),
+        });
+        for _ in 0..24 {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            let inv = self
+                .client()?
+                .invoke(&grammers_client::tl::functions::messages::CheckChatInvite {
+                    hash: hash.to_string(),
+                })
+                .await;
+            if let Ok(ChatInvite::Already(already)) = inv {
+                if let Chat::Channel(c) = already.chat {
+                    self.open_channel(c.id, c.access_hash.unwrap_or(0), c.title)
+                        .await?;
+                    self.list_channels().await?;
+                    return Ok(());
+                }
+            }
+        }
+        Err(anyhow!("join request still pending"))
     }
 
     /// Download a file's "thumb" rendition into the local cache and tell
