@@ -3,6 +3,7 @@
 
 use crate::config;
 use crate::crypto::{self, VaultConfig};
+use crate::dav;
 use crate::journal::{DownloadJob, Journal, PartReceipt, UploadJob};
 use crate::project::Namespace;
 use crate::stream;
@@ -109,6 +110,7 @@ pub enum Event {
     InviteLink { link: String },
     ThumbnailReady { file_id: String, path: PathBuf },
     StreamUrl { url: String },
+    DavUrl { url: String },
     SignedOut,
 }
 
@@ -143,6 +145,7 @@ pub fn spawn() -> Handle {
                 actor_id: 0,
                 channel_kind: String::new(),
                 paused_downloads: HashMap::new(),
+                ns_shared: Arc::new(Mutex::new(Arc::new(Namespace::new()))),
                 cancels: HashMap::new(),
                 last_live_sync: std::time::Instant::now()
                     - std::time::Duration::from_secs(10),
@@ -178,6 +181,8 @@ struct Worker {
     channel_kind: String,
     /// Paused downloads: transfer id -> (file_id, dest dir) for Resume.
     paused_downloads: HashMap<String, (String, PathBuf)>,
+    /// Latest namespace snapshot shared with the WebDAV server.
+    ns_shared: Arc<Mutex<Arc<Namespace>>>,
     cancels: HashMap<String, CancellationToken>,
     last_live_sync: std::time::Instant,
     journal: Journal,
@@ -468,6 +473,16 @@ impl Worker {
             id: peer_id,
             auth: PeerAuth::from_hash(access_hash),
         });
+        // Read-only WebDAV surface for this drive.
+        dav::ensure_server(
+            self.client()?.clone(),
+            self.channel()?,
+            self.ns_shared.clone(),
+            self.master_key.clone(),
+        );
+        if let Some(url) = dav::url() {
+            self.emit(Event::DavUrl { url });
+        }
         if self.channel_id != id {
             // Different drive → different vault.
             *self.master_key.lock().unwrap() = None;
@@ -571,7 +586,7 @@ impl Worker {
         }
         self.namespace = Arc::new(ns);
         self.save_namespace();
-        self.emit(Event::Namespace(self.namespace.clone()));
+        self.push_namespace();
 
         // Retention sweep: physically purge entries past purge_after, like
         // TDrive's expired-trash sweep. Failures are surfaced, not fatal.
@@ -592,6 +607,12 @@ impl Worker {
             }
         }
         Ok(())
+    }
+
+    /// Publish the namespace to the UI and the shared DAV snapshot.
+    fn push_namespace(&self) {
+        *self.ns_shared.lock().unwrap() = self.namespace.clone();
+        self.emit(Event::Namespace(self.namespace.clone()));
     }
 
     fn save_namespace(&self) {
@@ -621,7 +642,7 @@ impl Worker {
         ns.apply_message(msg_id, &header);
         self.namespace = Arc::new(ns);
         self.save_namespace();
-        self.emit(Event::Namespace(self.namespace.clone()));
+        self.push_namespace();
         Ok(())
     }
 
@@ -866,7 +887,7 @@ impl Worker {
                     ..Default::default()
                 });
                 self.namespace = Arc::new(ns);
-                self.emit(Event::Namespace(self.namespace.clone()));
+                self.push_namespace();
                 self.upload_update(&id, &name, size, size, TransferState::Done);
                 self.publish_renditions(&pt_source, &name, msg_id, msg_id, "", encrypted)
                     .await;
@@ -1024,7 +1045,7 @@ impl Worker {
         let mut ns = (*self.namespace).clone();
         ns.apply(msg_id, &manifest);
         self.namespace = Arc::new(ns);
-        self.emit(Event::Namespace(self.namespace.clone()));
+        self.push_namespace();
         self.journal.uploads.retain(|j| j.upload_uuid != uuid);
         self.save_journal();
         self.upload_update(&transfer_id, &job.name, job.stored_size, job.stored_size, TransferState::Done);

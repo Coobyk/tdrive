@@ -238,6 +238,9 @@ impl Root {
             Event::ThumbnailReady { file_id, path } => {
                 self.thumbnails.insert(file_id, path);
             }
+            Event::DavUrl { url } => {
+                self.status = format!("mount: {url}");
+            }
             Event::StreamUrl { url } => {
                 // The tokenized URL is the capability — hand it to the
                 // default handler (browser / media player).

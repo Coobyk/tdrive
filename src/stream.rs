@@ -202,7 +202,7 @@ async fn respond(
 }
 
 /// Assemble plaintext `[start, end)` from the stored body parts.
-async fn read_range(
+pub(crate) async fn read_range(
     client: &Client,
     peer: &PeerRef,
     parts: &[(i64, i64)],
