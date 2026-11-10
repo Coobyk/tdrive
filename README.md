@@ -48,11 +48,14 @@ Media: a tokenized 127.0.0.1 HTTP server streams plaintext byte ranges
 decryption for encrypted files. A read/write WebDAV server on another
 localhost port mounts the namespace for file managers — MKCOL/DELETE/MOVE/
 PUT emit `dcommit`/`harddel`/`relocate`/`fcommit`, the same durable ops
-TDrive's mount writes.
+TDrive's mount writes. A read/write FUSE mount (`Mount` toolbar action,
+needs fuse3) exposes the same filesystem in the OS, committing writes
+through `fcommit`/`freplace` so other TDrive clients see identical
+metadata.
 
-Not yet covered: FUSE mounts, video seek previews, continuous photo-backup
-watching (one-shot backup is included), and a live interop test against a
-real TDrive channel.
+Not yet covered: remux/HLS playback (the direct byte-range stream is
+TDrive's Linux route anyway), video seek preview buckets, and a live
+interop test against a real TDrive channel.
 
 ## Architecture
 
