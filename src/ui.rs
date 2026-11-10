@@ -966,6 +966,7 @@ impl Root {
             };
             let (state_label, color) = match t.state {
                 TransferState::Active => ("", ACCENT),
+                TransferState::Paused => ("paused", DIM),
                 TransferState::Done => ("done", 0x22c55e),
                 TransferState::Failed => ("failed", DANGER),
             };
@@ -1007,7 +1008,48 @@ impl Root {
                             state_label.to_string()
                         }),
                 );
-            if t.state == TransferState::Active {
+            if t.state == TransferState::Active || t.state == TransferState::Paused {
+                let id = t.id.clone();
+                let resume_id = t.id.clone();
+                if t.state == TransferState::Active {
+                    row = row.child(
+                        div()
+                            .id(SharedString::from(format!("pa-{id}")))
+                            .px_2()
+                            .rounded_md()
+                            .text_sm()
+                            .text_color(rgb(TEXT))
+                            .hover(|s| s.bg(rgb(PANEL2)))
+                            .cursor_pointer()
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                                    this.send(Command::Pause { id: id.clone() });
+                                    cx.notify();
+                                }),
+                            )
+                            .child("⏸"),
+                    );
+                } else {
+                    row = row.child(
+                        div()
+                            .id(SharedString::from(format!("rs-{resume_id}")))
+                            .px_2()
+                            .rounded_md()
+                            .text_sm()
+                            .text_color(rgb(TEXT))
+                            .hover(|s| s.bg(rgb(PANEL2)))
+                            .cursor_pointer()
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                                    this.send(Command::Resume { id: resume_id.clone() });
+                                    cx.notify();
+                                }),
+                            )
+                            .child("▶"),
+                    );
+                }
                 let id = t.id.clone();
                 row = row.child(
                     div()

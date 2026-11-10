@@ -69,6 +69,8 @@ pub enum Command {
     FetchThumbnail { file_id: String },
     Adopt { msg_id: i64, parent: String },
     Stream { obj: String },
+    Pause { id: String },
+    Resume { id: String },
     BackupPhotos { paths: Vec<PathBuf> },
     LiveSync,
     SignOut,
@@ -86,6 +88,7 @@ pub struct TransferUpdate {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransferState {
     Active,
+    Paused,
     Done,
     Failed,
 }
@@ -139,6 +142,7 @@ pub fn spawn() -> Handle {
                 master_key: Arc::new(Mutex::new(None)),
                 actor_id: 0,
                 channel_kind: String::new(),
+                paused_downloads: HashMap::new(),
                 cancels: HashMap::new(),
                 last_live_sync: std::time::Instant::now()
                     - std::time::Duration::from_secs(10),
@@ -172,6 +176,8 @@ struct Worker {
     actor_id: i64,
     /// "broadcast" (personal) or group kind — encryption is personal-only.
     channel_kind: String,
+    /// Paused downloads: transfer id -> (file_id, dest dir) for Resume.
+    paused_downloads: HashMap<String, (String, PathBuf)>,
     cancels: HashMap<String, CancellationToken>,
     last_live_sync: std::time::Instant,
     journal: Journal,
@@ -247,6 +253,8 @@ impl Worker {
             Command::FetchThumbnail { file_id } => self.fetch_thumbnail(&file_id).await,
             Command::Adopt { msg_id, parent } => self.adopt(msg_id, parent).await,
             Command::Stream { obj } => self.stream(&obj).await,
+            Command::Pause { id } => self.pause(&id).await,
+            Command::Resume { id } => self.resume(&id).await,
             Command::BackupPhotos { paths } => self.backup_photos(paths).await,
             Command::LiveSync => self.live_sync().await,
             Command::SignOut => self.sign_out().await,
@@ -1467,6 +1475,43 @@ impl Worker {
             ..Default::default()
         };
         self.send_and_project(&op).await
+    }
+
+    /// Pause suspends the transfer but keeps journal state, unlike cancel
+    /// which discards it — the same distinction TDrive makes.
+    async fn pause(&mut self, id: &str) -> Result<()> {
+        if let Some(token) = self.cancels.get(id) {
+            token.cancel();
+        }
+        if let Some(fid) = id.strip_prefix("dl:") {
+            if let Some(j) = self.journal.downloads.iter().find(|j| j.file_id == fid) {
+                let dir = j
+                    .dest
+                    .parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_default();
+                self.paused_downloads
+                    .insert(id.to_string(), (j.file_id.clone(), dir));
+            }
+        }
+        self.emit(Event::Transfer(TransferUpdate {
+            id: id.to_string(),
+            label: String::new(),
+            sent: 0,
+            total: 0,
+            state: TransferState::Paused,
+        }));
+        Ok(())
+    }
+
+    async fn resume(&mut self, id: &str) -> Result<()> {
+        if id.starts_with("up:") {
+            return self.resume_uploads().await;
+        }
+        if let Some((file_id, dir)) = self.paused_downloads.remove(id) {
+            return self.download(file_id, dir).await;
+        }
+        Err(anyhow!("nothing to resume"))
     }
 
     fn cancel(&mut self, id: &str) -> Result<()> {
