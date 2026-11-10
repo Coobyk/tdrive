@@ -52,6 +52,7 @@ pub enum Command {
     Move { obj: String, parent: String },
     Delete { obj: String },
     Restore { obj: String },
+    Purge { obj: String },
     Cancel { id: String },
     Unlock { password: String },
     Lock,
@@ -207,6 +208,7 @@ impl Worker {
             Command::Move { obj, parent } => self.move_obj(obj, parent).await,
             Command::Delete { obj } => self.delete(obj).await,
             Command::Restore { obj } => self.restore(obj).await,
+            Command::Purge { obj } => self.purge(obj).await,
             Command::Cancel { id } => self.cancel(&id),
             Command::Unlock { password } => self.unlock(&password).await,
             Command::Lock => {
@@ -461,6 +463,25 @@ impl Worker {
         }
         self.namespace = Arc::new(ns);
         self.emit(Event::Namespace(self.namespace.clone()));
+
+        // Retention sweep: physically purge entries past purge_after, like
+        // TDrive's expired-trash sweep. Failures are surfaced, not fatal.
+        let now = unix_now();
+        let expired: Vec<String> = self
+            .namespace
+            .trash
+            .values()
+            .filter(|e| e.purge_after > 0 && e.purge_after <= now)
+            .map(|e| e.object_id.clone())
+            .collect();
+        for obj in expired {
+            if let Err(e) = self.purge(obj).await {
+                self.emit(Event::Error {
+                    context: "trash purge",
+                    message: format!("{e:#}"),
+                });
+            }
+        }
         Ok(())
     }
 
@@ -514,18 +535,68 @@ impl Worker {
         self.send_and_project(&op).await
     }
 
+    /// Move a live object to the trash — same `trash` op TDrive emits, with
+    /// the deterministic op id and 30-day retention window.
     async fn delete(&mut self, obj: String) -> Result<()> {
-        let is_folder = obj.starts_with(wire::FOLDER_ID_PREFIX);
+        let Some((_, revision, tombstoned, _, _)) = self.namespace.dirent_info(&obj)
+        else {
+            return Err(anyhow!("item not found"));
+        };
+        if tombstoned {
+            return Err(anyhow!("item is already in the trash"));
+        }
+        let now = unix_now();
         let op = Op {
-            op_type: OpTypeOrUnknown::Known(if is_folder {
-                OpType::Rmdir
-            } else {
-                OpType::Tomb
-            }),
+            op_type: OpTypeOrUnknown::Known(OpType::TrashTree),
+            protocol_version: 1,
+            op_id: wire::deterministic_op_id("trash", &obj, revision),
             obj,
+            expected_revision: revision,
+            deleted_at: now,
+            purge_after: now + 30 * 24 * 3600,
             ..Default::default()
         };
         self.send_and_project(&op).await
+    }
+
+    /// Permanently purge a trashed object: `harddel` marker plus physical
+    /// deletion of the file's Telegram body messages.
+    async fn purge(&mut self, obj: String) -> Result<()> {
+        let Some((is_folder, revision, tombstoned, _, _)) =
+            self.namespace.dirent_info(&obj)
+        else {
+            return Err(anyhow!("item not found"));
+        };
+        if !tombstoned {
+            return Err(anyhow!("only trashed items can be purged"));
+        }
+        // Collect body messages before the marker lands.
+        let bodies = if is_folder {
+            self.namespace.subtree_body_msg_ids(&obj)
+        } else {
+            self.namespace
+                .files
+                .get(&obj)
+                .map(|f| self.namespace.body_msg_ids(f))
+                .unwrap_or_default()
+        };
+        let op = Op {
+            op_type: OpTypeOrUnknown::Known(OpType::HardDeleteTree),
+            protocol_version: 1,
+            op_id: wire::deterministic_op_id("purge", &obj, revision),
+            obj,
+            expected_revision: revision,
+            ..Default::default()
+        };
+        self.send_and_project(&op).await?;
+        if !bodies.is_empty() {
+            let ids: Vec<i32> = bodies.iter().map(|&m| m as i32).collect();
+            let _ = self
+                .client()?
+                .delete_messages(self.channel()?, &ids)
+                .await;
+        }
+        Ok(())
     }
 
     // ---------------- uploads ----------------
@@ -1109,31 +1180,43 @@ impl Worker {
 
     // ---------------- misc ops ----------------
 
+    /// Restore from the trash — TDrive's rule: land at the original parent
+    /// (root if it no longer exists) under a conflict-free sibling name.
     async fn restore(&mut self, obj: String) -> Result<()> {
-        let revision = self
+        let entry = self
             .namespace
-            .files
+            .trash
             .get(&obj)
-            .map(|f| f.revision)
-            .unwrap_or(1);
-        let name = self
-            .namespace
-            .files
-            .get(&obj)
-            .map(|f| f.name.clone())
-            .or_else(|| self.namespace.folders.get(&obj).map(|f| f.name.clone()))
-            .unwrap_or_default();
-        let parent = self
-            .namespace
-            .files
-            .get(&obj)
-            .map(|f| f.parent.clone())
-            .or_else(|| self.namespace.folders.get(&obj).map(|f| f.parent.clone()))
-            .unwrap_or_default();
+            .cloned()
+            .context("item is not in the trash")?;
+        let Some((_, revision, tombstoned, _, _)) = self.namespace.dirent_info(&obj)
+        else {
+            return Err(anyhow!("item not found"));
+        };
+        if !tombstoned {
+            return Err(anyhow!("item is not in the trash"));
+        }
+        let parent = if !entry.original_parent.is_empty()
+            && self
+                .namespace
+                .folders
+                .get(&entry.original_parent)
+                .map(|d| !d.tombstoned)
+                .unwrap_or(false)
+        {
+            entry.original_parent.clone()
+        } else {
+            String::new()
+        };
+        let name = self.namespace.next_free_sibling_name(
+            &parent,
+            &entry.original_name,
+            entry.is_folder,
+        );
         let op = Op {
             op_type: OpTypeOrUnknown::Known(OpType::RestoreTree),
             protocol_version: 1,
-            op_id: uuid::Uuid::new_v4().to_string(),
+            op_id: wire::deterministic_op_id("restore", &obj, revision),
             obj,
             parent,
             name,

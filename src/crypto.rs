@@ -188,7 +188,7 @@ impl VaultConfig {
         }
         let aead =
             XChaCha20Poly1305::new_from_slice(&kek).context("crypto: KEK length")?;
-        let nonce = XNonce::from_slice(&self.wrapped_master_key[..24]);
+        let nonce = <&XNonce>::try_from(&self.wrapped_master_key[..24]).expect("nonce");
         let master = aead
             .decrypt(nonce, &self.wrapped_master_key[24..])
             .map_err(|_| anyhow!("crypto: wrong password"))?;
@@ -204,7 +204,7 @@ impl VaultConfig {
         }
         let aead =
             XChaCha20Poly1305::new_from_slice(master).context("crypto: key length")?;
-        let nonce = XNonce::from_slice(&self.key_check[..24]);
+        let nonce = <&XNonce>::try_from(&self.key_check[..24]).expect("nonce");
         let pt = aead
             .decrypt(nonce, &self.key_check[24..])
             .map_err(|_| anyhow!("crypto: wrong password"))?;
@@ -241,7 +241,7 @@ pub fn create_vault(
     let mut nonce_bytes = [0u8; 24];
     rand::fill(&mut nonce_bytes);
     let wrapped_ct = aead
-        .encrypt(XNonce::from_slice(&nonce_bytes), master.as_ref())
+        .encrypt(<&XNonce>::try_from(&nonce_bytes[..]).expect("nonce"), master.as_ref())
         .map_err(|_| anyhow!("crypto: wrap failed"))?;
     let mut wrapped = Vec::with_capacity(WRAPPED_MASTER_KEY_LEN);
     wrapped.extend_from_slice(&nonce_bytes);
@@ -251,7 +251,7 @@ pub fn create_vault(
     let mut check_nonce = [0u8; 24];
     rand::fill(&mut check_nonce);
     let check_ct = maead
-        .encrypt(XNonce::from_slice(&check_nonce), KEY_CHECK_PLAINTEXT)
+        .encrypt(<&XNonce>::try_from(&check_nonce[..]).expect("nonce"), KEY_CHECK_PLAINTEXT)
         .map_err(|_| anyhow!("crypto: key check failed"))?;
     let mut check = Vec::with_capacity(KEY_CHECK_ENVELOPE_LEN);
     check.extend_from_slice(&check_nonce);
@@ -304,6 +304,7 @@ pub struct Tde1Header {
 }
 
 /// Ciphertext size for a given plaintext length, including header and tags.
+#[allow(dead_code)]
 pub fn ciphertext_size(plaintext_size: u64) -> u64 {
     let chunks = plaintext_size / CHUNK_SIZE as u64 + 1;
     HEADER_LEN as u64 + plaintext_size + TAG_LEN as u64 * chunks
@@ -383,7 +384,7 @@ pub fn decrypt_stream<R: Read, W: Write>(
         let counter = (i as u32) | if is_final { FINAL_BIT } else { 0 };
         let nonce = chunk_nonce(&h.nonce_prefix, counter);
         let pt = aead
-            .decrypt(XNonce::from_slice(&nonce), buf.as_ref())
+            .decrypt(<&XNonce>::try_from(&nonce[..]).expect("nonce"), buf.as_ref())
             .map_err(|_| anyhow!("crypto: chunk {i} authentication failed"))?;
         dst.write_all(&pt)?;
         written += pt.len() as u64;
@@ -451,7 +452,7 @@ pub fn encrypt_file(
         let counter = (i as u32) | if is_final { FINAL_BIT } else { 0 };
         let nonce = chunk_nonce(&nonce_prefix, counter);
         let ct = aead
-            .encrypt(XNonce::from_slice(&nonce), buf.as_ref())
+            .encrypt(<&XNonce>::try_from(&nonce[..]).expect("nonce"), buf.as_ref())
             .map_err(|_| anyhow!("crypto: encryption failed"))?;
         dst.write_all(&ct)?;
     }

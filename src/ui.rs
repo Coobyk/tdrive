@@ -709,7 +709,45 @@ impl Root {
         // File rows — trash view, search results, or folder listing.
         let search = self.f_search.read(cx).text().trim().to_lowercase();
         let entries: Vec<Entry> = if self.trash {
-            self.namespace.list_trash()
+            self.namespace
+                .list_trash()
+                .into_iter()
+                .map(|t| {
+                    if t.is_folder {
+                        self.namespace
+                            .folders
+                            .get(&t.object_id)
+                            .map(|d| Entry::Folder(d.clone()))
+                            .unwrap_or(Entry::Folder(crate::project::FolderEntry {
+                                id: t.object_id,
+                                name: t.original_name,
+                                parent: t.original_parent,
+                                tombstoned: true,
+                                revision: t.original_revision,
+                            }))
+                    } else {
+                        self.namespace
+                            .files
+                            .get(&t.object_id)
+                            .map(|f| Entry::File(f.clone()))
+                            .unwrap_or(Entry::File(crate::project::FileEntry {
+                                id: t.object_id,
+                                msg_id: 0,
+                                name: t.original_name,
+                                size: 0,
+                                parent: t.original_parent,
+                                upload_time: t.deleted_at,
+                                tombstoned: true,
+                                encrypted: false,
+                                plaintext_size: 0,
+                                upload_uuid: String::new(),
+                                part_count: 0,
+                                content_msg_id: 0,
+                                revision: t.original_revision,
+                            }))
+                    }
+                })
+                .collect()
         } else if !search.is_empty() {
             let mut files: Vec<_> = self
                 .namespace
@@ -771,7 +809,15 @@ impl Root {
                     this.selected = None;
                     cx.notify();
                 });
-                actions = actions.child(tool_button("Restore", rs));
+                let obj2 = sel_c.clone();
+                let pg = cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                    this.send(Command::Purge { obj: obj2.clone() });
+                    this.selected = None;
+                    cx.notify();
+                });
+                actions = actions
+                    .child(tool_button("Restore", rs))
+                    .child(tool_button_danger("Delete forever", pg));
             } else if is_file {
                 let file = self.namespace.files.get(sel).cloned();
                 if let Some(file) = file {
