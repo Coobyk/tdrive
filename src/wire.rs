@@ -141,6 +141,11 @@ pub struct Op {
     pub key_check_b64: String,
     pub hint: String,
     pub config_version: i32,
+
+    /// Raw `rend=` rendition envelope on `part` ops (base64url JSON).
+    /// Captured so rendition-bearing messages round-trip; display of
+    /// thumbnails is not implemented yet.
+    pub rendition: String,
 }
 
 /// Unknown op types parse as `Unknown` so a newer TDrive's messages are
@@ -209,12 +214,16 @@ fn set_obj(op: &mut Op, raw: &str, prefix: &str) -> Result<(), WireError> {
 }
 
 fn set_obj_any(op: &mut Op, raw: &str) -> Result<(), WireError> {
+    set_obj_any_raw(&mut op.obj, raw)
+}
+
+fn set_obj_any_raw(dst: &mut String, raw: &str) -> Result<(), WireError> {
     if raw.is_empty()
         || (!raw.starts_with(FOLDER_ID_PREFIX) && !raw.starts_with(FILE_ID_PREFIX))
     {
         return Err(WireError::BadObject);
     }
-    op.obj = raw.to_string();
+    *dst = raw.to_string();
     Ok(())
 }
 
@@ -429,8 +438,9 @@ pub fn parse(raw: &str) -> Result<Op, WireError> {
             set_positive_i64(&mut op.expected_revision, get("rev"))?;
             op.overwrite = get("ow") == "1";
             if !get("dst").is_empty() {
-                set_obj_any(&mut op, get("dst"))?;
-                op.destination_obj = op.obj.clone();
+                let mut dst = String::new();
+                set_obj_any_raw(&mut dst, get("dst"))?;
+                op.destination_obj = dst;
             }
             if let Some(raw) = kv.get("drev") {
                 if !raw.is_empty() {
@@ -499,7 +509,13 @@ pub fn parse(raw: &str) -> Result<Op, WireError> {
         }
         op.plaintext_size = n;
     }
-    // `rend=` (renditions on part ops) is ignored by the MVP parser.
+    // `rend` is only valid on part ops — TDrive rejects it elsewhere.
+    if let Some(rend) = kv.get("rend") {
+        if op.op_type != OpTypeOrUnknown::Known(OpType::FilePart) || rend.len() > 2048 {
+            return Err(WireError::Malformed);
+        }
+        op.rendition = rend.clone();
+    }
     Ok(op)
 }
 
@@ -680,6 +696,9 @@ pub fn format(op: &Op) -> String {
                 op.expected_revision
             );
         }
+    }
+    if !op.rendition.is_empty() {
+        let _ = write!(b, "|rend={}", op.rendition);
     }
     b
 }
