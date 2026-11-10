@@ -1303,7 +1303,7 @@ impl Worker {
         plaintext_size: i64,
     ) -> Result<()> {
         let id = format!("up:{}", name);
-        let _permit = ctx.upload_sem.acquire().await;
+        let permit = ctx.upload_sem.acquire().await;
         ctx.update(&id, &name, 0, size, TransferState::Active);
         // Encrypt to staged ciphertext first when the vault is unlocked.
         let stored = if encrypted {
@@ -1340,6 +1340,7 @@ impl Worker {
                 });
                 ctx.op_applied(header, msg_id);
                 ctx.update(&id, &name, size, size, TransferState::Done);
+                drop(permit);
                 Self::publish_renditions(ctx, &pt_source, &name, msg_id, msg_id, "", encrypted)
                     .await;
                 Ok(())
@@ -1401,7 +1402,7 @@ impl Worker {
     /// loop stays responsive; journal/namespace writes flow back via
     /// Commands on `ctx.cmd`.
     async fn run_upload_task(ctx: &TransferCtx, mut job: UploadJob) -> Result<()> {
-        let _permit = ctx.upload_sem.acquire().await;
+        let permit = ctx.upload_sem.acquire().await;
         // Encrypt to staged ciphertext when the vault is unlocked — done
         // inside the task so even a multi-GB encrypt never blocks the loop.
         if job.encrypted
@@ -1484,6 +1485,9 @@ impl Worker {
         ctx.op_applied(header, msg_id);
         ctx.journal(Command::TransferDone { id: transfer_id.clone() });
         ctx.update(&transfer_id, &job.name, job.stored_size, job.stored_size, TransferState::Done);
+        // Free the queue slot — renditions are best-effort background
+        // sends, not part of the upload's critical path.
+        drop(permit);
         Self::publish_renditions(ctx, &job.source_path, &job.name, msg_id, 0, &job.upload_uuid, job.encrypted)
             .await;
         Ok(())
