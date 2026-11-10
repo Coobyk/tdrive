@@ -76,6 +76,11 @@ pub struct Root {
     grid: bool,
     channel_kind: String,
     mount_dir: Option<String>,
+    /// Entries selected for the current view — cached so the virtualized
+    /// list can index them without rebuilding per row.
+    entries_cache: Vec<Entry>,
+    grid_cols: usize,
+    list_scroll: UniformListScrollHandle,
 }
 
 impl Root {
@@ -127,6 +132,9 @@ impl Root {
             grid: false,
             channel_kind: String::new(),
             mount_dir: None,
+            entries_cache: Vec::new(),
+            grid_cols: 4,
+            list_scroll: UniformListScrollHandle::new(),
         };
 
         match AppConfig::load() {
@@ -821,82 +829,15 @@ impl Root {
         }
 
         // File rows — trash view, search results, or folder listing.
-        let search = self.f_search.read(cx).text().trim().to_lowercase();
-        let entries: Vec<Entry> = if self.trash {
-            self.namespace
-                .list_trash()
-                .into_iter()
-                .map(|t| {
-                    if t.is_folder {
-                        self.namespace
-                            .folders
-                            .get(&t.object_id)
-                            .map(|d| Entry::Folder(d.clone()))
-                            .unwrap_or(Entry::Folder(crate::project::FolderEntry {
-                                id: t.object_id,
-                                name: t.original_name,
-                                parent: t.original_parent,
-                                tombstoned: true,
-                                revision: t.original_revision,
-                            }))
-                    } else {
-                        self.namespace
-                            .files
-                            .get(&t.object_id)
-                            .map(|f| Entry::File(f.clone()))
-                            .unwrap_or(Entry::File(crate::project::FileEntry {
-                                id: t.object_id,
-                                msg_id: 0,
-                                name: t.original_name,
-                                size: 0,
-                                parent: t.original_parent,
-                                upload_time: t.deleted_at,
-                                tombstoned: true,
-                                encrypted: false,
-                                plaintext_size: 0,
-                                upload_uuid: String::new(),
-                                part_count: 0,
-                                content_msg_id: 0,
-                                revision: t.original_revision,
-                            }))
-                    }
-                })
-                .collect()
-        } else if !search.is_empty() {
-            let mut out: Vec<Entry> = self
-                .namespace
-                .folders
-                .values()
-                .filter(|d| !d.tombstoned && d.name.to_lowercase().contains(&search))
-                .cloned()
-                .map(Entry::Folder)
-                .collect();
-            let mut files: Vec<_> = self
-                .namespace
-                .files
-                .values()
-                .filter(|f| !f.tombstoned && f.name.to_lowercase().contains(&search))
-                .cloned()
-                .collect();
-            files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-            out.sort_by(|a, b| {
-                let an = match a {
-                    Entry::Folder(d) => &d.name,
-                    Entry::File(f) => &f.name,
-                };
-                let bn = match b {
-                    Entry::Folder(d) => &d.name,
-                    Entry::File(f) => &f.name,
-                };
-                an.to_lowercase().cmp(&bn.to_lowercase())
-            });
-            out.extend(files.into_iter().map(Entry::File));
-            out
-        } else {
-            self.namespace.list(&self.cwd)
-        };
-        let mut rows = div().id("rows").flex().flex_col().w_full();
-        if entries.is_empty() {
+        self.entries_cache = self.current_entries(cx);
+        let mut rows = div()
+            .id("rows")
+            .flex()
+            .flex_col()
+            .w_full()
+            .flex_1()
+            .overflow_hidden();
+        if self.entries_cache.is_empty() {
             rows = rows.child(
                 div()
                     .py_8()
@@ -905,23 +846,63 @@ impl Root {
                     .text_color(rgb(DIM))
                     .child(if self.trash {
                         "trash is empty"
-                    } else if !search.is_empty() {
+                    } else if !self.f_search.read(cx).text().trim().is_empty() {
                         "no matches"
                     } else {
                         "empty folder"
                     }),
             );
-        }
-        if self.grid && !self.trash {
-            let mut grid = div().flex().flex_wrap().gap_2().p_2();
-            for entry in &entries {
-                grid = grid.child(self.render_cell(entry, cx));
-            }
-            rows = rows.child(grid);
+        } else if self.grid && !self.trash {
+            // Grid rows are chunks of cells — virtualized the same way, so
+            // only visible cells exist (and only they request thumbnails).
+            self.grid_cols =
+                ((f32::from(window.viewport_size().width) / 110.) as usize).max(1);
+            let count = self.entries_cache.len().div_ceil(self.grid_cols);
+            rows = rows.child(
+                uniform_list(
+                    "grid-rows",
+                    count,
+                    cx.processor(|this, range: std::ops::Range<usize>, _w, cx| {
+                        let cols = this.grid_cols;
+                        let len = this.entries_cache.len();
+                        let cells: Vec<Entry> = range
+                            .flat_map(|row| row * cols..((row + 1) * cols).min(len))
+                            .filter_map(|i| this.entries_cache.get(i).cloned())
+                            .collect();
+                        cells
+                            .chunks(cols)
+                            .map(|chunk| {
+                                let mut r = div().flex().gap_2().p_1();
+                                for e in chunk {
+                                    r = r.child(this.render_cell(e, cx));
+                                }
+                                r.into_any_element()
+                            })
+                            .collect::<Vec<_>>()
+                    }),
+                )
+                .track_scroll(self.list_scroll.clone())
+                .h_full(),
+            );
         } else {
-            for entry in &entries {
-                rows = rows.child(self.render_row(entry, cx));
-            }
+            let count = self.entries_cache.len();
+            rows = rows.child(
+                uniform_list(
+                    "rows-list",
+                    count,
+                    cx.processor(|this, range: std::ops::Range<usize>, _w, cx| {
+                        let batch: Vec<Entry> = range
+                            .filter_map(|i| this.entries_cache.get(i).cloned())
+                            .collect();
+                        batch
+                            .iter()
+                            .map(|e| this.render_row(e, cx).into_any_element())
+                            .collect::<Vec<_>>()
+                    }),
+                )
+                .track_scroll(self.list_scroll.clone())
+                .h_full(),
+            );
         }
 
         // Selected actions
@@ -1149,6 +1130,13 @@ impl Root {
                             })
                             .unwrap_or(0);
                         this.selected = Some(ids[idx].clone());
+                        let row = if this.grid && !this.trash {
+                            idx / this.grid_cols.max(1)
+                        } else {
+                            idx
+                        };
+                        this.list_scroll
+                            .scroll_to_item(row, ScrollStrategy::Center);
                     }
                     "enter" => {
                         let Some(sel) = this.selected.clone() else { return };
@@ -1278,6 +1266,84 @@ impl Root {
                 Entry::File(f) => f.id.clone(),
             })
             .collect()
+    }
+
+    /// Entries for the current view (trash / search / folder listing).
+    fn current_entries(&self, cx: &App) -> Vec<Entry> {
+        let search = self.f_search.read(cx).text().trim().to_lowercase();
+        if self.trash {
+            self.namespace
+                .list_trash()
+                .into_iter()
+                .map(|t| {
+                    if t.is_folder {
+                        self.namespace
+                            .folders
+                            .get(&t.object_id)
+                            .map(|d| Entry::Folder(d.clone()))
+                            .unwrap_or(Entry::Folder(crate::project::FolderEntry {
+                                id: t.object_id,
+                                name: t.original_name,
+                                parent: t.original_parent,
+                                tombstoned: true,
+                                revision: t.original_revision,
+                            }))
+                    } else {
+                        self.namespace
+                            .files
+                            .get(&t.object_id)
+                            .map(|f| Entry::File(f.clone()))
+                            .unwrap_or(Entry::File(crate::project::FileEntry {
+                                id: t.object_id,
+                                msg_id: 0,
+                                name: t.original_name,
+                                size: 0,
+                                parent: t.original_parent,
+                                upload_time: t.deleted_at,
+                                tombstoned: true,
+                                encrypted: false,
+                                plaintext_size: 0,
+                                upload_uuid: String::new(),
+                                part_count: 0,
+                                content_msg_id: 0,
+                                revision: t.original_revision,
+                            }))
+                    }
+                })
+                .collect()
+        } else if !search.is_empty() {
+            let mut out: Vec<Entry> = self
+                .namespace
+                .folders
+                .values()
+                .filter(|d| !d.tombstoned && d.name.to_lowercase().contains(&search))
+                .cloned()
+                .map(Entry::Folder)
+                .collect();
+            let mut files: Vec<_> = self
+                .namespace
+                .files
+                .values()
+                .filter(|f| !f.tombstoned && f.name.to_lowercase().contains(&search))
+                .cloned()
+                .collect();
+            files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            out.sort_by(|a, b| {
+                let an = match a {
+                    Entry::Folder(d) => &d.name,
+                    Entry::File(f) => &f.name,
+                };
+                let bn = match b {
+                    Entry::Folder(d) => &d.name,
+                    Entry::File(f) => &f.name,
+                };
+                an.to_lowercase().cmp(&bn.to_lowercase())
+            });
+            out.extend(files.into_iter().map(Entry::File));
+            out
+        } else {
+            self.namespace.list(&self.cwd)
+        }
     }
 
     /// Gallery-style cell: thumbnail (fetched on demand) or type icon.
