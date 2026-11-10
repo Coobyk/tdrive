@@ -349,6 +349,22 @@ impl Root {
         .detach();
     }
 
+    fn pick_backup(&mut self, cx: &mut Context<Self>) {
+        let task = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some("Select photos to back up".into()),
+        });
+        let tx = self.tg.clone();
+        cx.spawn(async move |_, _| {
+            if let Ok(Ok(Some(paths))) = task.await {
+                let _ = tx.send(Command::BackupPhotos { paths });
+            }
+        })
+        .detach();
+    }
+
     fn pick_download_dest(&mut self, file_id: String, name: String, cx: &mut Context<Self>) {
         let dir = self
             .config
@@ -635,6 +651,7 @@ impl Root {
 
         // Toolbar
         let upload = cx.listener(|this, _: &MouseDownEvent, _, cx| this.pick_upload(cx));
+        let backup = cx.listener(|this, _: &MouseDownEvent, _, cx| this.pick_backup(cx));
         let refresh = cx.listener(|this, _: &MouseDownEvent, _, cx| {
             this.send(Command::Sync);
             this.status = "syncing…".into();
@@ -679,6 +696,7 @@ impl Root {
             .gap_2()
             .child(tool_button("↑ Upload", upload))
             .child(tool_button("+ Folder", new_folder))
+            .child(tool_button("📷 Backup", backup))
             .child(tool_button("⟳ Sync", refresh))
             .child(tool_button(
                 if self.trash { "Files" } else { "Trash" },
