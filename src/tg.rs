@@ -10,6 +10,7 @@ use crate::project::Namespace;
 use crate::stream;
 use crate::wire::{self, Op, OpType, OpTypeOrUnknown};
 use std::collections::HashMap;
+use futures_util::FutureExt;
 use tokio_util::sync::CancellationToken;
 use anyhow::{Context, Result, anyhow};
 use grammers_client::client::{LoginToken, PasswordToken};
@@ -27,7 +28,7 @@ use tokio::sync::mpsc;
 pub const MAX_PART_BYTES: i64 = 1900 * 1024 * 1024;
 pub const LARGE_FILE_MAX_BYTES: i64 = 40 * 1024 * 1024 * 1024;
 pub const MAX_PARTS: usize = 32;
-const DOWNLOAD_CHUNK: i32 = 1024 * 1024;
+const DOWNLOAD_CHUNK: i32 = 512 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct ChannelInfo {
@@ -203,7 +204,8 @@ pub fn spawn() -> Handle {
                 cancels: HashMap::new(),
                 last_live_sync: std::time::Instant::now()
                     - std::time::Duration::from_secs(10),
-                journal_path: config::journal_path().expect("journal path"),
+                journal_path: config::journal_path()
+                    .unwrap_or_else(|_| std::env::temp_dir().join("tdrive-rs-journal.json")),
                 journal: Journal::default(),
                 rx: cmd_rx,
                 tx: ev_tx,
@@ -268,11 +270,21 @@ impl Worker {
 
     async fn run(&mut self) {
         while let Some(cmd) = self.rx.recv().await {
-            if let Err(e) = self.handle(cmd).await {
-                self.emit(Event::Error {
+            // Panics inside grammers (min entities, malformed TL) must not
+            // unwind through the loop — a dead worker leaves the UI dumb.
+            let res = std::panic::AssertUnwindSafe(self.handle(cmd))
+                .catch_unwind()
+                .await;
+            match res {
+                Ok(Err(e)) => self.emit(Event::Error {
                     context: "telegram",
                     message: format!("{e:#}"),
-                });
+                }),
+                Err(panic) => self.emit(Event::Error {
+                    context: "panic",
+                    message: format!("{panic:?}"),
+                }),
+                Ok(Ok(())) => {}
             }
         }
     }
@@ -453,21 +465,34 @@ impl Worker {
         let mut dialogs = client.iter_dialogs();
         let mut out = Vec::new();
         while let Some(dialog) = dialogs.next().await? {
-            if let Peer::Channel(ch) = dialog.peer() {
-                let kind = match ch.kind() {
-                    Some(ChannelKind::Broadcast) => "broadcast",
-                    Some(ChannelKind::Megagroup) => "group",
-                    Some(ChannelKind::Gigagroup) => "gigagroup",
-                    _ => continue,
-                };
-                let peer_ref = dialog.peer_ref();
-                out.push(ChannelInfo {
-                    id: peer_ref.id.bare_id_unchecked(),
-                    access_hash: peer_ref.auth.hash(),
-                    title: ch.title().to_string(),
-                    kind,
-                });
-            }
+            // Min/incomplete entities yield None from to_ref — never call
+            // Dialog::peer_ref (it unwraps and kills the worker thread).
+            let (kind, title) = match dialog.peer() {
+                Peer::Channel(ch) => {
+                    if ch.raw.left {
+                        continue;
+                    }
+                    match ch.kind() {
+                        Some(ChannelKind::Broadcast) => {
+                            ("broadcast", ch.title().to_string())
+                        }
+                        _ => continue,
+                    }
+                }
+                Peer::Group(g) if g.is_megagroup() => {
+                    ("megagroup", g.title().unwrap_or_default().to_string())
+                }
+                _ => continue,
+            };
+            let Ok(Some(peer_ref)) = dialog.peer().to_ref().await else {
+                continue;
+            };
+            out.push(ChannelInfo {
+                id: peer_ref.id.bare_id_unchecked(),
+                access_hash: peer_ref.auth.hash(),
+                title,
+                kind,
+            });
         }
         out.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
         self.emit(Event::Channels(out));
@@ -1169,7 +1194,7 @@ impl Worker {
         } else {
             return;
         };
-        for (kind, edge) in [("thumb", 512u32), ("preview", 1600u32)] {
+        for (kind, edge) in [("thumbnail", 512u32), ("preview", 1600u32)] {
             if let Err(e) = self
                 .publish_rendition(
                     source,
@@ -1766,7 +1791,7 @@ impl Worker {
             .namespace
             .renditions
             .get(file_id)
-            .and_then(|m| m.get("thumb"))
+            .and_then(|m| m.get("thumbnail"))
             .cloned()
         else {
             return Ok(());
