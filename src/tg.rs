@@ -570,7 +570,21 @@ impl Worker {
     async fn connect(&mut self, api_id: i32, api_hash: String) -> Result<()> {
         let session_path = config::session_path()?;
         let session = SqliteSession::open(session_path).await?;
-        let pool = SenderPool::new(Arc::new(session), api_id);
+        let pool = SenderPool::with_configuration(
+            Arc::new(session),
+            api_id,
+            grammers_client::sender::ConnectionParams {
+                // Default is 1 retry with a 60s cap — batch uploads hit
+                // escalating FLOOD_WAITs far past that. Absorb them: up
+                // to 8 retries, sleeping through waits up to 10 minutes.
+                retry_policy: Box::new(grammers_client::sender::AutoSleep {
+                    tries: std::num::NonZeroU32::new(8).unwrap(),
+                    threshold: std::time::Duration::from_secs(600),
+                    io_errors_as_flood_of: Some(std::time::Duration::from_secs(1)),
+                }),
+                ..Default::default()
+            },
+        );
         let client = Client::new(pool.handle.clone());
         let mut updates = pool.updates;
         tokio::spawn(pool.runner.run());
