@@ -78,6 +78,12 @@ pub struct Journal {
     /// channel_id → highest synced message id (incremental sync watermark).
     #[serde(default)]
     pub watermarks: BTreeMap<i64, i64>,
+    /// Photo-backup ledger: paths already uploaded by the watcher.
+    #[serde(default)]
+    pub backup_seen: std::collections::HashSet<String>,
+    /// Watched backup directory, if any.
+    #[serde(default)]
+    pub backup_dir: Option<PathBuf>,
 }
 
 impl Journal {

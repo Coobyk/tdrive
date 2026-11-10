@@ -37,6 +37,7 @@ enum Modal {
     Unlock { hint: String },
     Encrypt,
     Adopt,
+    WatchBackup,
 }
 
 pub struct Root {
@@ -659,6 +660,10 @@ impl Root {
         // Toolbar
         let upload = cx.listener(|this, _: &MouseDownEvent, _, cx| this.pick_upload(cx));
         let backup = cx.listener(|this, _: &MouseDownEvent, _, cx| this.pick_backup(cx));
+        let watch = cx.listener(|this, _: &MouseDownEvent, _, cx| {
+            this.modal = Some(Modal::WatchBackup);
+            cx.notify();
+        });
         let refresh = cx.listener(|this, _: &MouseDownEvent, _, cx| {
             this.send(Command::Sync);
             this.status = "syncing…".into();
@@ -704,6 +709,7 @@ impl Root {
             .child(tool_button("↑ Upload", upload))
             .child(tool_button("+ Folder", new_folder))
             .child(tool_button("📷 Backup", backup))
+            .child(tool_button("👁 Watch", watch))
             .child(tool_button("⟳ Sync", refresh))
             .child(tool_button(
                 if self.trash { "Files" } else { "Trash" },
@@ -1503,6 +1509,31 @@ impl Root {
                     })
                     .into_any_element(),
             ),
+            Modal::WatchBackup => {
+                (
+                    "Watch backup folder".into(),
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_3()
+                        .child(div().text_sm().text_color(rgb(DIM)).child(
+                            "New images in this folder are uploaded to Photos periodically.",
+                        ))
+                        .child(self.f_name.clone())
+                        .child({
+                            let ok = cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                                let dir = std::path::PathBuf::from(
+                                    this.f_name.read(cx).text().trim().to_string(),
+                                );
+                                this.send(Command::WatchBackup { dir });
+                                this.modal = None;
+                                cx.notify();
+                            });
+                            button("Watch", ACCENT, ok)
+                        })
+                        .into_any_element(),
+                )
+            }
             Modal::Adopt => {
                 let mut list = div().flex().flex_col().gap_1();
                 for (id, name, size, _, _) in self.namespace.unadopted.iter() {

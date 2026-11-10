@@ -78,6 +78,9 @@ pub enum Command {
     Pause { id: String },
     Resume { id: String },
     BackupPhotos { paths: Vec<PathBuf> },
+    /// Continuous photo backup — watch a folder for new images.
+    WatchBackup { dir: PathBuf },
+    BackupTick,
     LiveSync,
     SignOut,
 }
@@ -157,6 +160,20 @@ pub fn spawn() -> Handle {
             .build()
             .expect("tokio runtime");
         rt.block_on(async move {
+            // Periodic backup watcher — the poll loop TDrive runs for its
+            // photo-backup lifecycle.
+            {
+                let tx = cmd_tx_worker.clone();
+                tokio::spawn(async move {
+                    let mut iv = tokio::time::interval(std::time::Duration::from_secs(60));
+                    loop {
+                        iv.tick().await;
+                        if tx.send(Command::BackupTick).is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
             let mut worker = Worker {
                 cmd_tx: cmd_tx_worker,
                 client: None,
@@ -291,6 +308,15 @@ impl Worker {
             Command::Pause { id } => self.pause(&id).await,
             Command::Resume { id } => self.resume(&id).await,
             Command::BackupPhotos { paths } => self.backup_photos(paths).await,
+            Command::WatchBackup { dir } => {
+                self.journal.backup_dir = Some(dir.clone());
+                self.save_journal();
+                self.backup_photos(std::fs::read_dir(dir)
+                    .map(|rd| rd.flatten().map(|e| e.path()).collect())
+                    .unwrap_or_default())
+                .await
+            }
+            Command::BackupTick => self.backup_tick().await,
             Command::LiveSync => self.live_sync().await,
             Command::SignOut => self.sign_out().await,
         }
@@ -1841,14 +1867,33 @@ impl Worker {
             }
         };
         for path in images {
+            let key = path.to_string_lossy().to_string();
+            if self.journal.backup_seen.contains(&key) {
+                continue;
+            }
             if let Err(e) = self.upload(path.clone(), folder_id.clone()).await {
                 self.emit(Event::Error {
                     context: "photo backup",
                     message: format!("{}: {e:#}", path.display()),
                 });
+            } else {
+                self.journal.backup_seen.insert(key);
+                self.save_journal();
             }
         }
         Ok(())
+    }
+
+    /// Poll the watched backup folder for new images (ledger-driven, like
+    /// TDrive's backup lifecycle — uploaded paths are never re-sent).
+    async fn backup_tick(&mut self) -> Result<()> {
+        let Some(dir) = self.journal.backup_dir.clone() else {
+            return Ok(());
+        };
+        let paths: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .map(|rd| rd.flatten().map(|e| e.path()).collect())
+            .unwrap_or_default();
+        self.backup_photos(paths).await
     }
 
     /// Apply a WebDAV write through the durable mount-write ops TDrive's
