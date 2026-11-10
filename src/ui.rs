@@ -41,6 +41,8 @@ enum Modal {
     Mount,
     /// Folders picked for upload — choose structure vs archive.
     UploadDirs { dirs: Vec<PathBuf> },
+    /// Max concurrent uploads.
+    UploadLimit,
 }
 
 pub struct Root {
@@ -346,6 +348,7 @@ impl Root {
             api_hash: api_hash.clone(),
             last_channel_id: None,
             download_dir: None,
+            upload_limit: 3,
         };
         if let Err(e) = cfg.save() {
             self.status = format!("cannot save config: {e}");
@@ -533,6 +536,12 @@ impl Root {
                     self.f_name.read(cx).text().trim().to_string(),
                 );
                 self.send(Command::Mount { dir });
+                self.modal = None;
+            }
+            Some(Modal::UploadLimit) => {
+                if let Ok(n) = self.f_name.read(cx).text().trim().parse::<usize>() {
+                    self.send(Command::SetUploadLimit { n });
+                }
                 self.modal = None;
             }
             Some(Modal::UploadDirs { dirs }) => {
@@ -800,6 +809,10 @@ impl Root {
             }
             cx.notify();
         });
+        let uplim = cx.listener(|this, _: &MouseDownEvent, _, cx| {
+            this.modal = Some(Modal::UploadLimit);
+            cx.notify();
+        });
         let refresh = cx.listener(|this, _: &MouseDownEvent, _, cx| {
             this.send(Command::Sync);
             this.status = "syncing…".into();
@@ -851,6 +864,7 @@ impl Root {
                 mount,
             ))
             .child(tool_button("⟳ Sync", refresh))
+            .child(tool_button("⇅ Limit", uplim))
             .child(tool_button(
                 if self.trash { "Files" } else { "Trash" },
                 trash_toggle,
@@ -1882,6 +1896,33 @@ impl Root {
                         .into_any_element(),
                 )
             }
+            Modal::UploadLimit => (
+                "Upload limit".into(),
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(rgb(DIM))
+                            .child("Max parallel uploads (1–16, default 3)"),
+                    )
+                    .child(self.f_name.clone())
+                    .child({
+                        let ok = cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                            if let Ok(n) =
+                                this.f_name.read(cx).text().trim().parse::<usize>()
+                            {
+                                this.send(Command::SetUploadLimit { n });
+                            }
+                            this.modal = None;
+                            cx.notify();
+                        });
+                        button("Set", ACCENT, ok)
+                    })
+                    .into_any_element(),
+            ),
             Modal::Delete { obj, name } => {
                 let obj = obj.clone();
                 (

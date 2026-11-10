@@ -60,6 +60,7 @@ pub enum Command {
     UploadDir { dir: PathBuf, parent: String },
     /// 7z-archive a local folder, then upload the archive.
     UploadArchive { dir: PathBuf, parent: String },
+    SetUploadLimit { n: usize },
     ResumeUploads,
     Download { file_id: String, dest: PathBuf },
     Mkdir { parent: String, name: String },
@@ -218,6 +219,14 @@ pub fn spawn() -> Handle {
                 ns_shared: Arc::new(Mutex::new(Arc::new(Namespace::new()))),
                 fuse_session: None,
                 thumb_sem: Arc::new(tokio::sync::Semaphore::new(8)),
+                upload_sem: Arc::new(tokio::sync::Semaphore::new(
+                    config::AppConfig::load()
+                        .ok()
+                        .flatten()
+                        .map(|c| c.upload_limit)
+                        .unwrap_or(3)
+                        .max(1),
+                )),
                 cancels: HashMap::new(),
                 last_live_sync: std::time::Instant::now()
                     - std::time::Duration::from_secs(10),
@@ -250,6 +259,7 @@ struct TransferCtx {
     tx: async_channel::Sender<Event>,
     cmd: mpsc::UnboundedSender<Command>,
     token: CancellationToken,
+    upload_sem: Arc<tokio::sync::Semaphore>,
 }
 
 impl TransferCtx {
@@ -308,6 +318,7 @@ struct Worker {
     /// Bounds concurrent thumbnail fetches — they spawn as tasks so the
     /// command loop stays free instead of serializing RTTs.
     thumb_sem: Arc<tokio::sync::Semaphore>,
+    upload_sem: Arc<tokio::sync::Semaphore>,
     cancels: HashMap<String, CancellationToken>,
     last_live_sync: std::time::Instant,
     journal: Journal,
@@ -374,6 +385,15 @@ impl Worker {
             Command::UploadDir { dir, parent } => self.upload_dir(dir, parent).await,
             Command::UploadArchive { dir, parent } => {
                 self.upload_archive(dir, parent).await
+            }
+            Command::SetUploadLimit { n } => {
+                let n = n.clamp(1, 16);
+                self.upload_sem = Arc::new(tokio::sync::Semaphore::new(n));
+                if let Ok(Some(mut cfg)) = config::AppConfig::load() {
+                    cfg.upload_limit = n;
+                    let _ = cfg.save();
+                }
+                Ok(())
             }
             Command::ResumeUploads => self.resume_uploads().await,
             Command::Download { file_id, dest } => self.download(file_id, dest).await,
@@ -513,6 +533,7 @@ impl Worker {
             tx: self.tx.clone(),
             cmd: self.cmd_tx.clone(),
             token,
+            upload_sem: self.upload_sem.clone(),
         })
     }
 
@@ -1200,7 +1221,22 @@ impl Worker {
         if !dir.is_dir() {
             return Err(anyhow!("not a directory"));
         }
-        let mut queue = vec![(dir, parent)];
+        // Create the folder itself first — contents land inside it, not
+        // scattered into the current directory.
+        let root_obj = wire::new_folder_id();
+        let name = dir
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "folder".into());
+        self.send_and_project(&Op {
+            op_type: OpTypeOrUnknown::Known(OpType::Mkdir),
+            obj: root_obj.clone(),
+            parent,
+            name,
+            ..Default::default()
+        })
+        .await?;
+        let mut queue = vec![(dir, root_obj)];
         let mut files = 0usize;
         while let Some((d, pid)) = queue.pop() {
             let mut entries: Vec<_> = std::fs::read_dir(&d)?
@@ -1267,6 +1303,7 @@ impl Worker {
         plaintext_size: i64,
     ) -> Result<()> {
         let id = format!("up:{}", name);
+        let _permit = ctx.upload_sem.acquire().await;
         ctx.update(&id, &name, 0, size, TransferState::Active);
         // Encrypt to staged ciphertext first when the vault is unlocked.
         let stored = if encrypted {
@@ -1364,6 +1401,7 @@ impl Worker {
     /// loop stays responsive; journal/namespace writes flow back via
     /// Commands on `ctx.cmd`.
     async fn run_upload_task(ctx: &TransferCtx, mut job: UploadJob) -> Result<()> {
+        let _permit = ctx.upload_sem.acquire().await;
         // Encrypt to staged ciphertext when the vault is unlocked — done
         // inside the task so even a multi-GB encrypt never blocks the loop.
         if job.encrypted
