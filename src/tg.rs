@@ -145,6 +145,8 @@ pub enum DavOp {
         name: String,
         bytes: Vec<u8>,
     },
+    /// Overwrite an existing file's content — single-body freplace.
+    Replace { obj: String, bytes: Vec<u8> },
 }
 
 pub struct Handle {
@@ -1926,8 +1928,8 @@ impl Worker {
         self.backup_photos(paths).await
     }
 
-    /// Mount the drive read-only at `dir` via FUSE — TDrive's mount surface
-    /// for Linux file managers.
+    /// Mount the drive read-write at `dir` via FUSE — TDrive's mount surface
+    /// for Linux file managers. Writes emit durable mount-write ops.
     async fn mount_drive(&mut self, dir: PathBuf) -> Result<()> {
         let fs = fusefs::TdFs::new(
             self.ns_shared.clone(),
@@ -1935,6 +1937,7 @@ impl Worker {
             self.channel()?,
             self.master_key.clone(),
             tokio::runtime::Handle::current(),
+            self.cmd_tx.clone(),
         );
         let session = fusefs::mount(fs, &dir)?;
         self.fuse_session = Some(session);
@@ -2061,6 +2064,55 @@ impl Worker {
                     encrypted,
                     plaintext_size: if encrypted { pt_len } else { 0 },
                     content_msg_id: msg.id() as i64,
+                    ..Default::default()
+                };
+                self.send_and_project(&op).await
+            }
+            DavOp::Replace { obj, bytes } => {
+                // freplace rebinds an existing file to fresh content —
+                // TDrive's mount overwrite path.
+                let Some((_f, rev, tomb, _n, _p)) = self.namespace.dirent_info(&obj)
+                else {
+                    return Err(anyhow!("no such object"));
+                };
+                if tomb {
+                    return Err(anyhow!("deleted"));
+                }
+                let pt_len = bytes.len() as i64;
+                let encrypted = self.master_key.lock().unwrap().is_some();
+                let (body, stored) = if encrypted {
+                    let key = (*self.master_key.lock().unwrap()).unwrap();
+                    let ct = tokio::task::spawn_blocking(move || {
+                        crypto::encrypt_bytes(&key, &bytes)
+                    })
+                    .await??;
+                    let len = ct.len() as i64;
+                    (ct, len)
+                } else {
+                    (bytes, pt_len)
+                };
+                let mut reader = std::io::Cursor::new(&body);
+                let uploaded = self
+                    .client()?
+                    .upload_stream(&mut reader, body.len(), String::new())
+                    .await?;
+                let msg = self
+                    .client()?
+                    .send_message(
+                        self.channel()?,
+                        InputMessage::new().document(uploaded),
+                    )
+                    .await?;
+                let op = Op {
+                    op_type: OpTypeOrUnknown::Known(OpType::FileReplace),
+                    op_id: format!("freplace-{}", uuid::Uuid::new_v4()),
+                    obj,
+                    file_size: stored,
+                    file_upload_time: unix_now(),
+                    encrypted,
+                    plaintext_size: if encrypted { pt_len } else { 0 },
+                    content_msg_id: msg.id() as i64,
+                    expected_revision: rev,
                     ..Default::default()
                 };
                 self.send_and_project(&op).await

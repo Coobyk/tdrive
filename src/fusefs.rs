@@ -1,14 +1,18 @@
-//! Read-only FUSE mount — TDrive mounts drives into the OS filesystem; this
+//! Writable FUSE mount — TDrive mounts drives into the OS filesystem; this
 //! implements the same surface for Linux via `fuser`. Directories come from
 //! the live namespace snapshot, file bytes stream through the shared
-//! TDE1-aware range reader in `stream.rs`.
+//! TDE1-aware range reader in `stream.rs`, and writes go through the
+//! durable mount-write ops (`fcommit`/`freplace`/`dcommit`/`relocate`/
+//! `harddel`) so other TDrive clients see identical metadata.
 
 use crate::project::{Entry, FileEntry, Namespace};
 use crate::stream;
+use crate::tg::{Command, DavOp};
 use anyhow::Result;
 use fuser::{
     Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo,
-    OpenFlags, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, ReplyOpen, Request,
+    OpenFlags, ReplyAttr, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen,
+    ReplyWrite, Request,
 };
 use grammers_client::session::types::PeerRef;
 use grammers_client::Client;
@@ -28,8 +32,25 @@ pub struct TdFs {
     master: Arc<Mutex<Option<[u8; crate::crypto::MASTER_KEY_LEN]>>>,
     rt: tokio::runtime::Handle,
     inos: Mutex<InoMap>,
+    /// Write ops route through the worker's durable mount-write commands.
+    cmd: tokio::sync::mpsc::UnboundedSender<Command>,
+    /// Buffered writes: fh → (parent dir id, name, bytes so far).
+    write_bufs: Mutex<HashMap<u64, PendingWrite>>,
+    next_fh: Mutex<u64>,
     uid: u32,
     gid: u32,
+}
+
+struct PendingWrite {
+    parent: String,
+    name: String,
+    data: Vec<u8>,
+    /// `Some` when overwriting an existing file (freplace path); `None`
+    /// for newly created files (fcommit path).
+    obj: Option<String>,
+    /// Set once the write has been committed — prevents double-commit on
+    /// flush-then-release.
+    committed: bool,
 }
 
 #[derive(Default)]
@@ -62,6 +83,7 @@ impl TdFs {
         peer: PeerRef,
         master: Arc<Mutex<Option<[u8; crate::crypto::MASTER_KEY_LEN]>>>,
         rt: tokio::runtime::Handle,
+        cmd: tokio::sync::mpsc::UnboundedSender<Command>,
     ) -> Self {
         let uid = unsafe { libc::getuid() };
         let gid = unsafe { libc::getgid() };
@@ -71,10 +93,59 @@ impl TdFs {
             peer,
             master,
             rt,
+            cmd,
+            write_bufs: Mutex::new(HashMap::new()),
+            next_fh: Mutex::new(1),
             inos: Mutex::new(InoMap::default()),
             uid,
             gid,
         }
+    }
+
+    /// Run a durable write op through the worker and wait for the result.
+    fn write_op(&self, op: DavOp) -> Result<(), Errno> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.cmd
+            .send(Command::DavWrite { op, reply: tx })
+            .map_err(|_| Errno::EIO)?;
+        self.rt
+            .block_on(rx)
+            .map_err(|_| Errno::EIO)?
+            .map_err(|_| Errno::EIO)
+    }
+
+    /// Commit a pending write buffer through fcommit/freplace.
+    fn commit_pending(&self, fh: u64) -> Result<(), Errno> {
+        let p = match self.write_bufs.lock().unwrap().get_mut(&fh) {
+            Some(p) if !p.committed => {
+                p.committed = true;
+                PendingWrite {
+                    parent: p.parent.clone(),
+                    name: p.name.clone(),
+                    data: std::mem::take(&mut p.data),
+                    obj: p.obj.clone(),
+                    committed: true,
+                }
+            }
+            _ => return Ok(()),
+        };
+        self.write_op(match p.obj {
+            Some(obj) => DavOp::Replace {
+                obj,
+                bytes: p.data,
+            },
+            None => DavOp::Put {
+                parent: p.parent,
+                name: p.name,
+                bytes: p.data,
+            },
+        })
+    }
+
+    fn take_fh(&self) -> u64 {
+        let mut g = self.next_fh.lock().unwrap();
+        *g += 1;
+        *g
     }
 
     fn snapshot(&self) -> Arc<Namespace> {
@@ -157,6 +228,30 @@ impl TdFs {
     }
 }
 
+impl TdFs {
+    fn remove_entry(&self, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
+        let Some(dir) = self.dir_id(parent.0) else {
+            reply.error(Errno::ENOENT);
+            return;
+        };
+        let Some((ino, _)) = self.resolve_name(&dir, name) else {
+            reply.error(Errno::ENOENT);
+            return;
+        };
+        let obj = self
+            .inos
+            .lock()
+            .unwrap()
+            .obj(ino)
+            .unwrap_or_default()
+            .to_string();
+        match self.write_op(DavOp::Delete { obj }) {
+            Ok(()) => reply.ok(),
+            Err(e) => reply.error(e),
+        }
+    }
+}
+
 impl Filesystem for TdFs {
     fn lookup(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
         let Some(dir) = self.dir_id(parent.0) else {
@@ -191,8 +286,277 @@ impl Filesystem for TdFs {
         }
     }
 
-    fn open(&self, _req: &Request, _ino: INodeNo, _flags: OpenFlags, reply: ReplyOpen) {
-        reply.opened(FileHandle(0), FopenFlags::empty());
+    fn open(&self, _req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
+        match flags.acc_mode() {
+            fuser::OpenAccMode::O_WRONLY | fuser::OpenAccMode::O_RDWR => {
+                let Some(f) = self.file_for_ino(ino.0) else {
+                    reply.error(Errno::ENOENT);
+                    return;
+                };
+                let fh = self.take_fh();
+                self.write_bufs.lock().unwrap().insert(
+                    fh,
+                    PendingWrite {
+                        parent: f.parent.clone(),
+                        name: f.name.clone(),
+                        data: Vec::new(),
+                        obj: Some(f.id.clone()),
+                        committed: false,
+                    },
+                );
+                reply.opened(FileHandle(fh), FopenFlags::empty());
+            }
+            _ => reply.opened(FileHandle(0), FopenFlags::empty()),
+        }
+    }
+
+    fn create(
+        &self,
+        _req: &Request,
+        parent: INodeNo,
+        name: &OsStr,
+        _mode: u32,
+        _umask: u32,
+        _flags: i32,
+        reply: fuser::ReplyCreate,
+    ) {
+        let Some(dir) = self.dir_id(parent.0) else {
+            reply.error(Errno::ENOENT);
+            return;
+        };
+        let Some(name) = name.to_str().map(str::to_string) else {
+            reply.error(Errno::EINVAL);
+            return;
+        };
+        if self.resolve_name(&dir, OsStr::new(&name)).is_some() {
+            reply.error(Errno::EEXIST);
+            return;
+        }
+        let fh = self.take_fh();
+        self.write_bufs.lock().unwrap().insert(
+            fh,
+            PendingWrite {
+                parent: dir,
+                name,
+                data: Vec::new(),
+                obj: None,
+                committed: false,
+            },
+        );
+        // Synthetic attr — the real entry appears once the buffer commits.
+        let attr = FileAttr {
+            ino: INodeNo(1 << 60 | fh),
+            size: 0,
+            blocks: 0,
+            atime: SystemTime::now(),
+            mtime: SystemTime::now(),
+            ctime: SystemTime::now(),
+            crtime: SystemTime::now(),
+            kind: FileType::RegularFile,
+            perm: 0o644,
+            nlink: 1,
+            uid: self.uid,
+            gid: self.gid,
+            rdev: 0,
+            blksize: 4096,
+            flags: 0,
+        };
+        reply.created(&TTL, &attr, Generation(0), FileHandle(fh), FopenFlags::empty());
+    }
+
+    fn write(
+        &self,
+        _req: &Request,
+        _ino: INodeNo,
+        fh: FileHandle,
+        offset: u64,
+        data: &[u8],
+        _write_flags: fuser::WriteFlags,
+        _flags: OpenFlags,
+        _lock_owner: Option<fuser::LockOwner>,
+        reply: ReplyWrite,
+    ) {
+        let mut bufs = self.write_bufs.lock().unwrap();
+        let Some(p) = bufs.get_mut(&fh.0) else {
+            reply.error(Errno::EBADF);
+            return;
+        };
+        let off = offset as usize;
+        let end = off + data.len();
+        if end > p.data.len() {
+            p.data.resize(end, 0);
+        }
+        p.data[off..end].copy_from_slice(data);
+        reply.written(data.len() as u32);
+    }
+
+    fn flush(
+        &self,
+        _req: &Request,
+        _ino: INodeNo,
+        fh: FileHandle,
+        _lock_owner: fuser::LockOwner,
+        reply: ReplyEmpty,
+    ) {
+        match self.commit_pending(fh.0) {
+            Ok(()) => reply.ok(),
+            Err(e) => reply.error(e),
+        }
+    }
+
+    fn fsync(
+        &self,
+        _req: &Request,
+        _ino: INodeNo,
+        fh: FileHandle,
+        _datasync: bool,
+        reply: ReplyEmpty,
+    ) {
+        match self.commit_pending(fh.0) {
+            Ok(()) => reply.ok(),
+            Err(e) => reply.error(e),
+        }
+    }
+
+    fn mkdir(
+        &self,
+        _req: &Request,
+        parent: INodeNo,
+        name: &OsStr,
+        _mode: u32,
+        _umask: u32,
+        reply: ReplyEntry,
+    ) {
+        let Some(dir) = self.dir_id(parent.0) else {
+            reply.error(Errno::ENOENT);
+            return;
+        };
+        let Some(name) = name.to_str().map(str::to_string) else {
+            reply.error(Errno::EINVAL);
+            return;
+        };
+        match self.write_op(DavOp::Mkdir {
+            parent: dir.clone(),
+            name: name.clone(),
+        }) {
+            Ok(()) => {
+                let ns = self.snapshot();
+                if let Some(d) = ns
+                    .folders
+                    .values()
+                    .find(|d| !d.tombstoned && d.parent == dir && d.name == name)
+                {
+                    let ino = self.inos.lock().unwrap().ino(&d.id);
+                    reply.entry(&TTL, &self.dir_attr(ino, 0), Generation(0));
+                } else {
+                    reply.error(Errno::EIO);
+                }
+            }
+            Err(e) => reply.error(e),
+        }
+    }
+
+    fn unlink(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
+        self.remove_entry(parent, name, reply);
+    }
+
+    fn rmdir(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
+        self.remove_entry(parent, name, reply);
+    }
+
+    fn rename(
+        &self,
+        _req: &Request,
+        parent: INodeNo,
+        name: &OsStr,
+        newparent: INodeNo,
+        newname: &OsStr,
+        _flags: fuser::RenameFlags,
+        reply: ReplyEmpty,
+    ) {
+        let Some(dir) = self.dir_id(parent.0) else {
+            reply.error(Errno::ENOENT);
+            return;
+        };
+        let Some(dst) = self.dir_id(newparent.0) else {
+            reply.error(Errno::ENOENT);
+            return;
+        };
+        let Some((ino, _)) = self.resolve_name(&dir, name) else {
+            reply.error(Errno::ENOENT);
+            return;
+        };
+        let obj = self
+            .inos
+            .lock()
+            .unwrap()
+            .obj(ino)
+            .unwrap_or_default()
+            .to_string();
+        let name = newname.to_str().unwrap_or_default().to_string();
+        match self.write_op(DavOp::Move {
+            obj,
+            dst_parent: dst,
+            name,
+        }) {
+            Ok(()) => reply.ok(),
+            Err(e) => reply.error(e),
+        }
+    }
+
+    fn setattr(
+        &self,
+        _req: &Request,
+        ino: INodeNo,
+        _mode: Option<u32>,
+        _uid: Option<u32>,
+        _gid: Option<u32>,
+        size: Option<u64>,
+        _atime: Option<fuser::TimeOrNow>,
+        _mtime: Option<fuser::TimeOrNow>,
+        _ctime: Option<SystemTime>,
+        fh: Option<FileHandle>,
+        _crtime: Option<SystemTime>,
+        _chgtime: Option<SystemTime>,
+        _bkuptime: Option<SystemTime>,
+        _flags: Option<fuser::BsdFileFlags>,
+        reply: ReplyAttr,
+    ) {
+        // Truncate-on-write: clearing a pending buffer, or starting a
+        // replace-write on an existing file.
+        if let Some(sz) = size {
+            if let Some(h) = fh {
+                if let Some(p) = self.write_bufs.lock().unwrap().get_mut(&h.0) {
+                    p.data.resize(sz as usize, 0);
+                    reply.attr(&TTL, &FileAttr {
+                        ino,
+                        size: sz,
+                        blocks: 0,
+                        atime: SystemTime::now(),
+                        mtime: SystemTime::now(),
+                        ctime: SystemTime::now(),
+                        crtime: SystemTime::now(),
+                        kind: FileType::RegularFile,
+                        perm: 0o644,
+                        nlink: 1,
+                        uid: self.uid,
+                        gid: self.gid,
+                        rdev: 0,
+                        blksize: 4096,
+                        flags: 0,
+                    });
+                    return;
+                }
+            }
+        }
+        // Metadata-only setattr — report current attrs (content is durable).
+        if ino.0 == ROOT_INO {
+            reply.attr(&TTL, &self.dir_attr(ROOT_INO, 0));
+        } else if let Some(f) = self.file_for_ino(ino.0) {
+            reply.attr(&TTL, &self.file_attr(ino.0, &f));
+        } else {
+            reply.error(Errno::ENOENT);
+        }
     }
 
     fn opendir(&self, _req: &Request, _ino: INodeNo, _flags: OpenFlags, reply: ReplyOpen) {
@@ -285,12 +649,17 @@ impl Filesystem for TdFs {
         &self,
         _req: &Request,
         _ino: INodeNo,
-        _fh: FileHandle,
+        fh: FileHandle,
         _flags: OpenFlags,
         _lock_owner: Option<fuser::LockOwner>,
         _flush: bool,
         reply: fuser::ReplyEmpty,
     ) {
+        if let Err(e) = self.commit_pending(fh.0) {
+            reply.error(e);
+            return;
+        }
+        self.write_bufs.lock().unwrap().remove(&fh.0);
         reply.ok();
     }
 
