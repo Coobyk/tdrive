@@ -72,6 +72,7 @@ pub struct Root {
     thumbnails: std::collections::HashMap<String, std::path::PathBuf>,
     thumb_requested: std::collections::HashSet<String>,
     grid: bool,
+    channel_kind: String,
 }
 
 impl Root {
@@ -121,6 +122,7 @@ impl Root {
             thumbnails: Default::default(),
             thumb_requested: Default::default(),
             grid: false,
+            channel_kind: String::new(),
         };
 
         match AppConfig::load() {
@@ -199,6 +201,7 @@ impl Root {
                 pending_uploads,
             } => {
                 self.channel = Some(info.clone());
+                self.channel_kind = info.kind.to_string();
                 self.pending_uploads = pending_uploads;
                 self.screen = Screen::Drive;
                 self.cwd = String::new();
@@ -261,6 +264,7 @@ impl Root {
             id: info.id,
             access_hash: info.access_hash,
             title: info.title,
+            kind: info.kind.to_string(),
         });
     }
 
@@ -709,16 +713,18 @@ impl Root {
             });
             toolbar = toolbar.child(tool_button_danger("Empty trash", et));
         }
-        let lock_label = if self.vault_configured {
-            if self.vault_unlocked {
-                "🔓 Unlocked"
+        if self.channel_kind == "broadcast" {
+            let lock_label = if self.vault_configured {
+                if self.vault_unlocked {
+                    "🔓 Unlocked"
+                } else {
+                    "🔒 Unlock"
+                }
             } else {
-                "🔒 Unlock"
-            }
-        } else {
-            "🔒 Encrypt"
-        };
-        toolbar = toolbar.child(tool_button(lock_label, lock_btn));
+                "🔒 Encrypt"
+            };
+            toolbar = toolbar.child(tool_button(lock_label, lock_btn));
+        }
         toolbar = toolbar
             .child(div().w(px(150.)).child(self.f_search.clone()));
         if !self.namespace.unadopted.is_empty() && !self.trash {
@@ -1425,7 +1431,7 @@ impl Root {
             ),
             Modal::Adopt => {
                 let mut list = div().flex().flex_col().gap_1();
-                for (id, name, size) in self.namespace.unadopted.iter() {
+                for (id, name, size, _, _) in self.namespace.unadopted.iter() {
                     let msg_id = *id;
                     let parent = self.cwd.clone();
                     let ab = cx.listener(move |this, _: &MouseDownEvent, _, cx| {

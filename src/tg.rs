@@ -45,7 +45,12 @@ pub enum Command {
     CreateChannel { title: String },
     CreateSharedChannel { title: String },
     EmptyTrash,
-    OpenChannel { id: i64, access_hash: i64, title: String },
+    OpenChannel {
+        id: i64,
+        access_hash: i64,
+        title: String,
+        kind: String,
+    },
     Sync,
     Upload { path: PathBuf, parent: String },
     ResumeUploads,
@@ -132,6 +137,8 @@ pub fn spawn() -> Handle {
                 channel_title: String::new(),
                 namespace: Arc::new(Namespace::new()),
                 master_key: Arc::new(Mutex::new(None)),
+                actor_id: 0,
+                channel_kind: String::new(),
                 cancels: HashMap::new(),
                 last_live_sync: std::time::Instant::now()
                     - std::time::Duration::from_secs(10),
@@ -161,6 +168,10 @@ struct Worker {
     channel_title: String,
     namespace: Arc<Namespace>,
     master_key: Arc<Mutex<Option<[u8; crypto::MASTER_KEY_LEN]>>>,
+    /// Our own user id — adoption ownership checks.
+    actor_id: i64,
+    /// "broadcast" (personal) or group kind — encryption is personal-only.
+    channel_kind: String,
     cancels: HashMap<String, CancellationToken>,
     last_live_sync: std::time::Instant,
     journal: Journal,
@@ -210,7 +221,8 @@ impl Worker {
                 id,
                 access_hash,
                 title,
-            } => self.open_channel(id, access_hash, title).await,
+                kind,
+            } => self.open_channel(id, access_hash, title, kind).await,
             Command::Sync => self.sync().await,
             Command::Upload { path, parent } => self.upload(path, parent).await,
             Command::ResumeUploads => self.resume_uploads().await,
@@ -339,6 +351,9 @@ impl Worker {
     async fn after_login(&mut self) -> Result<()> {
         self.login_token = None;
         self.password_token = None;
+        if let Ok(me) = self.client()?.get_me().await {
+            self.actor_id = me.id().bare_id_unchecked();
+        }
         self.list_channels().await
     }
 
@@ -396,8 +411,13 @@ impl Worker {
         };
         for chat in chats {
             if let grammers_client::tl::enums::Chat::Channel(c) = chat {
-                self.open_channel(c.id, c.access_hash.unwrap_or(0), c.title)
-                    .await?;
+                self.open_channel(
+                    c.id,
+                    c.access_hash.unwrap_or(0),
+                    c.title,
+                    if shared { "megagroup" } else { "broadcast" }.to_string(),
+                )
+                .await?;
                 if shared {
                     self.export_invite().await?;
                 }
@@ -428,7 +448,13 @@ impl Worker {
         Ok(())
     }
 
-    async fn open_channel(&mut self, id: i64, access_hash: i64, title: String) -> Result<()> {
+    async fn open_channel(
+        &mut self,
+        id: i64,
+        access_hash: i64,
+        title: String,
+        kind: String,
+    ) -> Result<()> {
         let peer_id = PeerId::channel(id).context("bad channel id")?;
         self.channel = Some(PeerRef {
             id: peer_id,
@@ -440,6 +466,7 @@ impl Worker {
         }
         self.channel_id = id;
         self.channel_title = title.clone();
+        self.channel_kind = kind;
         // Load the persisted projection so the first sync is incremental.
         self.namespace = Arc::new(
             config::namespace_path(id)
@@ -502,7 +529,13 @@ impl Worker {
             while let Some(msg) = iter.next().await? {
                 if !ns.apply_message(msg.id() as i64, msg.text()) {
                     if let Some(Media::Document(d)) = msg.media() {
-                        ns.record_unadopted(msg.id() as i64, d.name().unwrap_or("unnamed").to_string(), d.size().unwrap_or(0) as i64);
+                        ns.record_unadopted(
+                            msg.id() as i64,
+                            d.name().unwrap_or("unnamed").to_string(),
+                            d.size().unwrap_or(0) as i64,
+                            msg.sender_id().map(|p| p.bare_id_unchecked()).unwrap_or(0),
+                            msg.date().as_second(),
+                        );
                     }
                 }
             }
@@ -511,7 +544,13 @@ impl Worker {
             while let Some(msg) = iter.next().await? {
                 if !ns.apply_message(msg.id() as i64, msg.text()) {
                     if let Some(Media::Document(d)) = msg.media() {
-                        ns.record_unadopted(msg.id() as i64, d.name().unwrap_or("unnamed").to_string(), d.size().unwrap_or(0) as i64);
+                        ns.record_unadopted(
+                            msg.id() as i64,
+                            d.name().unwrap_or("unnamed").to_string(),
+                            d.size().unwrap_or(0) as i64,
+                            msg.sender_id().map(|p| p.bare_id_unchecked()).unwrap_or(0),
+                            msg.date().as_second(),
+                        );
                     }
                 }
             }
@@ -1340,6 +1379,9 @@ impl Worker {
     }
 
     async fn enable_encryption(&mut self, password: &str, hint: &str) -> Result<()> {
+        if self.channel_kind != "broadcast" {
+            return Err(anyhow!("encryption is only supported on personal drives"));
+        }
         if self.namespace.encfg.is_some() {
             return Err(anyhow!("encryption already configured"));
         }
@@ -1503,8 +1545,13 @@ impl Worker {
         };
         for chat in chats {
             if let grammers_client::tl::enums::Chat::Channel(c) = chat {
-                self.open_channel(c.id, c.access_hash.unwrap_or(0), c.title)
-                    .await?;
+                self.open_channel(
+                    c.id,
+                    c.access_hash.unwrap_or(0),
+                    c.title,
+                    if c.megagroup { "megagroup" } else { "broadcast" }.to_string(),
+                )
+                .await?;
                 self.list_channels().await?;
                 return Ok(());
             }
@@ -1529,8 +1576,13 @@ impl Worker {
                 .await;
             if let Ok(ChatInvite::Already(already)) = inv {
                 if let Chat::Channel(c) = already.chat {
-                    self.open_channel(c.id, c.access_hash.unwrap_or(0), c.title)
-                        .await?;
+                    self.open_channel(
+                        c.id,
+                        c.access_hash.unwrap_or(0),
+                        c.title,
+                        if c.megagroup { "megagroup" } else { "broadcast" }.to_string(),
+                    )
+                    .await?;
                     self.list_channels().await?;
                     return Ok(());
                 }
@@ -1592,20 +1644,24 @@ impl Worker {
     /// Adopt a raw channel attachment into the namespace with a `meta` op —
     /// the same op TDrive emits when claiming an unop'd document.
     async fn adopt(&mut self, msg_id: i64, parent: String) -> Result<()> {
-        let (_, name, size) = self
+        let (_, name, size, sender, date) = self
             .namespace
             .unadopted
             .iter()
-            .find(|(id, _, _)| *id == msg_id)
+            .find(|(id, _, _, _, _)| *id == msg_id)
             .cloned()
             .context("no adoptable attachment with that id")?;
+        // TDrive's rule: only the uploader can manage a raw attachment.
+        if self.actor_id != 0 && sender != self.actor_id {
+            return Err(anyhow!("only the uploader can manage this file"));
+        }
         let op = Op {
             op_type: OpTypeOrUnknown::Known(OpType::Meta),
             obj: wire::file_obj_id(msg_id),
             parent,
             name,
             file_size: size,
-            file_upload_time: unix_now(),
+            file_upload_time: date,
             ..Default::default()
         };
         self.send_and_project(&op).await
