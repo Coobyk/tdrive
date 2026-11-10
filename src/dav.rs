@@ -14,6 +14,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 static PORT: OnceLock<u16> = OnceLock::new();
 static STARTED: OnceLock<()> = OnceLock::new();
+static CMD: OnceLock<tokio::sync::mpsc::UnboundedSender<crate::tg::Command>> =
+    OnceLock::new();
 
 /// Spawn the DAV listener once inside the worker's runtime.
 pub fn ensure_server(
@@ -21,10 +23,12 @@ pub fn ensure_server(
     peer: PeerRef,
     ns: Arc<Mutex<Arc<Namespace>>>,
     master: Arc<Mutex<Option<[u8; crate::crypto::MASTER_KEY_LEN]>>>,
+    cmd: tokio::sync::mpsc::UnboundedSender<crate::tg::Command>,
 ) {
     if STARTED.set(()).is_err() {
         return;
     }
+    let _ = CMD.set(cmd);
     tokio::spawn(async move {
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
         let _ = PORT.set(listener.local_addr()?.port());
@@ -123,6 +127,125 @@ fn propfind(ns: &Namespace, path: &str, depth: &str) -> String {
         }
     }
     format!("{xml}</D:multistatus>")
+}
+
+/// Route a write method to the worker via DavOp and translate the result.
+async fn write_method(
+    method: &str,
+    path: &str,
+    req: &str,
+    snapshot: &Namespace,
+    sock: &mut tokio::net::TcpStream,
+    buf: &[u8],
+    header_len: usize,
+) -> (u16, Vec<u8>) {
+    use tokio::io::AsyncReadExt;
+    let Some(cmd) = CMD.get() else {
+        return (500, b"no worker".to_vec());
+    };
+    // Resolve the op locally from the namespace snapshot.
+    let op = match method {
+        "MKCOL" => {
+            let (dir, name) = path.rsplit_once('/').unwrap_or(("", path));
+            let name = urlencoding::decode(name).unwrap_or_default().to_string();
+            match resolve_dir(snapshot, dir) {
+                Ok(parent) => crate::tg::DavOp::Mkdir { parent, name },
+                Err(_) => return (409, b"bad parent".to_vec()),
+            }
+        }
+        "DELETE" => {
+            match resolve_obj(snapshot, path) {
+                Ok(obj) => crate::tg::DavOp::Delete { obj },
+                Err(_) => return (404, b"not found".to_vec()),
+            }
+        }
+        "MOVE" => {
+            let src = match resolve_obj(snapshot, path) {
+                Ok(o) => o,
+                Err(_) => return (404, b"not found".to_vec()),
+            };
+            let dest = req
+                .lines()
+                .find_map(|l| l.strip_prefix("Destination:").map(str::trim))
+                .and_then(|u| u.split("/dav").nth(1))
+                .unwrap_or("");
+            let (dir, name) = dest.rsplit_once('/').unwrap_or(("", dest));
+            let name = urlencoding::decode(name).unwrap_or_default().to_string();
+            match resolve_dir(snapshot, dir) {
+                Ok(dst_parent) => crate::tg::DavOp::Move {
+                    obj: src,
+                    dst_parent,
+                    name,
+                },
+                Err(_) => return (409, b"bad destination".to_vec()),
+            }
+        }
+        "PUT" => {
+            // Read Content-Length body bytes past the header block.
+            let clen: usize = req
+                .lines()
+                .find_map(|l| l.strip_prefix("Content-Length:").map(str::trim))
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
+            if clen == 0 || clen > 200 * 1024 * 1024 {
+                return (411, b"bad length".to_vec());
+            }
+            let mut body = buf[header_len..].to_vec();
+            while body.len() < clen {
+                let mut more = vec![0u8; 65536];
+                match sock.read(&mut more).await {
+                    Ok(0) | Err(_) => return (400, b"short body".to_vec()),
+                    Ok(n) => body.extend_from_slice(&more[..n]),
+                }
+            }
+            body.truncate(clen);
+            let (dir, name) = path.rsplit_once('/').unwrap_or(("", path));
+            let name = urlencoding::decode(name).unwrap_or_default().to_string();
+            match resolve_dir(snapshot, dir) {
+                Ok(parent) => crate::tg::DavOp::Put {
+                    parent,
+                    name,
+                    bytes: body,
+                },
+                Err(_) => return (409, b"bad parent".to_vec()),
+            }
+        }
+        _ => return (405, b"method".to_vec()),
+    };
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    if cmd
+        .send(crate::tg::Command::DavWrite { op, reply: tx })
+        .is_err()
+    {
+        return (500, b"worker gone".to_vec());
+    }
+    match rx.await {
+        Ok(Ok(_)) => (201, Vec::new()),
+        Ok(Err(e)) => (500, e.into_bytes()),
+        Err(_) => (500, b"no reply".to_vec()),
+    }
+}
+
+/// Resolve any namespace object (file or folder) at a DAV path to its id.
+fn resolve_obj(ns: &Namespace, path: &str) -> Result<String> {
+    let (dir, name) = path.rsplit_once('/').unwrap_or(("", path));
+    let parent = resolve_dir(ns, dir)?;
+    let name = urlencoding::decode(name).unwrap_or_default().to_string();
+    if let Some(d) = ns
+        .folders
+        .values()
+        .find(|d| !d.tombstoned && d.parent == parent && d.name == name)
+    {
+        return Ok(d.id.clone());
+    }
+    if let Some(f) = ns
+        .files
+        .values()
+        .find(|f| !f.tombstoned && f.parent == parent && f.name == name)
+    {
+        return Ok(f.id.clone());
+    }
+    anyhow::bail!("not found")
 }
 
 async fn handle(
@@ -224,6 +347,25 @@ async fn handle(
             if !bytes.is_empty() {
                 sock.write_all(&bytes).await?;
             }
+        }
+        "MKCOL" | "DELETE" | "MOVE" | "PUT" => {
+            // Request body starts after the \r\n\r\n header terminator.
+            let header_end = buf[..n]
+                .windows(4)
+                .position(|w| w == b"\r\n\r\n")
+                .map(|p| p + 4)
+                .unwrap_or(n);
+            let (code, body) = write_method(
+                method, &path, &req, &snapshot, &mut sock, &buf[..n], header_end,
+            )
+            .await;
+            let h = format!(
+                "HTTP/1.1 {code} {}\r\nContent-Length: {}\r\n\r\n",
+                if code == 201 { "Created" } else { "Error" },
+                body.len()
+            );
+            sock.write_all(h.as_bytes()).await?;
+            sock.write_all(&body).await?;
         }
         _ => {
             sock.write_all(b"HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\n\r\n")

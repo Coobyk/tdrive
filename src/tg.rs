@@ -70,6 +70,11 @@ pub enum Command {
     FetchThumbnail { file_id: String },
     Adopt { msg_id: i64, parent: String },
     Stream { obj: String },
+    /// Write op issued by the WebDAV server; reply carries the result.
+    DavWrite {
+        op: DavOp,
+        reply: tokio::sync::oneshot::Sender<Result<(), String>>,
+    },
     Pause { id: String },
     Resume { id: String },
     BackupPhotos { paths: Vec<PathBuf> },
@@ -112,6 +117,27 @@ pub enum Event {
     StreamUrl { url: String },
     DavUrl { url: String },
     SignedOut,
+}
+
+/// Write operations arriving over the WebDAV surface.
+#[derive(Debug)]
+pub enum DavOp {
+    /// MKCOL: create folder `name` under `parent` (folder id or "").
+    Mkdir { parent: String, name: String },
+    /// DELETE: permanently remove an object (TDrive mount flow = harddel).
+    Delete { obj: String },
+    /// MOVE: relocate `obj` under `dst_parent` as `name`.
+    Move {
+        obj: String,
+        dst_parent: String,
+        name: String,
+    },
+    /// PUT: write `bytes` as `name` under `parent` — single-body fcommit.
+    Put {
+        parent: String,
+        name: String,
+        bytes: Vec<u8>,
+    },
 }
 
 pub struct Handle {
@@ -258,6 +284,10 @@ impl Worker {
             Command::FetchThumbnail { file_id } => self.fetch_thumbnail(&file_id).await,
             Command::Adopt { msg_id, parent } => self.adopt(msg_id, parent).await,
             Command::Stream { obj } => self.stream(&obj).await,
+            Command::DavWrite { op, reply } => {
+                let _ = reply.send(self.dav_write(op).await.map_err(|e| format!("{e:#}")));
+                Ok(())
+            }
             Command::Pause { id } => self.pause(&id).await,
             Command::Resume { id } => self.resume(&id).await,
             Command::BackupPhotos { paths } => self.backup_photos(paths).await,
@@ -479,6 +509,7 @@ impl Worker {
             self.channel()?,
             self.ns_shared.clone(),
             self.master_key.clone(),
+            self.cmd_tx.clone(),
         );
         if let Some(url) = dav::url() {
             self.emit(Event::DavUrl { url });
@@ -1818,6 +1849,129 @@ impl Worker {
             }
         }
         Ok(())
+    }
+
+    /// Apply a WebDAV write through the durable mount-write ops TDrive's
+    /// mount emits (dcommit/relocate/harddel/fcommit).
+    async fn dav_write(&mut self, op: DavOp) -> Result<()> {
+        match op {
+            DavOp::Mkdir { parent, name } => {
+                let op = Op {
+                    op_type: OpTypeOrUnknown::Known(OpType::FolderCommit),
+                    op_id: format!("dcommit-{}", uuid::Uuid::new_v4()),
+                    obj: wire::new_folder_id(),
+                    parent,
+                    name: name.trim().to_string(),
+                    file_upload_time: unix_now(),
+                    ..Default::default()
+                };
+                self.send_and_project(&op).await
+            }
+            DavOp::Delete { obj } => {
+                // Mounted deletes go through the durable hard-delete flow.
+                let Some((_is_folder, rev, tomb, _name, _parent)) =
+                    self.namespace.dirent_info(&obj)
+                else {
+                    return Err(anyhow!("no such object"));
+                };
+                if tomb {
+                    return Err(anyhow!("already deleted"));
+                }
+                let op = Op {
+                    op_type: OpTypeOrUnknown::Known(OpType::HardDeleteTree),
+                    op_id: wire::deterministic_op_id("purge", &obj, rev),
+                    obj: obj.clone(),
+                    expected_revision: rev,
+                    ..Default::default()
+                };
+                self.send_and_project(&op).await?;
+                let bodies: Vec<i64> = if obj.starts_with('d') {
+                    self.namespace.subtree_body_msg_ids(&obj)
+                } else {
+                    self.namespace
+                        .files
+                        .get(&obj)
+                        .map(|f| self.namespace.body_msg_ids(f))
+                        .unwrap_or_default()
+                };
+                for body in bodies {
+                    let _ = self
+                        .client()?
+                        .delete_messages(self.channel()?, &[body as i32])
+                        .await;
+                }
+                Ok(())
+            }
+            DavOp::Move {
+                obj,
+                dst_parent,
+                name,
+            } => {
+                let Some((_f, rev, tomb, _n, _p)) = self.namespace.dirent_info(&obj)
+                else {
+                    return Err(anyhow!("no such object"));
+                };
+                if tomb {
+                    return Err(anyhow!("deleted"));
+                }
+                let op = Op {
+                    op_type: OpTypeOrUnknown::Known(OpType::Relocate),
+                    op_id: format!("relocate-{}", uuid::Uuid::new_v4()),
+                    obj,
+                    parent: dst_parent,
+                    name,
+                    expected_revision: rev,
+                    ..Default::default()
+                };
+                self.send_and_project(&op).await
+            }
+            DavOp::Put {
+                parent,
+                name,
+                bytes,
+            } => {
+                // Single-body commit: upload the doc, then fcommit binds it —
+                // the same two-step TDrive's writable mount performs.
+                let pt_len = bytes.len() as i64;
+                let encrypted = self.master_key.lock().unwrap().is_some();
+                let (body, stored) = if encrypted {
+                    let key = (*self.master_key.lock().unwrap()).unwrap();
+                    let ct = tokio::task::spawn_blocking(move || {
+                        crypto::encrypt_bytes(&key, &bytes)
+                    })
+                    .await??;
+                    let len = ct.len() as i64;
+                    (ct, len)
+                } else {
+                    (bytes, pt_len)
+                };
+                let mut reader = std::io::Cursor::new(&body);
+                let uploaded = self
+                    .client()?
+                    .upload_stream(&mut reader, body.len(), name.clone())
+                    .await?;
+                let msg = self
+                    .client()?
+                    .send_message(
+                        self.channel()?,
+                        InputMessage::new().document(uploaded),
+                    )
+                    .await?;
+                let op = Op {
+                    op_type: OpTypeOrUnknown::Known(OpType::FileCommit),
+                    op_id: format!("fcommit-{}", uuid::Uuid::new_v4()),
+                    parent,
+                    name,
+                    file_size: stored,
+                    file_upload_time: unix_now(),
+                    encrypted,
+                    plaintext_size: if encrypted { pt_len } else { 0 },
+                    content_msg_id: msg.id() as i64,
+                    ..Default::default()
+                };
+                self.send_and_project(&op).await
+            }
+        }
     }
 
     /// Debounced incremental refresh triggered by incoming updates.
