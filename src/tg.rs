@@ -87,6 +87,15 @@ pub enum Command {
     BackupTick,
     LiveSync,
     SignOut,
+    // Internal task→worker messages — spawned transfers report journal
+    // and namespace mutations through the loop so state stays owned here.
+    /// A locally-emitted op that must be folded into the namespace.
+    OpApplied { header: String, msg_id: i64 },
+    UploadPartConfirmed { uuid: String, pix: i32, msg_id: i64 },
+    UploadJobPatch { uuid: String, local_path: PathBuf },
+    DlConfirmed { file_id: String, written: i64 },
+    TransferDone { id: String },
+    TransferFailed { id: String, label: String, err: String },
 }
 
 #[derive(Debug, Clone)]
@@ -219,6 +228,52 @@ pub fn spawn() -> Handle {
     Handle {
         tx: cmd_tx,
         rx: ev_rx,
+    }
+}
+
+
+/// Clones handed to a spawned transfer task — everything it needs to do
+/// IO off the command loop. Journal/namespace mutations are reported
+/// back as Commands so the worker keeps sole ownership of that state.
+#[derive(Clone)]
+struct TransferCtx {
+    client: Client,
+    peer: PeerRef,
+    master: Arc<Mutex<Option<[u8; crypto::MASTER_KEY_LEN]>>>,
+    tx: async_channel::Sender<Event>,
+    cmd: mpsc::UnboundedSender<Command>,
+    token: CancellationToken,
+}
+
+impl TransferCtx {
+    fn emit(&self, ev: Event) {
+        let _ = self.tx.try_send(ev);
+    }
+    fn update(&self, id: &str, label: &str, sent: i64, total: i64, state: TransferState) {
+        self.emit(Event::Transfer(TransferUpdate {
+            id: id.to_string(),
+            label: label.to_string(),
+            sent,
+            total,
+            state,
+        }));
+    }
+    fn journal(&self, c: Command) {
+        let _ = self.cmd.send(c);
+    }
+    fn op_applied(&self, header: String, msg_id: i64) {
+        self.journal(Command::OpApplied { header, msg_id });
+    }
+    async fn send_op(&self, header: &str) -> Result<i64> {
+        let msg = self
+            .client
+            .send_message(self.peer, InputMessage::new().text(header))
+            .await?;
+        let id = msg.id() as i64;
+        if id <= 0 {
+            anyhow::bail!("send outcome unknown (msg id 0)");
+        }
+        Ok(id)
     }
 }
 
@@ -355,7 +410,121 @@ impl Worker {
             }
             Command::LiveSync => self.live_sync().await,
             Command::SignOut => self.sign_out().await,
+            Command::OpApplied { header, msg_id } => {
+                let mut ns = (*self.namespace).clone();
+                if !ns.apply_message(msg_id, &header) {
+                    self.emit(Event::Error {
+                        context: "projection",
+                        message: format!("locally-emitted op at {msg_id} failed to apply"),
+                    });
+                }
+                self.namespace = Arc::new(ns);
+                self.save_namespace();
+                self.push_namespace();
+                Ok(())
+            }
+            Command::UploadPartConfirmed { uuid, pix, msg_id } => {
+                if let Some(j) = self
+                    .journal
+                    .uploads
+                    .iter_mut()
+                    .find(|j| j.upload_uuid == uuid)
+                {
+                    if let Some(p) = j.parts.get_mut(pix as usize) {
+                        p.msg_id = Some(msg_id);
+                    }
+                }
+                self.save_journal();
+                Ok(())
+            }
+            Command::UploadJobPatch { uuid, local_path } => {
+                if let Some(j) = self
+                    .journal
+                    .uploads
+                    .iter_mut()
+                    .find(|j| j.upload_uuid == uuid)
+                {
+                    j.local_path = local_path;
+                }
+                self.save_journal();
+                Ok(())
+            }
+            Command::DlConfirmed { file_id, written } => {
+                if let Some(j) = self
+                    .journal
+                    .downloads
+                    .iter_mut()
+                    .find(|j| j.file_id == file_id)
+                {
+                    j.confirmed_bytes = written;
+                }
+                self.save_journal();
+                Ok(())
+            }
+            Command::TransferDone { id } => {
+                self.cancels.remove(&id);
+                if let Some(uuid) = id.strip_prefix("up:") {
+                    self.journal.uploads.retain(|j| j.upload_uuid != uuid);
+                } else if let Some(fid) = id.strip_prefix("dl:") {
+                    self.journal.downloads.retain(|j| j.file_id != fid);
+                }
+                self.save_journal();
+                Ok(())
+            }
+            Command::TransferFailed { id, label, err } => {
+                self.cancels.remove(&id);
+                // A pause also unwinds as an error — don't overwrite the
+                // Paused state the pause() handler already set.
+                if !self.paused_downloads.contains_key(&id) {
+                    self.emit(Event::Error {
+                        context: "transfer",
+                        message: format!("{label}: {err}"),
+                    });
+                    self.emit(Event::Transfer(TransferUpdate {
+                        id: id.clone(),
+                        label,
+                        sent: 0,
+                        total: 0,
+                        state: TransferState::Failed,
+                    }));
+                }
+                Ok(())
+            }
         }
+    }
+
+    /// Bundle the worker's shared handles for a detached transfer task.
+    fn transfer_ctx(&self, token: CancellationToken) -> Result<TransferCtx> {
+        Ok(TransferCtx {
+            client: self.client()?.clone(),
+            peer: self.channel()?,
+            master: self.master_key.clone(),
+            tx: self.tx.clone(),
+            cmd: self.cmd_tx.clone(),
+            token,
+        })
+    }
+
+    /// Spawn a transfer task and route its failure back as a Command —
+    /// the loop is never blocked by transfer IO.
+    fn spawn_transfer(
+        &self,
+        id: &str,
+        label: &str,
+        fut: impl std::future::Future<Output = Result<()>> + Send + 'static,
+    ) {
+        let cmd = self.cmd_tx.clone();
+        let id = id.to_string();
+        let label = label.to_string();
+        tokio::spawn(async move {
+            if let Err(e) = fut.await {
+                let _ = cmd.send(Command::TransferFailed {
+                    id,
+                    label,
+                    err: format!("{e:#}"),
+                });
+            }
+        });
     }
 
     fn client(&self) -> Result<&Client> {
@@ -642,11 +811,20 @@ impl Worker {
             .cloned()
             .collect();
         for job in pending_downloads {
-            if let Err(e) = self.run_download(&job).await {
-                self.emit(Event::Error {
+            let id = format!("dl:{}", job.file_id);
+            let token = CancellationToken::new();
+            self.cancels.insert(id.clone(), token.clone());
+            match self.transfer_ctx(token) {
+                Ok(ctx) => {
+                    let name = job.name.clone();
+                    self.spawn_transfer(&id, &name, async move {
+                        Self::run_download_task(&ctx, job).await
+                    });
+                }
+                Err(e) => self.emit(Event::Error {
                     context: "download",
                     message: format!("{e:#}"),
-                });
+                }),
             }
         }
         Ok(())
@@ -878,19 +1056,28 @@ impl Worker {
             .channel()
             .map(|p| p.id.bare_id_unchecked())
             .unwrap_or(0);
-        let jobs: Vec<String> = self
+        let jobs: Vec<UploadJob> = self
             .journal
             .uploads
             .iter()
             .filter(|j| j.channel_id == channel_id && j.manifest_msg_id.is_none())
-            .map(|j| j.upload_uuid.clone())
+            .cloned()
             .collect();
-        for uuid in jobs {
-            if let Err(e) = self.run_upload_job(&uuid).await {
-                self.emit(Event::Error {
+        for job in jobs {
+            let id = format!("up:{}", job.upload_uuid);
+            let token = CancellationToken::new();
+            self.cancels.insert(id.clone(), token.clone());
+            match self.transfer_ctx(token) {
+                Ok(ctx) => {
+                    let name = job.name.clone();
+                    self.spawn_transfer(&id, &name, async move {
+                        Self::run_upload_task(&ctx, job).await
+                    });
+                }
+                Err(e) => self.emit(Event::Error {
                     context: "upload",
                     message: format!("{e:#}"),
-                });
+                }),
             }
         }
         Ok(())
@@ -918,48 +1105,29 @@ impl Worker {
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "unnamed".into());
 
-        // Encrypt to a staged ciphertext when the drive vault is unlocked.
-        let (source, size, encrypted) = if let Some(master) = *self.master_key.lock().unwrap() {
-            let ct_path = config::staging_dir().unwrap_or_else(|_| std::env::temp_dir()).join(format!(
-                "tdrive-enc-{}.bin",
-                uuid::Uuid::new_v4()
-            ));
-            let pt = path.clone();
-            let ct = ct_path.clone();
-            let stored = tokio::task::spawn_blocking(move || {
-                crypto::encrypt_file(&master, &pt, &ct)
-            })
-            .await??;
-            (ct_path, stored as i64, true)
-        } else {
-            (path.clone(), plaintext_size, false)
-        };
+        // Encryption is staged inside the task — even multi-GB encrypts
+        // never block the command loop.
+        let encrypted = self.master_key.lock().unwrap().is_some();
+        let size = if encrypted { plaintext_size } else { plaintext_size };
 
         if size > LARGE_FILE_MAX_BYTES {
-            if encrypted {
-                let _ = std::fs::remove_file(&source);
-            }
             return Err(anyhow!("file exceeds the maximum upload size"));
         }
 
-        let res = if size <= MAX_PART_BYTES {
-            self.upload_single(
-                source.clone(),
-                path.clone(),
-                name,
-                parent,
-                size,
-                encrypted,
-                plaintext_size,
-            )
-            .await
+        let res: Result<()> = if size <= MAX_PART_BYTES {
+            let id = format!("up:{name}");
+            let token = CancellationToken::new();
+            self.cancels.insert(id.clone(), token.clone());
+            let ctx = self.transfer_ctx(token)?;
+            let name2 = name.clone();
+            self.spawn_transfer(&id, &name, async move {
+                Self::upload_single_task(&ctx, path.clone(), path, name2, parent, size, encrypted, plaintext_size).await
+            });
+            Ok(())
         } else {
             let channel_id = self.channel()?.id.bare_id_unchecked();
             let part_count = (size + MAX_PART_BYTES - 1) / MAX_PART_BYTES;
             if part_count as usize > MAX_PARTS {
-                if encrypted {
-                    let _ = std::fs::remove_file(&source);
-                }
                 return Err(anyhow!("file would exceed the {MAX_PARTS} part limit"));
             }
             let parts: Vec<PartReceipt> = (0..part_count as usize)
@@ -975,7 +1143,7 @@ impl Worker {
             let job = UploadJob {
                 upload_uuid: uuid::Uuid::new_v4().to_string(),
                 channel_id,
-                local_path: source.clone(),
+                local_path: path.clone(),
                 source_path: path.clone(),
                 name,
                 parent,
@@ -986,27 +1154,62 @@ impl Worker {
                 manifest_msg_id: None,
                 started_at: unix_now(),
             };
-            self.cancels
-                .insert(format!("up:{}", job.upload_uuid), CancellationToken::new());
-            self.journal.uploads.push(job.clone());
-            self.save_journal();
-            self.run_upload_job(&job.upload_uuid).await
+            let id = format!("up:{}", job.upload_uuid);
+            let token = CancellationToken::new();
+            self.cancels.insert(id.clone(), token.clone());
+            // TDrive only journals resumable *unencrypted* uploads —
+            // encrypted multipart resume would re-encrypt under a fresh
+            // salt and produce permanently corrupt output.
+            if !job.encrypted {
+                self.journal.uploads.push(job.clone());
+                self.save_journal();
+            }
+            let ctx = self.transfer_ctx(token)?;
+            let name = job.name.clone();
+            self.spawn_transfer(&id, &name, async move {
+                Self::run_upload_task(&ctx, job).await
+            });
+            Ok(())
         };
-        if encrypted {
-            let _ = std::fs::remove_file(&source);
-        }
         res
     }
 
-    async fn upload_single(&mut self, path: PathBuf, pt_source: PathBuf, name: String, parent: String, size: i64, encrypted: bool, plaintext_size: i64) -> Result<()> {
+    async fn upload_single_task(
+        ctx: &TransferCtx,
+        path: PathBuf,
+        pt_source: PathBuf,
+        name: String,
+        parent: String,
+        size: i64,
+        encrypted: bool,
+        plaintext_size: i64,
+    ) -> Result<()> {
         let id = format!("up:{}", name);
-        self.cancels.insert(id.clone(), CancellationToken::new());
-        self.upload_update(&id, &name, 0, size, TransferState::Active);
-        let res = self.upload_single_inner(&path, &name, &parent, size, encrypted, plaintext_size).await;
+        ctx.update(&id, &name, 0, size, TransferState::Active);
+        // Encrypt to staged ciphertext first when the vault is unlocked.
+        let stored = if encrypted {
+            let master = (*ctx.master.lock().unwrap()).context("drive locked")?;
+            let ct_path = config::staging_dir()
+                .unwrap_or_else(|_| std::env::temp_dir())
+                .join(format!("tdrive-enc-{}.bin", uuid::Uuid::new_v4()));
+            let pt = path.clone();
+            let ct = ct_path.clone();
+            let stored_len = tokio::task::spawn_blocking(move || {
+                crypto::encrypt_file(&master, &pt, &ct)
+            })
+            .await??;
+            Some((ct_path, stored_len as i64))
+        } else {
+            None
+        };
+        let (send_path, send_size) = stored.clone().unwrap_or((path.clone(), size));
+        let res = Self::upload_single_inner(ctx, &send_path, &name, &parent, send_size, encrypted, plaintext_size).await;
+        if let Some((ct, _)) = stored {
+            let _ = std::fs::remove_file(ct);
+        }
         match res {
             Ok(msg_id) => {
-                let mut ns = (*self.namespace).clone();
-                ns.apply(msg_id, &Op {
+                let header = wire::format(&Op {
                     op_type: OpTypeOrUnknown::Known(OpType::FileUpload),
                     parent,
                     name: name.clone(),
@@ -1016,24 +1219,23 @@ impl Worker {
                     plaintext_size: if encrypted { plaintext_size } else { 0 },
                     ..Default::default()
                 });
-                self.namespace = Arc::new(ns);
-                self.push_namespace();
-                self.upload_update(&id, &name, size, size, TransferState::Done);
-                self.publish_renditions(&pt_source, &name, msg_id, msg_id, "", encrypted)
+                ctx.op_applied(header, msg_id);
+                ctx.update(&id, &name, size, size, TransferState::Done);
+                Self::publish_renditions(ctx, &pt_source, &name, msg_id, msg_id, "", encrypted)
                     .await;
                 Ok(())
             }
             Err(e) => {
-                self.upload_update(&id, &name, 0, size, TransferState::Failed);
+                ctx.update(&id, &name, 0, size, TransferState::Failed);
                 Err(e)
             }
         }
     }
 
-    async fn upload_single_inner(&self, path: &PathBuf, name: &str, parent: &str, size: i64, encrypted: bool, plaintext_size: i64) -> Result<i64> {
+    async fn upload_single_inner(ctx: &TransferCtx, path: &PathBuf, name: &str, parent: &str, size: i64, encrypted: bool, plaintext_size: i64) -> Result<i64> {
         let file = tokio::fs::File::open(path).await?;
         let progress = ProgressReader::new(file, {
-            let tx = self.tx.clone();
+            let tx = ctx.tx.clone();
             let id = format!("up:{name}");
             let label = name.to_string();
             move |sent, _| {
@@ -1047,8 +1249,8 @@ impl Worker {
             }
         });
         let mut reader = progress;
-        let uploaded = self
-            .client()?
+        let uploaded = ctx
+            .client
             .upload_stream(&mut reader, size as usize, name.to_string())
             .await?;
         let caption = wire::format(&Op {
@@ -1061,10 +1263,10 @@ impl Worker {
             plaintext_size: if encrypted { plaintext_size } else { 0 },
             ..Default::default()
         });
-        let msg = self
-            .client()?
+        let msg = ctx
+            .client
             .send_message(
-                self.channel()?,
+                ctx.peer,
                 InputMessage::new().document(uploaded).text(caption),
             )
             .await?;
@@ -1076,19 +1278,16 @@ impl Worker {
     }
 
     /// Continue (or start) a multipart journal job until the manifest lands.
-    async fn run_upload_job(&mut self, uuid: &str) -> Result<()> {
-        let mut job = self
-            .journal
-            .uploads
-            .iter()
-            .find(|j| j.upload_uuid == uuid)
-            .cloned()
-            .context("upload job not found")?;
-
-        // Encrypted jobs stage ciphertext; a restart may have lost the temp
-        // file — re-encrypt from the plaintext source if needed.
-        if job.encrypted && !job.local_path.exists() {
-            let master = (*self.master_key.lock().unwrap())
+    /// The upload state machine — runs on a spawned task so the command
+    /// loop stays responsive; journal/namespace writes flow back via
+    /// Commands on `ctx.cmd`.
+    async fn run_upload_task(ctx: &TransferCtx, mut job: UploadJob) -> Result<()> {
+        // Encrypt to staged ciphertext when the vault is unlocked — done
+        // inside the task so even a multi-GB encrypt never blocks the loop.
+        if job.encrypted
+            && (!job.local_path.exists() || job.local_path == job.source_path)
+        {
+            let master = (*ctx.master.lock().unwrap())
                 .context("drive locked — cannot resume encrypted upload")?;
             let ct_path = config::staging_dir().unwrap_or_else(|_| std::env::temp_dir()).join(format!(
                 "tdrive-enc-{}.bin",
@@ -1098,31 +1297,31 @@ impl Worker {
             let ct = ct_path.clone();
             tokio::task::spawn_blocking(move || crypto::encrypt_file(&master, &pt, &ct))
                 .await??;
-            job.local_path = ct_path;
-            if let Some(j) = self
-                .journal
-                .uploads
-                .iter_mut()
-                .find(|j| j.upload_uuid == uuid)
-            {
-                j.local_path = job.local_path.clone();
+            job.local_path = ct_path.clone();
+            job.stored_size = std::fs::metadata(&ct_path)
+                .map(|m| m.len() as i64)
+                .unwrap_or(job.stored_size);
+            let n = job.parts.len() as i64;
+            for (i, p) in job.parts.iter_mut().enumerate() {
+                let start = i as i64 * MAX_PART_BYTES;
+                p.size = (job.stored_size - start).min(MAX_PART_BYTES);
             }
-            self.save_journal();
+            let _ = n;
+            ctx.journal(Command::UploadJobPatch {
+                uuid: job.upload_uuid.clone(),
+                local_path: ct_path,
+            });
         }
 
-        let token = self
-            .cancels
-            .entry(format!("up:{uuid}"))
-            .or_insert_with(CancellationToken::new)
-            .clone();
-        let transfer_id = format!("up:{uuid}");
+        let token = &ctx.token;
+        let transfer_id = format!("up:{}", job.upload_uuid);
         let already: i64 = job
             .parts
             .iter()
             .filter(|p| p.msg_id.is_some())
             .map(|p| p.size)
             .sum();
-        self.upload_update(&transfer_id, &job.name, already, job.stored_size, TransferState::Active);
+        ctx.update(&transfer_id, &job.name, already, job.stored_size, TransferState::Active);
 
         let pending: Vec<i32> = job.pending_parts();
         for idx in pending {
@@ -1131,26 +1330,20 @@ impl Worker {
             }
             let part = job.parts[idx as usize].clone();
             let offset = idx as i64 * MAX_PART_BYTES;
-            let msg_id = self
-                .send_part(&job, part.index, offset, part.size)
-                .await?;
-            if let Some(j) = self
-                .journal
-                .uploads
-                .iter_mut()
-                .find(|j| j.upload_uuid == uuid)
-            {
-                j.parts[idx as usize].msg_id = Some(msg_id);
-            }
-            self.save_journal();
-            let done: i64 = self
-                .journal
-                .uploads
+            let msg_id = Self::send_part(ctx, &job, part.index, offset, part.size).await?;
+            job.parts[idx as usize].msg_id = Some(msg_id);
+            ctx.journal(Command::UploadPartConfirmed {
+                uuid: job.upload_uuid.clone(),
+                pix: idx,
+                msg_id,
+            });
+            let done: i64 = job
+                .parts
                 .iter()
-                .find(|j| j.upload_uuid == uuid)
-                .map(|j| j.parts.iter().filter(|p| p.msg_id.is_some()).map(|p| p.size).sum())
-                .unwrap_or(0);
-            self.upload_update(&transfer_id, &job.name, done, job.stored_size, TransferState::Active);
+                .filter(|p| p.msg_id.is_some())
+                .map(|p| p.size)
+                .sum();
+            ctx.update(&transfer_id, &job.name, done, job.stored_size, TransferState::Active);
         }
 
         // Manifest — the file's visibility boundary.
@@ -1167,23 +1360,11 @@ impl Worker {
             ..Default::default()
         };
         let header = wire::format(&manifest);
-        let msg_id = self.send_op(&header).await?;
-        if let Some(j) = self
-            .journal
-            .uploads
-            .iter_mut()
-            .find(|j| j.upload_uuid == uuid)
-        {
-            j.manifest_msg_id = Some(msg_id);
-        }
-        let mut ns = (*self.namespace).clone();
-        ns.apply(msg_id, &manifest);
-        self.namespace = Arc::new(ns);
-        self.push_namespace();
-        self.journal.uploads.retain(|j| j.upload_uuid != uuid);
-        self.save_journal();
-        self.upload_update(&transfer_id, &job.name, job.stored_size, job.stored_size, TransferState::Done);
-        self.publish_renditions(&job.source_path, &job.name, msg_id, 0, &job.upload_uuid, job.encrypted)
+        let msg_id = ctx.send_op(&header).await?;
+        ctx.op_applied(header, msg_id);
+        ctx.journal(Command::TransferDone { id: transfer_id.clone() });
+        ctx.update(&transfer_id, &job.name, job.stored_size, job.stored_size, TransferState::Done);
+        Self::publish_renditions(ctx, &job.source_path, &job.name, msg_id, 0, &job.upload_uuid, job.encrypted)
             .await;
         Ok(())
     }
@@ -1192,7 +1373,7 @@ impl Worker {
     /// 1600px "preview" JPEG for image uploads, sent as `rend` part ops.
     /// Failures never invalidate the stored original.
     async fn publish_renditions(
-        &mut self,
+        ctx: &TransferCtx,
         source: &PathBuf,
         name: &str,
         file_msg_id: i64,
@@ -1217,8 +1398,8 @@ impl Worker {
             return;
         };
         for (kind, edge) in [("thumbnail", 512u32), ("preview", 1600u32)] {
-            if let Err(e) = self
-                .publish_rendition(
+            if let Err(e) = Self::publish_rendition(
+                    ctx,
                     source,
                     file_msg_id,
                     content_msg_id,
@@ -1229,7 +1410,7 @@ impl Worker {
                 )
                 .await
             {
-                self.emit(Event::Error {
+                ctx.emit(Event::Error {
                     context: "rendition",
                     message: format!("{e:#}"),
                 });
@@ -1238,7 +1419,7 @@ impl Worker {
     }
 
     async fn publish_rendition(
-        &self,
+        ctx: &TransferCtx,
         source: &PathBuf,
         file_msg_id: i64,
         content_msg_id: i64,
@@ -1259,11 +1440,11 @@ impl Worker {
         .await??;
         let pt_len = jpeg.len() as i64;
         let (body, stored) = if encrypted {
-            let master = (*self.master_key.lock().unwrap()).context("drive locked")?;
+            let master = (*ctx.master.lock().unwrap()).context("drive locked")?;
             // TDrive wraps encrypted renditions in a TDR1 envelope binding
             // the descriptor (s=0) — Go's decryptRendition requires it.
             let desc = serde_json::json!({
-                "c": self.channel_id, "f": file_msg_id, "m": content_msg_id,
+                "c": ctx.peer.id.bare_id_unchecked(), "f": file_msg_id, "m": content_msg_id,
                 "u": upload_uuid, "k": kind, "v": 1, "s": 0,
                 "p": pt_len, "w": w, "h": h, "e": true,
             });
@@ -1282,7 +1463,7 @@ impl Worker {
             (jpeg, pt_len)
         };
         let rend = wire::Rendition {
-            channel_id: self.channel_id,
+            channel_id: ctx.peer.id.bare_id_unchecked(),
             file_msg_id,
             content_msg_id,
             upload_uuid: upload_uuid.to_string(),
@@ -1295,8 +1476,8 @@ impl Worker {
             encrypted,
         };
         let mut reader = std::io::Cursor::new(&body);
-        let uploaded = self
-            .client()?
+        let uploaded = ctx
+            .client
             .upload_stream(&mut reader, body.len(), "rendition.jpg".to_string())
             .await?;
         let caption = wire::format(&Op {
@@ -1307,23 +1488,23 @@ impl Worker {
             rendition: rend.encode(),
             ..Default::default()
         });
-        self.client()?
+        ctx.client
             .send_message(
-                self.channel()?,
+                ctx.peer,
                 InputMessage::new().document(uploaded).text(caption),
             )
             .await?;
         Ok(())
     }
 
-    async fn send_part(&self, job: &UploadJob, index: i32, offset: i64, size: i64) -> Result<i64> {
+    async fn send_part(ctx: &TransferCtx, job: &UploadJob, index: i32, offset: i64, size: i64) -> Result<i64> {
         let file = tokio::fs::File::open(&job.local_path).await?;
         let mut limited = file;
         use tokio::io::{AsyncReadExt, AsyncSeekExt};
         limited.seek(std::io::SeekFrom::Start(offset as u64)).await?;
         let take = limited.take(size as u64);
         let progress = ProgressReader::new(take, {
-            let tx = self.tx.clone();
+            let tx = ctx.tx.clone();
             let id = format!("up:{}", job.upload_uuid);
             let label = job.name.clone();
             let total = job.stored_size;
@@ -1345,8 +1526,8 @@ impl Worker {
         });
         let mut reader = progress;
         let part_name = part_attachment_name(&job.name, index, job.parts.len() as i32);
-        let uploaded = self
-            .client()?
+        let uploaded = ctx
+            .client
             .upload_stream(&mut reader, size as usize, part_name)
             .await?;
         let caption = wire::format(&Op {
@@ -1356,10 +1537,10 @@ impl Worker {
             file_size: size,
             ..Default::default()
         });
-        let msg = self
-            .client()?
+        let msg = ctx
+            .client
             .send_message(
-                self.channel()?,
+                ctx.peer,
                 InputMessage::new().document(uploaded).text(caption),
             )
             .await?;
@@ -1409,14 +1590,22 @@ impl Worker {
         );
         self.journal.downloads.push(job.clone());
         self.save_journal();
-        self.run_download(&job).await
+        let id = format!("dl:{}", job.file_id);
+        let ctx = self.transfer_ctx(CancellationToken::new())?;
+        let name = job.name.clone();
+        self.spawn_transfer(&id, &name, async move {
+            Self::run_download_task(&ctx, job).await
+        });
+        Ok(())
     }
 
-    async fn run_download(&mut self, job: &DownloadJob) -> Result<()> {
-        let client = self.client()?.clone();
-        let peer = self.channel()?;
+    /// Download state machine — spawned task; journal/namespace writes
+    /// flow back through Commands on `ctx.cmd`.
+    async fn run_download_task(ctx: &TransferCtx, job: DownloadJob) -> Result<()> {
+        let client = ctx.client.clone();
+        let peer = ctx.peer;
         let transfer_id = format!("dl:{}", job.file_id);
-        self.upload_update(&transfer_id, &job.name, job.confirmed_bytes, job.total_size, TransferState::Active);
+        ctx.update(&transfer_id, &job.name, job.confirmed_bytes, job.total_size, TransferState::Active);
 
         let staging = job.dest.with_extension(format!(
             "{}.tdrive-part",
@@ -1450,11 +1639,7 @@ impl Worker {
             offset += media_size(&parts.last().unwrap().1) as i64;
         }
 
-        let token = self
-            .cancels
-            .entry(transfer_id.clone())
-            .or_insert_with(CancellationToken::new)
-            .clone();
+        let token = &ctx.token;
         let mut written = job.confirmed_bytes;
         for (part_offset, media) in parts {
             let doc_size = media_size(&media) as i64;
@@ -1469,14 +1654,10 @@ impl Worker {
             written = part_offset + skip as i64 * DOWNLOAD_CHUNK as i64;
             out.set_len(written as u64).await?;
             out.seek(std::io::SeekFrom::Start(written as u64)).await?;
-            if let Some(j) = self
-                .journal
-                .downloads
-                .iter_mut()
-                .find(|j| j.file_id == job.file_id)
-            {
-                j.confirmed_bytes = written;
-            }
+            ctx.journal(Command::DlConfirmed {
+                file_id: job.file_id.clone(),
+                written,
+            });
 
             let mut dl = client.iter_download(&media).chunk_size(DOWNLOAD_CHUNK);
             if skip > 0 {
@@ -1485,35 +1666,32 @@ impl Worker {
             let mut since_ckpt = 0u32;
             while let Some(chunk) = dl.next().await? {
                 if token.is_cancelled() {
-                    self.save_journal();
+                    ctx.journal(Command::DlConfirmed {
+                        file_id: job.file_id.clone(),
+                        written,
+                    });
                     return Err(anyhow!("download cancelled"));
                 }
                 out.write_all(&chunk).await?;
                 written += chunk.len() as i64;
-                if let Some(j) = self
-                    .journal
-                    .downloads
-                    .iter_mut()
-                    .find(|j| j.file_id == job.file_id)
-                {
-                    j.confirmed_bytes = written;
-                }
                 since_ckpt += 1;
                 if since_ckpt >= 8 {
                     // TDrive checkpoints every 8 blocks — per-chunk fsync +
                     // full-journal rewrite is pathologically slow.
                     since_ckpt = 0;
                     out.sync_data().await?;
-                    self.save_journal();
-                    self.upload_update(&transfer_id, &job.name, written, job.total_size, TransferState::Active);
+                    ctx.journal(Command::DlConfirmed {
+                        file_id: job.file_id.clone(),
+                        written,
+                    });
+                    ctx.update(&transfer_id, &job.name, written, job.total_size, TransferState::Active);
                 }
             }
             out.sync_data().await?;
-            self.save_journal();
         }
         drop(out);
         if job.encrypted {
-            let master = (*self.master_key.lock().unwrap()).context("drive locked mid-download")?;
+            let master = (*ctx.master.lock().unwrap()).context("drive locked mid-download")?;
             let staging2 = staging.clone();
             let dest2 = job.dest.clone();
             tokio::task::spawn_blocking(move || {
@@ -1524,19 +1702,10 @@ impl Worker {
         } else {
             std::fs::rename(&staging, &job.dest)?;
         }
-        if let Some(j) = self
-            .journal
-            .downloads
-            .iter_mut()
-            .find(|j| j.file_id == job.file_id)
-        {
-            j.done = true;
-        }
-        self.journal
-            .downloads
-            .retain(|j| j.file_id != job.file_id || !j.done);
-        self.save_journal();
-        self.upload_update(&transfer_id, &job.name, written, job.total_size, TransferState::Done);
+        ctx.journal(Command::TransferDone {
+            id: transfer_id.clone(),
+        });
+        ctx.update(&transfer_id, &job.name, written, job.total_size, TransferState::Done);
         Ok(())
     }
 
@@ -1716,7 +1885,14 @@ impl Worker {
                 .find(|j| j.file_id == file_id)
                 .cloned();
             if let Some(job) = job {
-                return self.run_download(&job).await;
+                let token = CancellationToken::new();
+                self.cancels.insert(id.to_string(), token.clone());
+                let ctx = self.transfer_ctx(token)?;
+                let name = job.name.clone();
+                self.spawn_transfer(id, &name, async move {
+                    Self::run_download_task(&ctx, job).await
+                });
+                return Ok(());
             }
         }
         Err(anyhow!("nothing to resume"))
