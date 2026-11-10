@@ -89,6 +89,9 @@ pub struct Root {
     /// a deep scroll in one folder can't point past the next folder's
     /// end and show a blank list.
     last_view_key: String,
+    /// Last rendered entry count — a count change snaps the scroll to the
+    /// top so a new folder at index 0 can't hide above a stale offset.
+    last_items_len: usize,
     /// Auto-open the last drive only on the first channel list — a relist
     /// after "Drives" must not reopen it and bounce back.
     auto_open_done: bool,
