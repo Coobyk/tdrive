@@ -614,7 +614,11 @@ impl Worker {
                 id,
                 access_hash,
                 title,
-                kind: "broadcast",
+                kind: match self.channel_kind.as_str() {
+                    "megagroup" => "megagroup",
+                    "gigagroup" => "gigagroup",
+                    _ => "broadcast",
+                },
             },
             pending_uploads: pending,
         });
@@ -2008,6 +2012,7 @@ impl Worker {
             DavOp::Mkdir { parent, name } => {
                 let op = Op {
                     op_type: OpTypeOrUnknown::Known(OpType::FolderCommit),
+                    protocol_version: 1,
                     op_id: format!("dcommit-{}", uuid::Uuid::new_v4()),
                     obj: wire::new_folder_id(),
                     parent,
@@ -2027,14 +2032,8 @@ impl Worker {
                 if tomb {
                     return Err(anyhow!("already deleted"));
                 }
-                let op = Op {
-                    op_type: OpTypeOrUnknown::Known(OpType::HardDeleteTree),
-                    op_id: wire::deterministic_op_id("purge", &obj, rev),
-                    obj: obj.clone(),
-                    expected_revision: rev,
-                    ..Default::default()
-                };
-                self.send_and_project(&op).await?;
+                // Collect body msg ids BEFORE applying — the projection
+                // drops the records so ids are empty afterwards.
                 let mut bodies: Vec<i64> = if obj.starts_with('d') {
                     self.namespace.subtree_body_msg_ids(&obj)
                 } else {
@@ -2047,6 +2046,15 @@ impl Worker {
                 if let Some(kinds) = self.namespace.renditions.get(&obj) {
                     bodies.extend(kinds.values().map(|(id, _)| *id));
                 }
+                let op = Op {
+                    op_type: OpTypeOrUnknown::Known(OpType::HardDeleteTree),
+                    protocol_version: 1,
+                    op_id: wire::deterministic_op_id("purge", &obj, rev),
+                    obj: obj.clone(),
+                    expected_revision: rev,
+                    ..Default::default()
+                };
+                self.send_and_project(&op).await?;
                 for body in bodies {
                     let _ = self
                         .client()?
@@ -2069,6 +2077,7 @@ impl Worker {
                 }
                 let op = Op {
                     op_type: OpTypeOrUnknown::Known(OpType::Relocate),
+                    protocol_version: 1,
                     op_id: format!("relocate-{}", uuid::Uuid::new_v4()),
                     obj,
                     parent: dst_parent,
@@ -2112,6 +2121,7 @@ impl Worker {
                     .await?;
                 let op = Op {
                     op_type: OpTypeOrUnknown::Known(OpType::FileCommit),
+                    protocol_version: 1,
                     op_id: format!("fcommit-{}", uuid::Uuid::new_v4()),
                     parent,
                     name,
@@ -2161,6 +2171,8 @@ impl Worker {
                     .await?;
                 let op = Op {
                     op_type: OpTypeOrUnknown::Known(OpType::FileReplace),
+                    protocol_version: 1,
+                    retained_until: unix_now() + 30 * 24 * 60 * 60,
                     op_id: format!("freplace-{}", uuid::Uuid::new_v4()),
                     obj,
                     file_size: stored,
@@ -2178,7 +2190,9 @@ impl Worker {
 
     /// Debounced incremental refresh triggered by incoming updates.
     async fn live_sync(&mut self) -> Result<()> {
-        if self.channel.is_none() || self.namespace.last_msg_id == 0 {
+        // A zero watermark just means empty-or-unsynced — full scan is the
+        // correct response, not a permanent wedge.
+        if self.channel.is_none() {
             return Ok(());
         }
         let now = std::time::Instant::now();

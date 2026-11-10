@@ -569,14 +569,16 @@ impl Namespace {
     /// `harddel` apply: CAS on tombstoned revision, permanently drop the
     /// object (+ subtree) and its trash entry.
     fn apply_hard_delete(&mut self, op: &Op) {
-        let tomb_rev = if let Some(f) = self.files.get(&op.obj) {
-            f.tombstoned.then_some(f.revision)
+        // TDrive's harddel targets live objects (mount delete) or
+        // tombstoned ones (trash purge) — CAS on the current revision.
+        let live_rev = if let Some(f) = self.files.get(&op.obj) {
+            Some(f.revision)
         } else if let Some(d) = self.folders.get(&op.obj) {
-            d.tombstoned.then_some(d.revision)
+            Some(d.revision)
         } else {
-            return; // only tombstoned objects are purgeable
+            return;
         };
-        if tomb_rev != Some(op.expected_revision) {
+        if live_rev != Some(op.expected_revision) {
             return;
         }
         let obj = op.obj.clone();
@@ -1032,10 +1034,13 @@ mod tests {
         ns.apply(3, &op("TDX1|t=harddel|v=1|oid=p|obj=f:1|rev=2"));
         assert!(ns.files.get("f:1").is_none());
         assert!(ns.trash.is_empty());
-        // harddel on a live object is rejected.
+        // harddel on a live object (mount delete) with matching revision
+        // removes it; a wrong revision is refused.
         ns.apply(4, &op("TDX1|t=f|p=|n=y|sz=1"));
-        ns.apply(5, &op("TDX1|t=harddel|v=1|oid=p2|obj=f:4|rev=1"));
+        ns.apply(5, &op("TDX1|t=harddel|v=1|oid=bad|obj=f:4|rev=9"));
         assert!(ns.files.get("f:4").is_some());
+        ns.apply(6, &op("TDX1|t=harddel|v=1|oid=p2|obj=f:4|rev=1"));
+        assert!(ns.files.get("f:4").is_none());
     }
 
     #[test]
