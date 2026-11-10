@@ -162,6 +162,9 @@ pub fn spawn() -> Handle {
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
+            // Grammers' recursive TL deserialization (nested Update vectors
+            // in Updates responses) overflows the default 2 MiB stack.
+            .thread_stack_size(16 * 1024 * 1024)
             .enable_all()
             .build()
             .expect("tokio runtime");
