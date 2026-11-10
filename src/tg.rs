@@ -773,8 +773,9 @@ impl Worker {
         if !tombstoned {
             return Err(anyhow!("only trashed items can be purged"));
         }
-        // Collect body messages before the marker lands.
-        let bodies = if is_folder {
+        // Collect body messages before the marker lands — content bodies
+        // plus any rendition bodies bound to the object.
+        let mut bodies = if is_folder {
             self.namespace.subtree_body_msg_ids(&obj)
         } else {
             self.namespace
@@ -783,6 +784,9 @@ impl Worker {
                 .map(|f| self.namespace.body_msg_ids(f))
                 .unwrap_or_default()
         };
+        if let Some(kinds) = self.namespace.renditions.get(&obj) {
+            bodies.extend(kinds.values().map(|(id, _)| *id));
+        }
         let op = Op {
             op_type: OpTypeOrUnknown::Known(OpType::HardDeleteTree),
             protocol_version: 1,
@@ -1943,7 +1947,7 @@ impl Worker {
                     ..Default::default()
                 };
                 self.send_and_project(&op).await?;
-                let bodies: Vec<i64> = if obj.starts_with('d') {
+                let mut bodies: Vec<i64> = if obj.starts_with('d') {
                     self.namespace.subtree_body_msg_ids(&obj)
                 } else {
                     self.namespace
@@ -1952,6 +1956,9 @@ impl Worker {
                         .map(|f| self.namespace.body_msg_ids(f))
                         .unwrap_or_default()
                 };
+                if let Some(kinds) = self.namespace.renditions.get(&obj) {
+                    bodies.extend(kinds.values().map(|(id, _)| *id));
+                }
                 for body in bodies {
                     let _ = self
                         .client()?
