@@ -5,6 +5,7 @@ use crate::config;
 use crate::crypto::{self, VaultConfig};
 use crate::journal::{DownloadJob, Journal, PartReceipt, UploadJob};
 use crate::project::Namespace;
+use crate::stream;
 use crate::wire::{self, Op, OpType, OpTypeOrUnknown};
 use std::collections::HashMap;
 use tokio_util::sync::CancellationToken;
@@ -17,7 +18,7 @@ use grammers_client::session::storages::SqliteSession;
 use grammers_client::{Client, SignInError, sender::SenderPool};
 use grammers_client::session::types::{ChannelKind, PeerAuth, PeerId, PeerRef};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncRead, ReadBuf};
 use tokio::sync::mpsc;
 
@@ -62,6 +63,7 @@ pub enum Command {
     JoinInvite { link: String },
     FetchThumbnail { file_id: String },
     Adopt { msg_id: i64, parent: String },
+    Stream { obj: String },
     LiveSync,
     SignOut,
 }
@@ -97,6 +99,7 @@ pub enum Event {
     VaultState { configured: bool, unlocked: bool, hint: String },
     InviteLink { link: String },
     ThumbnailReady { file_id: String, path: PathBuf },
+    StreamUrl { url: String },
     SignedOut,
 }
 
@@ -127,7 +130,7 @@ pub fn spawn() -> Handle {
                 channel_id: 0,
                 channel_title: String::new(),
                 namespace: Arc::new(Namespace::new()),
-                master_key: None,
+                master_key: Arc::new(Mutex::new(None)),
                 cancels: HashMap::new(),
                 last_live_sync: std::time::Instant::now()
                     - std::time::Duration::from_secs(10),
@@ -156,7 +159,7 @@ struct Worker {
     channel_id: i64,
     channel_title: String,
     namespace: Arc<Namespace>,
-    master_key: Option<[u8; 32]>,
+    master_key: Arc<Mutex<Option<[u8; crypto::MASTER_KEY_LEN]>>>,
     cancels: HashMap<String, CancellationToken>,
     last_live_sync: std::time::Instant,
     journal: Journal,
@@ -220,7 +223,7 @@ impl Worker {
             Command::Cancel { id } => self.cancel(&id),
             Command::Unlock { password } => self.unlock(&password).await,
             Command::Lock => {
-                self.master_key = None;
+                *self.master_key.lock().unwrap() = None;
                 self.emit_vault_state();
                 Ok(())
             }
@@ -230,6 +233,7 @@ impl Worker {
             Command::JoinInvite { link } => self.join_invite(&link).await,
             Command::FetchThumbnail { file_id } => self.fetch_thumbnail(&file_id).await,
             Command::Adopt { msg_id, parent } => self.adopt(msg_id, parent).await,
+            Command::Stream { obj } => self.stream(&obj).await,
             Command::LiveSync => self.live_sync().await,
             Command::SignOut => self.sign_out().await,
         }
@@ -430,7 +434,7 @@ impl Worker {
         });
         if self.channel_id != id {
             // Different drive → different vault.
-            self.master_key = None;
+            *self.master_key.lock().unwrap() = None;
         }
         self.channel_id = id;
         self.channel_title = title.clone();
@@ -706,7 +710,7 @@ impl Worker {
         let plaintext_size = std::fs::metadata(&path).context("stat upload")?.len() as i64;
         // TDrive rejects empty plaintext only when unencrypted — the TDE1
         // header makes the stored ciphertext non-empty.
-        if plaintext_size == 0 && self.master_key.is_none() {
+        if plaintext_size == 0 && self.master_key.lock().unwrap().is_none() {
             return Err(anyhow!("empty files can't be uploaded"));
         }
         let name = path
@@ -715,7 +719,7 @@ impl Worker {
             .unwrap_or_else(|| "unnamed".into());
 
         // Encrypt to a staged ciphertext when the drive vault is unlocked.
-        let (source, size, encrypted) = if let Some(master) = self.master_key {
+        let (source, size, encrypted) = if let Some(master) = *self.master_key.lock().unwrap() {
             let ct_path = std::env::temp_dir().join(format!(
                 "tdrive-enc-{}.bin",
                 uuid::Uuid::new_v4()
@@ -870,8 +874,7 @@ impl Worker {
         // Encrypted jobs stage ciphertext; a restart may have lost the temp
         // file — re-encrypt from the plaintext source if needed.
         if job.encrypted && !job.local_path.exists() {
-            let master = self
-                .master_key
+            let master = (*self.master_key.lock().unwrap())
                 .context("drive locked — cannot resume encrypted upload")?;
             let ct_path = std::env::temp_dir().join(format!(
                 "tdrive-enc-{}.bin",
@@ -1028,7 +1031,7 @@ impl Worker {
             .get(&file_id)
             .cloned()
             .context("file not found")?;
-        if file.encrypted && self.master_key.is_none() {
+        if file.encrypted && self.master_key.lock().unwrap().is_none() {
             return Err(anyhow!("drive is locked — unlock it to download"));
         }
         let body_ids = self.namespace.body_msg_ids(&file);
@@ -1152,7 +1155,7 @@ impl Worker {
         }
         drop(out);
         if job.encrypted {
-            let master = self.master_key.context("drive locked mid-download")?;
+            let master = (*self.master_key.lock().unwrap()).context("drive locked mid-download")?;
             let staging2 = staging.clone();
             let dest2 = job.dest.clone();
             tokio::task::spawn_blocking(move || {
@@ -1191,7 +1194,7 @@ impl Worker {
             .unwrap_or_default();
         self.emit(Event::VaultState {
             configured,
-            unlocked: self.master_key.is_some(),
+            unlocked: self.master_key.lock().unwrap().is_some(),
             hint,
         });
     }
@@ -1216,7 +1219,7 @@ impl Worker {
             move || vault.unlock(password.as_bytes())
         })
         .await??;
-        self.master_key = Some(key);
+        *self.master_key.lock().unwrap() = Some(key);
         self.emit_vault_state();
         Ok(())
     }
@@ -1243,7 +1246,7 @@ impl Worker {
             ..Default::default()
         };
         self.send_and_project(&op).await?;
-        self.master_key = Some(master);
+        *self.master_key.lock().unwrap() = Some(master);
         self.emit_vault_state();
         Ok(())
     }
@@ -1417,7 +1420,7 @@ impl Worker {
         let msg = msgs.into_iter().flatten().next().context("rendition body missing")?;
         let media = msg.media().context("rendition body has no media")?;
         if r.encrypted {
-            let master = self.master_key.context("drive locked")?;
+            let master = (*self.master_key.lock().unwrap()).context("drive locked")?;
             let staging = dir.join(format!("{body_id}.enc"));
             client.download_media(&media, &staging).await?;
             let out2 = out.clone();
@@ -1457,6 +1460,40 @@ impl Worker {
             ..Default::default()
         };
         self.send_and_project(&op).await
+    }
+
+    /// Open a tokenized stream session for a file and hand the URL to the
+    /// UI — TDrive's media-service model: the URL is the capability.
+    async fn stream(&mut self, obj: &str) -> Result<()> {
+        let Some(file) = self.namespace.files.get(obj).cloned() else {
+            return Err(anyhow!("not a file"));
+        };
+        if file.encrypted && self.master_key.lock().unwrap().is_none() {
+            return Err(anyhow!("unlock the drive to stream encrypted files"));
+        }
+        let parts: Vec<(i64, i64)> = if !file.upload_uuid.is_empty() {
+            self.namespace.part_sizes(&file.upload_uuid)
+        } else {
+            vec![(file.content_msg_id, file.size)]
+        };
+        if parts.is_empty() {
+            return Err(anyhow!("no body messages for this file"));
+        }
+        let client = self.client()?.clone();
+        let peer = self.channel()?;
+        stream::ensure_server(client, peer, self.master_key.clone());
+        let url = stream::open(stream::Session {
+            parts,
+            plaintext_size: if file.encrypted {
+                file.plaintext_size
+            } else {
+                file.size
+            },
+            name: file.name,
+            encrypted: file.encrypted,
+        })?;
+        self.emit(Event::StreamUrl { url });
+        Ok(())
     }
 
     /// Debounced incremental refresh triggered by incoming updates.

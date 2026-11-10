@@ -231,6 +231,12 @@ impl Root {
             Event::ThumbnailReady { file_id, path } => {
                 self.thumbnails.insert(file_id, path);
             }
+            Event::StreamUrl { url } => {
+                // The tokenized URL is the capability — hand it to the
+                // default handler (browser / media player).
+                self.status = format!("streaming: {url}");
+                let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+            }
             Event::JournalChanged => {}
             Event::Error { context, message } => {
                 self.status = format!("{context}: {message}");
@@ -870,6 +876,13 @@ impl Root {
                         this.pick_download_dest(file.id.clone(), file.name.clone(), cx)
                     });
                     actions = actions.child(tool_button("Download", dl));
+                    let id = sel_c.clone();
+                    let st = cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                        this.send(Command::Stream { obj: id.clone() });
+                        this.status = "opening stream…".into();
+                        cx.notify();
+                    });
+                    actions = actions.child(tool_button("Open", st));
                 }
             }
             if !self.trash {

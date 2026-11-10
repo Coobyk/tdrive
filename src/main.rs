@@ -3,6 +3,7 @@ mod crypto;
 mod input;
 mod journal;
 mod project;
+mod stream;
 mod tg;
 mod ui;
 mod wire;

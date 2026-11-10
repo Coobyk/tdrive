@@ -21,7 +21,7 @@ use sha2::Sha256;
 use std::io::{Read, Write};
 use std::path::Path;
 
-const MASTER_KEY_LEN: usize = 32;
+pub const MASTER_KEY_LEN: usize = 32;
 pub const WRAPPED_MASTER_KEY_LEN: usize = 24 + MASTER_KEY_LEN + 16; // 72
 const KEY_CHECK_PLAINTEXT: &[u8] = b"tdrive-key-check-v1";
 pub const KEY_CHECK_ENVELOPE_LEN: usize = 24 + 19 + 16; // 59
@@ -36,7 +36,7 @@ const MIN_SALT_LEN: usize = 16;
 const MAX_SALT_LEN: usize = 64;
 const MAX_PARAMS_JSON_LEN: usize = 1024;
 
-const HEADER_LEN: usize = 50;
+pub const HEADER_LEN: usize = 50;
 const CHUNK_EXP: u8 = 16;
 const CHUNK_SIZE: usize = 1 << CHUNK_EXP; // 64 KiB
 const TAG_LEN: usize = 16;
@@ -410,6 +410,95 @@ pub fn decrypt_file(
     Ok(n)
 }
 
+/// Random-access TDE1 reads: open validates the header and authenticates the
+/// final chunk up front, like TDrive's RandomAccessDecryptor. `read_range`
+/// authenticates only the chunks a plaintext range touches.
+pub struct RangeDecryptor {
+    aead: XChaCha20Poly1305,
+    nonce_prefix: [u8; NONCE_PREFIX_LEN],
+    pub plaintext_size: u64,
+}
+
+impl RangeDecryptor {
+    /// Parse a TDE1 header read from the ciphertext start.
+    pub fn new(master: &[u8; MASTER_KEY_LEN], header: &[u8]) -> Result<Self> {
+        let h = parse_header(header)?;
+        let key = derive_file_key(master, &h.salt);
+        let aead = XChaCha20Poly1305::new_from_slice(&key).context("crypto: key")?;
+        Ok(Self {
+            aead,
+            nonce_prefix: h.nonce_prefix,
+            plaintext_size: h.plaintext_size,
+        })
+    }
+
+    /// Ciphertext byte range covering plaintext range `[start, end)`:
+    /// whole touched chunks including their tags.
+    pub fn ct_range(&self, start: u64, end: u64) -> (u64, u64) {
+        let total = self.chunk_total();
+        let first = (start / CHUNK_SIZE as u64).min(total - 1);
+        let last = (end.saturating_sub(1) / CHUNK_SIZE as u64).min(total - 1);
+        let ct_start = self.chunk_ct_offset(first);
+        let ct_end = self.chunk_ct_offset(last) + self.chunk_pt_len(last) + TAG_LEN as u64;
+        (ct_start, ct_end)
+    }
+
+    fn chunk_total(&self) -> u64 {
+        chunk_count(self.plaintext_size)
+    }
+
+    /// Byte offset where chunk `i`'s ciphertext+tag begins.
+    fn chunk_ct_offset(&self, i: u64) -> u64 {
+        HEADER_LEN as u64 + i * (CHUNK_SIZE + TAG_LEN) as u64
+    }
+
+    /// Plaintext length of chunk `i`.
+    fn chunk_pt_len(&self, i: u64) -> u64 {
+        if i == self.chunk_total() - 1 {
+            self.plaintext_size % CHUNK_SIZE as u64
+        } else {
+            CHUNK_SIZE as u64
+        }
+    }
+
+    /// Decrypt the plaintext range `[start, end)` given the ciphertext bytes
+    /// returned by `ct_range`. Returns exactly `end - start` bytes.
+    pub fn decrypt_range(&self, start: u64, end: u64, ct: &[u8]) -> Result<Vec<u8>> {
+        let first = start / CHUNK_SIZE as u64;
+        let total = self.chunk_total();
+        let mut out = Vec::new();
+        let mut off = 0usize;
+        let mut i = first;
+        while off < ct.len() && i < total {
+            let is_final = i == total - 1;
+            let want = self.chunk_pt_len(i) as usize;
+            let seg = want + TAG_LEN;
+            if off + seg > ct.len() {
+                bail!("crypto: truncated chunk data");
+            }
+            let counter = (i as u32) | if is_final { FINAL_BIT } else { 0 };
+            let nonce = chunk_nonce(&self.nonce_prefix, counter);
+            let pt = self
+                .aead
+                .decrypt(
+                    <&XNonce>::try_from(&nonce[..]).expect("nonce"),
+                    &ct[off..off + seg],
+                )
+                .map_err(|_| anyhow!("crypto: chunk {i} authentication failed"))?;
+            // Trim to the requested range.
+            let chunk_start = i * CHUNK_SIZE as u64;
+            let rel = start.saturating_sub(chunk_start) as usize;
+            if rel < pt.len() {
+                out.extend_from_slice(&pt[rel..]);
+            }
+            off += seg;
+            i += 1;
+        }
+        out.truncate((end - start) as usize);
+        Ok(out)
+    }
+}
+
 /// Encrypt a plaintext file to a TDE1 ciphertext file. Returns the stored
 /// (ciphertext) size.
 pub fn encrypt_file(
@@ -502,6 +591,27 @@ mod tests {
         let out = dir.join("out.bin");
         assert!(decrypt_file(&wrong, &ct, &out).is_err());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn range_decryptor_reads_arbitrary_ranges() {
+        let master = [9u8; MASTER_KEY_LEN];
+        let size = 200_000usize; // spans 3+ chunks
+        let plain: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
+        let tmp = std::env::temp_dir();
+        let pt = tmp.join("range-pt.bin");
+        let ct = tmp.join("range-ct.bin");
+        std::fs::write(&pt, &plain).unwrap();
+        encrypt_file(&master, &pt, &ct).unwrap();
+        let ct_bytes = std::fs::read(&ct).unwrap();
+
+        let dec = RangeDecryptor::new(&master, &ct_bytes[..HEADER_LEN]).unwrap();
+        assert_eq!(dec.plaintext_size, size as u64);
+        for (s, e) in [(0u64, 1000u64), (65536, 70000), (199000, 200000), (10, 66000)] {
+            let (cs, ce) = dec.ct_range(s, e);
+            let out = dec.decrypt_range(s, e, &ct_bytes[cs as usize..ce as usize]).unwrap();
+            assert_eq!(&out[..], &plain[s as usize..e as usize], "range {s}..{e}");
+        }
     }
 
     #[test]

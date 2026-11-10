@@ -766,6 +766,20 @@ impl Namespace {
         Some(ids)
     }
 
+    /// Multipart parts in index order: (body msg_id, stored size).
+    pub fn part_sizes(&self, upload_uuid: &str) -> Vec<(i64, i64)> {
+        let Some(g) = self.parts.get(upload_uuid) else {
+            return Vec::new();
+        };
+        let mut by_pix: Vec<(i32, i64, i64)> = g
+            .parts
+            .iter()
+            .map(|(pix, (id, sz))| (*pix, *id, *sz))
+            .collect();
+        by_pix.sort_by_key(|(pix, _, _)| *pix);
+        by_pix.iter().map(|(_, id, sz)| (*id, *sz)).collect()
+    }
+
     /// Message ids carrying a file's bytes, in read order.
     pub fn body_msg_ids(&self, file: &FileEntry) -> Vec<i64> {
         if file.content_msg_id > 0 {
