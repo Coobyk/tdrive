@@ -196,6 +196,7 @@ pub fn spawn() -> Handle {
                 paused_downloads: HashMap::new(),
                 ns_shared: Arc::new(Mutex::new(Arc::new(Namespace::new()))),
                 fuse_session: None,
+                thumb_sem: Arc::new(tokio::sync::Semaphore::new(8)),
                 cancels: HashMap::new(),
                 last_live_sync: std::time::Instant::now()
                     - std::time::Duration::from_secs(10),
@@ -235,6 +236,9 @@ struct Worker {
     ns_shared: Arc<Mutex<Arc<Namespace>>>,
     /// Live FUSE mount session — dropping it unmounts.
     fuse_session: Option<fuser::BackgroundSession>,
+    /// Bounds concurrent thumbnail fetches — they spawn as tasks so the
+    /// command loop stays free instead of serializing RTTs.
+    thumb_sem: Arc<tokio::sync::Semaphore>,
     cancels: HashMap<String, CancellationToken>,
     last_live_sync: std::time::Instant,
     journal: Journal,
@@ -307,7 +311,7 @@ impl Worker {
                 self.enable_encryption(&password, &hint).await
             }
             Command::JoinInvite { link } => self.join_invite(&link).await,
-            Command::FetchThumbnail { file_id } => self.fetch_thumbnail(&file_id).await,
+            Command::FetchThumbnail { file_id } => self.spawn_thumbnail_fetch(&file_id),
             Command::Adopt { msg_id, parent } => self.adopt(msg_id, parent).await,
             Command::Stream { obj } => self.stream(&obj).await,
             Command::DavWrite { op, reply } => {
@@ -1752,7 +1756,9 @@ impl Worker {
 
     /// Download a file's "thumb" rendition into the local cache and tell
     /// the UI where to read it. Encrypted renditions decrypt with TDE1.
-    async fn fetch_thumbnail(&mut self, file_id: &str) -> Result<()> {
+    /// Thumbnails fetch off the command loop — each is a bounded parallel
+    /// task so an image-heavy folder doesn't queue N×2 sequential RTTs.
+    fn spawn_thumbnail_fetch(&mut self, file_id: &str) -> Result<()> {
         let Some((body_id, r)) = self
             .namespace
             .renditions
@@ -1776,26 +1782,48 @@ impl Worker {
         }
         let client = self.client()?.clone();
         let peer = self.channel()?;
-        let msgs = client.get_messages_by_id(peer, &[body_id as i32]).await?;
-        let msg = msgs.into_iter().flatten().next().context("rendition body missing")?;
-        let media = msg.media().context("rendition body has no media")?;
-        if r.encrypted {
-            let master = (*self.master_key.lock().unwrap()).context("drive locked")?;
-            let staging = dir.join(format!("{body_id}.enc"));
-            client.download_media(&media, &staging).await?;
-            let out2 = out.clone();
-            let staging2 = staging.clone();
-            tokio::task::spawn_blocking(move || {
-                crypto::decrypt_file(&master, &staging2, &out2)
-            })
-            .await??;
-            let _ = std::fs::remove_file(&staging);
-        } else {
-            client.download_media(&media, &out).await?;
-        }
-        self.emit(Event::ThumbnailReady {
-            file_id: file_id.to_string(),
-            path: out,
+        let master = self.master_key.clone();
+        let sem = self.thumb_sem.clone();
+        let tx = self.tx.clone();
+        let file_id = file_id.to_string();
+        tokio::spawn(async move {
+            let _permit = sem.acquire().await;
+            let key = *master.lock().unwrap();
+            if let Ok(msgs) = client.get_messages_by_id(peer, &[body_id as i32]).await {
+                if let Some(media) = msgs.into_iter().flatten().next().and_then(|m| m.media()) {
+                    let ok = if r.encrypted {
+                        match key {
+                            Some(key) => {
+                                let staging = dir.join(format!("{body_id}.enc"));
+                                let dl = client.download_media(&media, &staging).await;
+                                if dl.is_ok() {
+                                    let out2 = out.clone();
+                                    let staging2 = staging.clone();
+                                    let dec = tokio::task::spawn_blocking(move || {
+                                        crypto::decrypt_file(&key, &staging2, &out2)
+                                    })
+                                    .await;
+                                    let _ = std::fs::remove_file(&staging);
+                                    dec.map(|r| r.is_ok()).unwrap_or(false)
+                                } else {
+                                    false
+                                }
+                            }
+                            None => false,
+                        }
+                    } else {
+                        client.download_media(&media, &out).await.is_ok()
+                    };
+                    if ok {
+                        let _ = tx
+                            .send(Event::ThumbnailReady {
+                                file_id,
+                                path: out,
+                            })
+                            .await;
+                    }
+                }
+            }
         });
         Ok(())
     }
