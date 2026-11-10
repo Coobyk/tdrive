@@ -362,27 +362,71 @@ impl Namespace {
                 if op.name.trim().is_empty() || !valid_parent(&op.parent) {
                     return;
                 }
-                if op.deleted_at > 0 {
-                    // Relocate-into-trash (mount write path).
-                    self.apply_trash(op, /*use_entry_parent*/ false);
+                // Source CAS first — Go rejects before touching the dst.
+                let Some((src_is_folder, live_rev)) = self.dirent(&op.obj)
+                else {
+                    return;
+                };
+                if live_rev != op.expected_revision {
                     return;
                 }
-                if !self.destination_obj_trash(&op.destination_obj, op.expected_destination_revision) {
+                if src_is_folder && would_cycle(self, &op.obj, &op.parent) {
                     return;
                 }
-                if let Some((_, live_rev)) = self.dirent(&op.obj) {
-                    if live_rev != op.expected_revision {
+                // `dst` names the occupant this relocate displaces; `ow`
+                // must permit it, drev CAS applies — files only (directory
+                // overwrite is unsupported in TDrive).
+                if !op.destination_obj.is_empty() {
+                    if !op.overwrite {
                         return;
                     }
-                } else {
-                    return;
+                    let Some((v_is_folder, v_rev, v_tomb, v_parent, v_name)) =
+                        self.dirent_info(&op.destination_obj)
+                    else {
+                        return;
+                    };
+                    if v_is_folder
+                        || v_tomb
+                        || (op.expected_destination_revision > 0
+                            && v_rev != op.expected_destination_revision)
+                    {
+                        return;
+                    }
+                    let dst = op.destination_obj.clone();
+                    if op.deleted_at > 0 {
+                        // `del` carries the victim's trash timestamp.
+                        self.trash.insert(
+                            dst.clone(),
+                            TrashEntry {
+                                object_id: dst.clone(),
+                                is_folder: false,
+                                original_parent: v_parent,
+                                original_name: v_name,
+                                original_revision: v_rev,
+                                deleted_at: op.deleted_at,
+                                purge_after: op.purge_after,
+                            },
+                        );
+                        if let Some(f) = self.files.get_mut(&dst) {
+                            f.tombstoned = true;
+                            f.revision += 1;
+                        }
+                    } else {
+                        // purge → remove outright.
+                        self.remove_object(&dst);
+                    }
                 }
+                // One mutation — Go's UPDATE bumps revision exactly once.
                 let obj = op.obj.clone();
-                self.rename(&obj, &op.name);
-                if self.folders.contains_key(&obj) && would_cycle(self, &obj, &op.parent) {
-                    return;
+                if let Some(f) = self.files.get_mut(&obj) {
+                    f.name = op.name.clone();
+                    f.parent = op.parent.clone();
+                    f.revision += 1;
+                } else if let Some(d) = self.folders.get_mut(&obj) {
+                    d.name = op.name.clone();
+                    d.parent = op.parent.clone();
+                    d.revision += 1;
                 }
-                self.move_obj(&obj, &op.parent);
             }
             OpType::TrashTree => {
                 if op.expected_revision <= 0
@@ -581,9 +625,15 @@ impl Namespace {
         if live_rev != Some(op.expected_revision) {
             return;
         }
-        let obj = op.obj.clone();
+        self.remove_object(&op.obj);
+    }
+
+    /// Permanently drop an object (plus folder subtree, upload parts,
+    /// renditions, and its trash entry) — shared by `harddel` and
+    /// purge-style relocate victims.
+    fn remove_object(&mut self, obj: &str) {
         let upload_uuids: Vec<String> = self
-            .subtree_files(&obj)
+            .subtree_files(obj)
             .iter()
             .filter_map(|f| {
                 if f.upload_uuid.is_empty() {
@@ -593,7 +643,7 @@ impl Namespace {
                 }
             })
             .collect();
-        if self.folders.remove(&obj).is_some() {
+        if self.folders.remove(obj).is_some() {
             // Remove descendant folders/files recursively.
             let mut queue: Vec<String> = self
                 .folders
@@ -627,11 +677,12 @@ impl Namespace {
                 true
             });
         }
-        self.files.remove(&obj);
+        self.files.remove(obj);
+        self.renditions.remove(obj);
         for u in upload_uuids {
             self.parts.remove(&u);
         }
-        self.trash.remove(&obj);
+        self.trash.remove(obj);
     }
 
     fn subtree_files(&self, folder_id: &str) -> Vec<&FileEntry> {
