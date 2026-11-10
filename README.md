@@ -39,10 +39,20 @@ Encryption (`src/crypto.rs`) implements TDE1 exactly: 50-byte header,
 drives encrypt uploads and decrypt downloads; encrypted empty files are
 allowed like TDrive.
 
-Not yet covered: thumbnail/rendition display (`rend=` is parsed and
-preserved), media streaming, photo backup, mounts, and file adoption —
-the mount-write ops (`fcommit`/`freplace`/`dcommit`/`relocate`) are fully
-parsed, projected and formatted.
+Renditions (`rend=` envelopes on `part` ops) round-trip: parsed, fetched,
+decrypted and shown as thumbnails, and generated on image uploads (512px
+thumb + 1600px preview) like TDrive's `PrepareRenditions`.
+
+Media: a tokenized 127.0.0.1 HTTP server streams plaintext byte ranges
+(`Open` on a file hands the URL to the default player), with TDE1 range
+decryption for encrypted files. A read/write WebDAV server on another
+localhost port mounts the namespace for file managers — MKCOL/DELETE/MOVE/
+PUT emit `dcommit`/`harddel`/`relocate`/`fcommit`, the same durable ops
+TDrive's mount writes.
+
+Not yet covered: FUSE mounts, video seek previews, continuous photo-backup
+watching (one-shot backup is included), and a live interop test against a
+real TDrive channel.
 
 ## Architecture
 
