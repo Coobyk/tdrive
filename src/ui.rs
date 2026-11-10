@@ -836,6 +836,14 @@ impl Root {
                 })
                 .collect()
         } else if !search.is_empty() {
+            let mut out: Vec<Entry> = self
+                .namespace
+                .folders
+                .values()
+                .filter(|d| !d.tombstoned && d.name.to_lowercase().contains(&search))
+                .cloned()
+                .map(Entry::Folder)
+                .collect();
             let mut files: Vec<_> = self
                 .namespace
                 .files
@@ -844,7 +852,19 @@ impl Root {
                 .cloned()
                 .collect();
             files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-            files.into_iter().map(Entry::File).collect()
+            out.sort_by(|a, b| {
+                let an = match a {
+                    Entry::Folder(d) => &d.name,
+                    Entry::File(f) => &f.name,
+                };
+                let bn = match b {
+                    Entry::Folder(d) => &d.name,
+                    Entry::File(f) => &f.name,
+                };
+                an.to_lowercase().cmp(&bn.to_lowercase())
+            });
+            out.extend(files.into_iter().map(Entry::File));
+            out
         } else {
             self.namespace.list(&self.cwd)
         };
@@ -1204,15 +1224,24 @@ impl Root {
             return self.namespace.list_trash().iter().map(|t| t.object_id.clone()).collect();
         }
         if !search.is_empty() {
-            let mut files: Vec<_> = self
+            let mut ids: Vec<String> = self
+                .namespace
+                .folders
+                .values()
+                .filter(|d| !d.tombstoned && d.name.to_lowercase().contains(&search))
+                .map(|d| d.id.clone())
+                .collect();
+            let mut files: Vec<String> = self
                 .namespace
                 .files
                 .values()
                 .filter(|f| !f.tombstoned && f.name.to_lowercase().contains(&search))
                 .map(|f| f.id.clone())
                 .collect();
+            ids.sort();
             files.sort();
-            return files;
+            ids.extend(files);
+            return ids;
         }
         self.namespace
             .list(&self.cwd)

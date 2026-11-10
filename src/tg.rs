@@ -647,6 +647,10 @@ impl Worker {
     }
 
     async fn mkdir(&mut self, parent: String, name: String) -> Result<()> {
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return Err(anyhow!("folder name required"));
+        }
         let op = Op {
             op_type: OpTypeOrUnknown::Known(OpType::Mkdir),
             obj: wire::new_folder_id(),
