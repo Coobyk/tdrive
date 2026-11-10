@@ -61,6 +61,7 @@ pub enum Command {
     EnableEncryption { password: String, hint: String },
     JoinInvite { link: String },
     FetchThumbnail { file_id: String },
+    Adopt { msg_id: i64, parent: String },
     LiveSync,
     SignOut,
 }
@@ -228,6 +229,7 @@ impl Worker {
             }
             Command::JoinInvite { link } => self.join_invite(&link).await,
             Command::FetchThumbnail { file_id } => self.fetch_thumbnail(&file_id).await,
+            Command::Adopt { msg_id, parent } => self.adopt(msg_id, parent).await,
             Command::LiveSync => self.live_sync().await,
             Command::SignOut => self.sign_out().await,
         }
@@ -492,12 +494,20 @@ impl Worker {
                 .offset_id(watermark as i32)
                 .reverse(true);
             while let Some(msg) = iter.next().await? {
-                ns.apply_message(msg.id() as i64, msg.text());
+                if !ns.apply_message(msg.id() as i64, msg.text()) {
+                    if let Some(Media::Document(d)) = msg.media() {
+                        ns.record_unadopted(msg.id() as i64, d.name().unwrap_or("unnamed").to_string(), d.size().unwrap_or(0) as i64);
+                    }
+                }
             }
         } else {
             let mut iter = client.iter_messages(peer).reverse(true);
             while let Some(msg) = iter.next().await? {
-                ns.apply_message(msg.id() as i64, msg.text());
+                if !ns.apply_message(msg.id() as i64, msg.text()) {
+                    if let Some(Media::Document(d)) = msg.media() {
+                        ns.record_unadopted(msg.id() as i64, d.name().unwrap_or("unnamed").to_string(), d.size().unwrap_or(0) as i64);
+                    }
+                }
             }
         }
         if self.channel_id != 0 {
@@ -1425,6 +1435,28 @@ impl Worker {
             path: out,
         });
         Ok(())
+    }
+
+    /// Adopt a raw channel attachment into the namespace with a `meta` op —
+    /// the same op TDrive emits when claiming an unop'd document.
+    async fn adopt(&mut self, msg_id: i64, parent: String) -> Result<()> {
+        let (_, name, size) = self
+            .namespace
+            .unadopted
+            .iter()
+            .find(|(id, _, _)| *id == msg_id)
+            .cloned()
+            .context("no adoptable attachment with that id")?;
+        let op = Op {
+            op_type: OpTypeOrUnknown::Known(OpType::Meta),
+            obj: wire::file_obj_id(msg_id),
+            parent,
+            name,
+            file_size: size,
+            file_upload_time: unix_now(),
+            ..Default::default()
+        };
+        self.send_and_project(&op).await
     }
 
     /// Debounced incremental refresh triggered by incoming updates.

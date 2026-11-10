@@ -89,6 +89,9 @@ pub struct Namespace {
     pub encfg: Option<Op>,
     /// file id → kind ("thumb"|"preview") → (body msg id, descriptor)
     pub renditions: HashMap<String, HashMap<String, (i64, wire::Rendition)>>,
+    /// Channel messages carrying a document but no TDX1 op — adoptable raw
+    /// attachments in shared drives. (msg_id, name, size)
+    pub unadopted: Vec<(i64, String, i64)>,
 }
 
 /// A visible listing row.
@@ -114,7 +117,19 @@ impl Namespace {
             Err(_) => return false,
         };
         self.apply(msg_id, &op);
+        self.unadopted.retain(|(id, _, _)| *id != msg_id);
         true
+    }
+
+    /// Record a channel document message carrying no TDX1 header — a raw
+    /// attachment that can be adopted with a `meta` op.
+    pub fn record_unadopted(&mut self, msg_id: i64, name: String, size: i64) {
+        if msg_id > self.last_msg_id {
+            self.last_msg_id = msg_id;
+        }
+        if self.unadopted.iter().all(|(id, _, _)| *id != msg_id) {
+            self.unadopted.push((msg_id, name, size));
+        }
     }
 
     pub fn apply(&mut self, msg_id: i64, op: &Op) {
@@ -839,6 +854,7 @@ impl Namespace {
             last_msg_id: s.last_msg_id,
             encfg: s.encfg,
             renditions: s.renditions,
+            unadopted: Vec::new(),
         }
     }
 
