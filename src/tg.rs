@@ -1071,7 +1071,9 @@ impl Worker {
             return Err(anyhow!("only trashed items can be purged"));
         }
         // Collect body messages before the marker lands — content bodies
-        // plus any rendition bodies bound to the object.
+        // of the whole subtree plus every rendition bound to any of its
+        // files. Purging a folder must delete descendant media too —
+        // tombstoning alone only hides them.
         let mut bodies = if is_folder {
             self.namespace.subtree_body_msg_ids(&obj)
         } else {
@@ -1081,8 +1083,34 @@ impl Worker {
                 .map(|f| self.namespace.body_msg_ids(f))
                 .unwrap_or_default()
         };
-        if let Some(kinds) = self.namespace.renditions.get(&obj) {
-            bodies.extend(kinds.values().map(|(id, _)| *id));
+        let file_ids: Vec<String> = if is_folder {
+            self.namespace
+                .files
+                .values()
+                .filter(|f| {
+                    // descendant-of check via subtree body collection was
+                    // for msg ids; here match the same subtree member set
+                    // through parents
+                    let mut p = f.parent.clone();
+                    loop {
+                        if p == obj {
+                            return true;
+                        }
+                        match self.namespace.folders.get(&p) {
+                            Some(d) => p = d.parent.clone(),
+                            None => return false,
+                        }
+                    }
+                })
+                .map(|f| f.id.clone())
+                .collect()
+        } else {
+            vec![obj.clone()]
+        };
+        for fid in &file_ids {
+            if let Some(kinds) = self.namespace.renditions.get(fid) {
+                bodies.extend(kinds.values().map(|(id, _)| *id));
+            }
         }
         let op = Op {
             op_type: OpTypeOrUnknown::Known(OpType::HardDeleteTree),
@@ -1093,12 +1121,20 @@ impl Worker {
             ..Default::default()
         };
         self.send_and_project(&op).await?;
-        if !bodies.is_empty() {
-            let ids: Vec<i32> = bodies.iter().map(|&m| m as i32).collect();
-            let _ = self
+        // Telegram caps delete at 100 ids per call — chunk, and surface
+        // failures instead of silently leaving bodies behind.
+        for chunk in bodies.chunks(100) {
+            let ids: Vec<i32> = chunk.iter().map(|&m| m as i32).collect();
+            if let Err(e) = self
                 .client()?
                 .delete_messages(self.channel()?, &ids)
-                .await;
+                .await
+            {
+                self.emit(Event::Error {
+                    context: "purge",
+                    message: format!("body delete: {e:#}"),
+                });
+            }
         }
         Ok(())
     }
