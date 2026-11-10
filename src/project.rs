@@ -49,6 +49,8 @@ pub struct Namespace {
     parts: HashMap<String, PartGroup>,
     /// Highest message id observed while scanning.
     pub last_msg_id: i64,
+    /// Latest `encfg` op seen — the drive's encryption vault, if configured.
+    pub encfg: Option<Op>,
 }
 
 /// A visible listing row.
@@ -215,7 +217,9 @@ impl Namespace {
             OpType::RestoreTree => {
                 self.restore(&op.obj, &op.parent, &op.name);
             }
-            OpType::EncConfig => {}
+            OpType::EncConfig => {
+                self.encfg = Some(op.clone());
+            }
         }
     }
 
@@ -272,6 +276,29 @@ impl Namespace {
                 d.name = name.to_string();
             }
         }
+    }
+
+    /// Tombstoned entries (trash view), folders first.
+    pub fn list_trash(&self) -> Vec<Entry> {
+        let mut folders: Vec<_> = self
+            .folders
+            .values()
+            .filter(|f| f.tombstoned)
+            .cloned()
+            .collect();
+        folders.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        let mut files: Vec<_> = self
+            .files
+            .values()
+            .filter(|f| f.tombstoned)
+            .cloned()
+            .collect();
+        files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        folders
+            .into_iter()
+            .map(Entry::Folder)
+            .chain(files.into_iter().map(Entry::File))
+            .collect()
     }
 
     /// Live entries directly under `parent` ("" = root), folders first then

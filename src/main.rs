@@ -1,4 +1,5 @@
 mod config;
+mod crypto;
 mod input;
 mod journal;
 mod project;

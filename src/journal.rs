@@ -23,9 +23,16 @@ pub struct UploadJob {
     pub upload_uuid: String,
     pub channel_id: i64,
     pub local_path: PathBuf,
+    /// Original plaintext source — needed to re-encrypt on resume.
+    #[serde(default)]
+    pub source_path: PathBuf,
     pub name: String,
     pub parent: String,
     pub stored_size: i64,
+    #[serde(default)]
+    pub plaintext_size: i64,
+    #[serde(default)]
+    pub encrypted: bool,
     pub parts: Vec<PartReceipt>,
     /// Set once the manifest message was accepted — file is live.
     pub manifest_msg_id: Option<i64>,
@@ -55,6 +62,9 @@ pub struct DownloadJob {
     /// Blocks confirmed (flushed) so far, 1 MiB each.
     pub confirmed_bytes: i64,
     pub done: bool,
+    /// Ciphertext staged on disk; decrypted to `dest` when complete.
+    #[serde(default)]
+    pub encrypted: bool,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -65,6 +75,9 @@ pub struct Journal {
     pub downloads: Vec<DownloadJob>,
     #[serde(default)]
     pub next_part_msg_check: BTreeMap<String, i64>,
+    /// channel_id → highest synced message id (incremental sync watermark).
+    #[serde(default)]
+    pub watermarks: BTreeMap<i64, i64>,
 }
 
 impl Journal {

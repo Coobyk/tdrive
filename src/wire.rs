@@ -132,6 +132,15 @@ pub struct Op {
     pub upload_uuid: String,
     pub part_index: i32,
     pub part_count: i32,
+
+    /// Vault fields on `encfg` ops (kept as raw wire strings — the crypto
+    /// module base64-decodes them).
+    pub kdf_salt_b64: String,
+    pub kdf_params_json: String,
+    pub wrapped_key_b64: String,
+    pub key_check_b64: String,
+    pub hint: String,
+    pub config_version: i32,
 }
 
 /// Unknown op types parse as `Unknown` so a newer TDrive's messages are
@@ -368,16 +377,27 @@ pub fn parse(raw: &str) -> Result<Op, WireError> {
             op.part_count = pc;
         }
         OpType::EncConfig => {
-            // Fields kept raw; the MVP does not decrypt.
-            for key in ["salt", "kdf", "wrap", "check"] {
-                if get(key).is_empty() {
+            for (key, dst) in [
+                ("salt", &mut op.kdf_salt_b64),
+                ("kdf", &mut op.kdf_params_json),
+                ("wrap", &mut op.wrapped_key_b64),
+                ("check", &mut op.key_check_b64),
+            ] {
+                let raw = get(key);
+                if raw.is_empty() {
                     return Err(WireError::Malformed);
                 }
+                // kdf JSON is url-escaped on the wire; the rest are base64url.
+                *dst = if key == "kdf" || key == "hint" {
+                    query_unescape(raw)?
+                } else {
+                    raw.to_string()
+                };
             }
             if let Some(hint) = kv.get("hint") {
-                op.name = query_unescape(hint)?; // reuse name slot for hint
+                op.hint = query_unescape(hint)?;
             }
-            op.encryption_version = kv
+            op.config_version = kv
                 .get("cv")
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(1);
@@ -568,6 +588,22 @@ pub fn format(op: &Op) -> String {
             );
             append_file_attrs(&mut b, op);
         }
+        OpType::EncConfig => {
+            let _ = write!(
+                b,
+                "|salt={}|kdf={}|wrap={}|check={}",
+                op.kdf_salt_b64,
+                query_escape(&op.kdf_params_json),
+                op.wrapped_key_b64,
+                op.key_check_b64
+            );
+            if !op.hint.is_empty() {
+                let _ = write!(b, "|hint={}", query_escape(&op.hint));
+            }
+            if op.config_version > 1 {
+                let _ = write!(b, "|cv={}", op.config_version);
+            }
+        }
         OpType::FileCommit => {
             let _ = write!(b, "|v={}|oid={}", op.protocol_version, query_escape(&op.op_id));
             let _ = write!(b, "|p={}|n={}", op.parent, query_escape(&op.name));
@@ -580,6 +616,17 @@ pub fn format(op: &Op) -> String {
                 let _ = write!(b, "|hash={}", query_escape(&op.content_hash));
             }
             append_file_attrs(&mut b, op);
+        }
+        OpType::RestoreTree => {
+            let _ = write!(b, "|v={}|oid={}", op.protocol_version, query_escape(&op.op_id));
+            let _ = write!(
+                b,
+                "|obj={}|p={}|n={}|rev={}",
+                op.obj,
+                op.parent,
+                query_escape(&op.name),
+                op.expected_revision
+            );
         }
         _ => panic!("format: op type {op_type:?} not supported for writing"),
     }

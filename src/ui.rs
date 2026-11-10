@@ -34,6 +34,8 @@ enum Modal {
     Rename { obj: String },
     Move { obj: String },
     Delete { obj: String, name: String },
+    Unlock { hint: String },
+    Encrypt,
 }
 
 pub struct Root {
@@ -59,6 +61,12 @@ pub struct Root {
     pending_uploads: usize,
     modal: Option<Modal>,
     signed_in_as: String,
+    f_search: Entity<TextField>,
+    f_invite: Entity<TextField>,
+    vault_configured: bool,
+    vault_unlocked: bool,
+    vault_hint: String,
+    trash: bool,
 }
 
 impl Root {
@@ -73,6 +81,9 @@ impl Root {
             cx.new(|cx| TextField::new(cx, "f-password", "2FA password").masked());
         let f_channel = cx.new(|cx| TextField::new(cx, "f-channel", "drive name"));
         let f_name = cx.new(|cx| TextField::new(cx, "f-name", "name"));
+        let f_search = cx.new(|cx| TextField::new(cx, "f-search", "search files…"));
+        let f_invite = cx.new(|cx| TextField::new(cx, "f-invite", "t.me/+… invite link"));
+        cx.observe(&f_search, |_, _, cx| cx.notify()).detach();
 
         let mut root = Self {
             tg: tx,
@@ -95,6 +106,12 @@ impl Root {
             pending_uploads: 0,
             modal: None,
             signed_in_as: String::new(),
+            f_search,
+            f_invite,
+            vault_configured: false,
+            vault_unlocked: false,
+            vault_hint: String::new(),
+            trash: false,
         };
 
         match AppConfig::load() {
@@ -193,6 +210,15 @@ impl Root {
             }
             Event::Transfer(t) => {
                 self.transfers.insert(t.id.clone(), t);
+            }
+            Event::VaultState {
+                configured,
+                unlocked,
+                hint,
+            } => {
+                self.vault_configured = configured;
+                self.vault_unlocked = unlocked;
+                self.vault_hint = hint;
             }
             Event::JournalChanged => {}
             Event::Error { context, message } => {
@@ -309,6 +335,10 @@ impl Root {
             .and_then(|c| c.download_dir.clone())
             .or_else(dirs::download_dir)
             .unwrap_or_else(|| PathBuf::from("."));
+        if let Some(cfg) = &mut self.config {
+            cfg.download_dir = Some(dir.clone());
+            let _ = cfg.save();
+        }
         let task = cx.prompt_for_new_path(&dir, Some(&name));
         let tx = self.tg.clone();
         cx.spawn(async move |_, _| {
@@ -546,7 +576,20 @@ impl Root {
                         .child(list),
                 )
                 .child(self.f_channel.clone())
-                .child(button("Create new drive", ACCENT, create)),
+                .child(button("Create new drive", ACCENT, create))
+                .child(self.f_invite.clone())
+                .child(button(
+                    "Join shared drive",
+                    ACCENT,
+                    cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                        let link = this.f_invite.read(cx).text().trim().to_string();
+                        if !link.is_empty() {
+                            this.send(Command::JoinInvite { link });
+                            this.status = "joining…".into();
+                        }
+                        cx.notify();
+                    }),
+                )),
         )
     }
 
@@ -578,14 +621,48 @@ impl Root {
             this.send(Command::SignOut);
             cx.notify();
         });
+        let trash_toggle = cx.listener(|this, _: &MouseDownEvent, _, cx| {
+            this.trash = !this.trash;
+            this.selected = None;
+            cx.notify();
+        });
+        let v_configured = self.vault_configured;
+        let v_unlocked = self.vault_unlocked;
+        let v_hint = self.vault_hint.clone();
+        let lock_btn = cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+            if v_configured && v_unlocked {
+                this.send(Command::Lock);
+            } else if v_configured {
+                this.modal = Some(Modal::Unlock { hint: v_hint.clone() });
+            } else {
+                this.modal = Some(Modal::Encrypt);
+            }
+            cx.notify();
+        });
 
-        let toolbar = div()
+        let mut toolbar = div()
             .flex()
             .items_center()
             .gap_2()
             .child(tool_button("↑ Upload", upload))
             .child(tool_button("+ Folder", new_folder))
             .child(tool_button("⟳ Sync", refresh))
+            .child(tool_button(
+                if self.trash { "Files" } else { "Trash" },
+                trash_toggle,
+            ));
+        let lock_label = if self.vault_configured {
+            if self.vault_unlocked {
+                "🔓 Unlocked"
+            } else {
+                "🔒 Unlock"
+            }
+        } else {
+            "🔒 Encrypt"
+        };
+        toolbar = toolbar.child(tool_button(lock_label, lock_btn));
+        toolbar = toolbar
+            .child(div().w(px(150.)).child(self.f_search.clone()))
             .child(div().flex_1())
             .child(tool_button("Drives", back))
             .child(tool_button("Sign out", sign_out));
@@ -629,8 +706,23 @@ impl Root {
                 );
         }
 
-        // File rows
-        let entries = self.namespace.list(&self.cwd);
+        // File rows — trash view, search results, or folder listing.
+        let search = self.f_search.read(cx).text().trim().to_lowercase();
+        let entries: Vec<Entry> = if self.trash {
+            self.namespace.list_trash()
+        } else if !search.is_empty() {
+            let mut files: Vec<_> = self
+                .namespace
+                .files
+                .values()
+                .filter(|f| !f.tombstoned && f.name.to_lowercase().contains(&search))
+                .cloned()
+                .collect();
+            files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            files.into_iter().map(Entry::File).collect()
+        } else {
+            self.namespace.list(&self.cwd)
+        };
         let mut rows = div().id("rows").flex().flex_col().w_full();
         if entries.is_empty() {
             rows = rows.child(
@@ -639,7 +731,13 @@ impl Root {
                     .flex()
                     .justify_center()
                     .text_color(rgb(DIM))
-                    .child("empty folder"),
+                    .child(if self.trash {
+                        "trash is empty"
+                    } else if !search.is_empty() {
+                        "no matches"
+                    } else {
+                        "empty folder"
+                    }),
             );
         }
         for entry in &entries {
@@ -666,7 +764,15 @@ impl Root {
                         .child(name.clone()),
                 )
                 .child(div().flex_1());
-            if is_file {
+            if self.trash {
+                let obj = sel_c.clone();
+                let rs = cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                    this.send(Command::Restore { obj: obj.clone() });
+                    this.selected = None;
+                    cx.notify();
+                });
+                actions = actions.child(tool_button("Restore", rs));
+            } else if is_file {
                 let file = self.namespace.files.get(sel).cloned();
                 if let Some(file) = file {
                     let dl = cx.listener(move |this, _: &MouseDownEvent, _, cx| {
@@ -675,7 +781,7 @@ impl Root {
                     actions = actions.child(tool_button("Download", dl));
                 }
             }
-            {
+            if !self.trash {
                 let obj = sel_c.clone();
                 let rn = cx.listener(move |this, _: &MouseDownEvent, _, cx| {
                     this.modal = Some(Modal::Rename { obj: obj.clone() });
@@ -715,46 +821,64 @@ impl Root {
                 TransferState::Done => ("done", 0x22c55e),
                 TransferState::Failed => ("failed", DANGER),
             };
-            transfers = transfers.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .child(
-                        div()
-                            .w(px(200.))
-                            .text_sm()
-                            .text_color(rgb(TEXT))
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .child(t.label.clone()),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .h(px(6.))
-                            .rounded_full()
-                            .bg(rgb(BORDER))
-                            .child(
-                                div()
-                                    .h(px(6.))
-                                    .w(relative(frac))
-                                    .rounded_full()
-                                    .bg(rgb(color)),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .w(px(110.))
-                            .text_sm()
-                            .text_color(rgb(DIM))
-                            .child(if state_label.is_empty() {
-                                format!("{} / {}", human_size(t.sent), human_size(t.total))
-                            } else {
-                                state_label.to_string()
+            let mut row = div()
+                .flex()
+                .items_center()
+                .gap_3()
+                .child(
+                    div()
+                        .w(px(200.))
+                        .text_sm()
+                        .text_color(rgb(TEXT))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .child(t.label.clone()),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .h(px(6.))
+                        .rounded_full()
+                        .bg(rgb(BORDER))
+                        .child(
+                            div()
+                                .h(px(6.))
+                                .w(relative(frac))
+                                .rounded_full()
+                                .bg(rgb(color)),
+                        ),
+                )
+                .child(
+                    div()
+                        .w(px(110.))
+                        .text_sm()
+                        .text_color(rgb(DIM))
+                        .child(if state_label.is_empty() {
+                            format!("{} / {}", human_size(t.sent), human_size(t.total))
+                        } else {
+                            state_label.to_string()
+                        }),
+                );
+            if t.state == TransferState::Active {
+                let id = t.id.clone();
+                row = row.child(
+                    div()
+                        .id(SharedString::from(format!("cx-{id}")))
+                        .px_2()
+                        .rounded_md()
+                        .hover(|s| s.bg(rgb(PANEL2)))
+                        .cursor_pointer()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, _, cx| {
+                                this.send(Command::Cancel { id: id.clone() });
+                                cx.notify();
                             }),
-                    ),
-            );
+                        )
+                        .child(div().text_sm().text_color(rgb(DANGER)).child("✕")),
+                );
+            }
+            transfers = transfers.child(row);
         }
 
         div()
@@ -954,6 +1078,55 @@ impl Root {
                 }
                 ("Move to…".into(), list.into_any_element())
             }
+            Modal::Unlock { hint } => (
+                format!("Unlock drive{}", if hint.is_empty() { "".into() } else { format!(" (hint: {hint})") }).into(),
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .child(self.f_password.clone())
+                    .child({
+                        let ok = cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                            let pw = this.f_password.read(cx).text();
+                            this.send(Command::Unlock { password: pw });
+                            this.f_password.update(cx, |f, cx| f.clear(cx));
+                            this.modal = None;
+                            cx.notify();
+                        });
+                        button("Unlock", ACCENT, ok)
+                    })
+                    .into_any_element(),
+            ),
+            Modal::Encrypt => (
+                "Enable encryption".into(),
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(rgb(DIM))
+                            .child("Creates a password vault on this drive. There is no recovery without the password."),
+                    )
+                    .child(self.f_password.clone())
+                    .child(self.f_channel.clone())
+                    .child({
+                        let ok = cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                            let pw = this.f_password.read(cx).text();
+                            if pw.is_empty() {
+                                return;
+                            }
+                            let hint = this.f_channel.read(cx).text();
+                            this.send(Command::EnableEncryption { password: pw, hint });
+                            this.f_password.update(cx, |f, cx| f.clear(cx));
+                            this.modal = None;
+                            cx.notify();
+                        });
+                        button("Create vault", ACCENT, ok)
+                    })
+                    .into_any_element(),
+            ),
             Modal::Delete { obj, name } => {
                 let obj = obj.clone();
                 (
