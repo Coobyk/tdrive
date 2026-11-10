@@ -60,6 +60,7 @@ pub enum Command {
     Lock,
     EnableEncryption { password: String, hint: String },
     JoinInvite { link: String },
+    FetchThumbnail { file_id: String },
     LiveSync,
     SignOut,
 }
@@ -94,6 +95,7 @@ pub enum Event {
     Error { context: &'static str, message: String },
     VaultState { configured: bool, unlocked: bool, hint: String },
     InviteLink { link: String },
+    ThumbnailReady { file_id: String, path: PathBuf },
     SignedOut,
 }
 
@@ -225,6 +227,7 @@ impl Worker {
                 self.enable_encryption(&password, &hint).await
             }
             Command::JoinInvite { link } => self.join_invite(&link).await,
+            Command::FetchThumbnail { file_id } => self.fetch_thumbnail(&file_id).await,
             Command::LiveSync => self.live_sync().await,
             Command::SignOut => self.sign_out().await,
         }
@@ -1372,6 +1375,56 @@ impl Worker {
             }
         }
         Err(anyhow!("invite did not resolve to a channel"))
+    }
+
+    /// Download a file's "thumb" rendition into the local cache and tell
+    /// the UI where to read it. Encrypted renditions decrypt with TDE1.
+    async fn fetch_thumbnail(&mut self, file_id: &str) -> Result<()> {
+        let Some((body_id, r)) = self
+            .namespace
+            .renditions
+            .get(file_id)
+            .and_then(|m| m.get("thumb"))
+            .cloned()
+        else {
+            return Ok(());
+        };
+        let dir = dirs::cache_dir()
+            .unwrap_or_else(std::env::temp_dir)
+            .join("tdrive-rs/thumbs");
+        std::fs::create_dir_all(&dir)?;
+        let out = dir.join(format!("{body_id}.bin"));
+        if out.exists() {
+            self.emit(Event::ThumbnailReady {
+                file_id: file_id.to_string(),
+                path: out,
+            });
+            return Ok(());
+        }
+        let client = self.client()?.clone();
+        let peer = self.channel()?;
+        let msgs = client.get_messages_by_id(peer, &[body_id as i32]).await?;
+        let msg = msgs.into_iter().flatten().next().context("rendition body missing")?;
+        let media = msg.media().context("rendition body has no media")?;
+        if r.encrypted {
+            let master = self.master_key.context("drive locked")?;
+            let staging = dir.join(format!("{body_id}.enc"));
+            client.download_media(&media, &staging).await?;
+            let out2 = out.clone();
+            let staging2 = staging.clone();
+            tokio::task::spawn_blocking(move || {
+                crypto::decrypt_file(&master, &staging2, &out2)
+            })
+            .await??;
+            let _ = std::fs::remove_file(&staging);
+        } else {
+            client.download_media(&media, &out).await?;
+        }
+        self.emit(Event::ThumbnailReady {
+            file_id: file_id.to_string(),
+            path: out,
+        });
+        Ok(())
     }
 
     /// Debounced incremental refresh triggered by incoming updates.

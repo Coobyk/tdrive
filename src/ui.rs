@@ -68,6 +68,7 @@ pub struct Root {
     vault_hint: String,
     trash: bool,
     drive_focus: FocusHandle,
+    thumbnails: std::collections::HashMap<String, std::path::PathBuf>,
 }
 
 impl Root {
@@ -114,6 +115,7 @@ impl Root {
             vault_hint: String::new(),
             trash: false,
             drive_focus: cx.focus_handle(),
+            thumbnails: Default::default(),
         };
 
         match AppConfig::load() {
@@ -224,6 +226,9 @@ impl Root {
             }
             Event::InviteLink { link } => {
                 self.status = format!("invite link: {link}");
+            }
+            Event::ThumbnailReady { file_id, path } => {
+                self.thumbnails.insert(file_id, path);
             }
             Event::JournalChanged => {}
             Event::Error { context, message } => {
@@ -818,6 +823,9 @@ impl Root {
                 .unwrap_or_default();
             let sel_c = sel.clone();
             let is_file = sel.starts_with('f');
+            if let Some(path) = self.thumbnails.get(&sel_c) {
+                actions = actions.child(img(path.clone()).w(px(28.)).h(px(28.)));
+            }
             actions = actions
                 .child(
                     div()
@@ -1146,6 +1154,7 @@ impl Root {
                         this.selected = None;
                     } else {
                         this.selected = Some(id_click.clone());
+                        this.send(Command::FetchThumbnail { file_id: id_click.clone() });
                     }
                     cx.notify();
                 }),
