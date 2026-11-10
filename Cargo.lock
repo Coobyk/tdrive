@@ -6046,6 +6046,7 @@ dependencies = [
  "grammers-session",
  "hkdf 0.13.0",
  "image",
+ "libc",
  "rand 0.10.3",
  "serde",
  "serde_json",

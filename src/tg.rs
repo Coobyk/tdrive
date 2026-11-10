@@ -4,6 +4,7 @@
 use crate::config;
 use crate::crypto::{self, VaultConfig};
 use crate::dav;
+use crate::fusefs;
 use crate::journal::{DownloadJob, Journal, PartReceipt, UploadJob};
 use crate::project::Namespace;
 use crate::stream;
@@ -78,6 +79,8 @@ pub enum Command {
     Pause { id: String },
     Resume { id: String },
     BackupPhotos { paths: Vec<PathBuf> },
+    Mount { dir: PathBuf },
+    Unmount,
     /// Continuous photo backup — watch a folder for new images.
     WatchBackup { dir: PathBuf },
     BackupTick,
@@ -119,6 +122,7 @@ pub enum Event {
     ThumbnailReady { file_id: String, path: PathBuf },
     StreamUrl { url: String },
     DavUrl { url: String },
+    MountState { dir: Option<PathBuf> },
     SignedOut,
 }
 
@@ -189,6 +193,7 @@ pub fn spawn() -> Handle {
                 channel_kind: String::new(),
                 paused_downloads: HashMap::new(),
                 ns_shared: Arc::new(Mutex::new(Arc::new(Namespace::new()))),
+                fuse_session: None,
                 cancels: HashMap::new(),
                 last_live_sync: std::time::Instant::now()
                     - std::time::Duration::from_secs(10),
@@ -226,6 +231,8 @@ struct Worker {
     paused_downloads: HashMap<String, (String, PathBuf)>,
     /// Latest namespace snapshot shared with the WebDAV server.
     ns_shared: Arc<Mutex<Arc<Namespace>>>,
+    /// Live FUSE mount session — dropping it unmounts.
+    fuse_session: Option<fuser::BackgroundSession>,
     cancels: HashMap<String, CancellationToken>,
     last_live_sync: std::time::Instant,
     journal: Journal,
@@ -317,6 +324,12 @@ impl Worker {
                 .await
             }
             Command::BackupTick => self.backup_tick().await,
+            Command::Mount { dir } => self.mount_drive(dir).await,
+            Command::Unmount => {
+                self.fuse_session = None;
+                self.emit(Event::MountState { dir: None });
+                Ok(())
+            }
             Command::LiveSync => self.live_sync().await,
             Command::SignOut => self.sign_out().await,
         }
@@ -1911,6 +1924,22 @@ impl Worker {
             .map(|rd| rd.flatten().map(|e| e.path()).collect())
             .unwrap_or_default();
         self.backup_photos(paths).await
+    }
+
+    /// Mount the drive read-only at `dir` via FUSE — TDrive's mount surface
+    /// for Linux file managers.
+    async fn mount_drive(&mut self, dir: PathBuf) -> Result<()> {
+        let fs = fusefs::TdFs::new(
+            self.ns_shared.clone(),
+            self.client()?.clone(),
+            self.channel()?,
+            self.master_key.clone(),
+            tokio::runtime::Handle::current(),
+        );
+        let session = fusefs::mount(fs, &dir)?;
+        self.fuse_session = Some(session);
+        self.emit(Event::MountState { dir: Some(dir) });
+        Ok(())
     }
 
     /// Apply a WebDAV write through the durable mount-write ops TDrive's

@@ -38,6 +38,7 @@ enum Modal {
     Encrypt,
     Adopt,
     WatchBackup,
+    Mount,
 }
 
 pub struct Root {
@@ -74,6 +75,7 @@ pub struct Root {
     thumb_requested: std::collections::HashSet<String>,
     grid: bool,
     channel_kind: String,
+    mount_dir: Option<String>,
 }
 
 impl Root {
@@ -124,6 +126,7 @@ impl Root {
             thumb_requested: Default::default(),
             grid: false,
             channel_kind: String::new(),
+            mount_dir: None,
         };
 
         match AppConfig::load() {
@@ -238,6 +241,12 @@ impl Root {
             }
             Event::ThumbnailReady { file_id, path } => {
                 self.thumbnails.insert(file_id, path);
+            }
+            Event::MountState { dir } => {
+                self.mount_dir = dir.map(|d| d.display().to_string());
+                if let Some(d) = &self.mount_dir {
+                    self.status = format!("mounted at {d}");
+                }
             }
             Event::DavUrl { url } => {
                 self.status = format!("mount: {url}");
@@ -664,6 +673,14 @@ impl Root {
             this.modal = Some(Modal::WatchBackup);
             cx.notify();
         });
+        let mount = cx.listener(|this, _: &MouseDownEvent, _, cx| {
+            if this.mount_dir.is_some() {
+                this.send(Command::Unmount);
+            } else {
+                this.modal = Some(Modal::Mount);
+            }
+            cx.notify();
+        });
         let refresh = cx.listener(|this, _: &MouseDownEvent, _, cx| {
             this.send(Command::Sync);
             this.status = "syncing…".into();
@@ -710,6 +727,10 @@ impl Root {
             .child(tool_button("+ Folder", new_folder))
             .child(tool_button("📷 Backup", backup))
             .child(tool_button("👁 Watch", watch))
+            .child(tool_button(
+                if self.mount_dir.is_some() { "⏏ Unmount" } else { "⬇ Mount" },
+                mount,
+            ))
             .child(tool_button("⟳ Sync", refresh))
             .child(tool_button(
                 if self.trash { "Files" } else { "Trash" },
@@ -1509,6 +1530,31 @@ impl Root {
                     })
                     .into_any_element(),
             ),
+            Modal::Mount => {
+                (
+                    "Mount drive (read-only)".into(),
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_3()
+                        .child(div().text_sm().text_color(rgb(DIM)).child(
+                            "Mount point path — the drive appears as a read-only filesystem.",
+                        ))
+                        .child(self.f_name.clone())
+                        .child({
+                            let ok = cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                                let dir = std::path::PathBuf::from(
+                                    this.f_name.read(cx).text().trim().to_string(),
+                                );
+                                this.send(Command::Mount { dir });
+                                this.modal = None;
+                                cx.notify();
+                            });
+                            button("Mount", ACCENT, ok)
+                        })
+                        .into_any_element(),
+                )
+            }
             Modal::WatchBackup => {
                 (
                     "Watch backup folder".into(),
