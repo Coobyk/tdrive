@@ -157,6 +157,9 @@ async fn write_method(
     // Resolve the op locally from the namespace snapshot.
     let op = match method {
         "MKCOL" => {
+            if resolve_obj(snapshot, path).is_ok() {
+                return (405, b"exists".to_vec());
+            }
             let (dir, name) = path.rsplit_once('/').unwrap_or(("", path));
             let name = urlencoding::decode(name).unwrap_or_default().to_string();
             match resolve_dir(snapshot, dir) {
@@ -198,7 +201,7 @@ async fn write_method(
                 .find_map(|l| l.strip_prefix("Content-Length:").map(str::trim))
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(0);
-            if clen == 0 || clen > 200 * 1024 * 1024 {
+            if clen > 200 * 1024 * 1024 {
                 return (411, b"bad length".to_vec());
             }
             let mut body = buf[header_len..].to_vec();
@@ -213,11 +216,21 @@ async fn write_method(
             let (dir, name) = path.rsplit_once('/').unwrap_or(("", path));
             let name = urlencoding::decode(name).unwrap_or_default().to_string();
             match resolve_dir(snapshot, dir) {
-                Ok(parent) => crate::tg::DavOp::Put {
-                    parent,
-                    name,
-                    bytes: body,
-                },
+                Ok(parent) => {
+                    // Overwrite → freplace (TDrive's mount PUT), else fcommit.
+                    match resolve_obj(snapshot, path) {
+                        Ok(obj) if obj.starts_with('f') => crate::tg::DavOp::Replace {
+                            obj,
+                            bytes: body,
+                        },
+                        Ok(_) => return (405, b"can't overwrite dir".to_vec()),
+                        Err(_) => crate::tg::DavOp::Put {
+                            parent,
+                            name,
+                            bytes: body,
+                        },
+                    }
+                }
                 Err(_) => return (409, b"bad parent".to_vec()),
             }
         }

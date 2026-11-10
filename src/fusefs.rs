@@ -306,7 +306,19 @@ impl Filesystem for TdFs {
         let obj = match self.inos.lock().unwrap().obj(ino.0).map(str::to_string) {
             Some(o) => o,
             None => {
-                reply.error(Errno::ENOENT);
+                // Pending mknod/create inos aren't committed to the
+                // namespace yet — report them as fresh empty files.
+                if self.inos.lock().unwrap().pending.contains_key(&ino.0) {
+                    reply.attr(&TTL, &FileAttr {
+                        ino, size: 0, blocks: 0, atime: SystemTime::now(),
+                        mtime: SystemTime::now(), ctime: SystemTime::now(),
+                        crtime: SystemTime::now(), kind: FileType::RegularFile,
+                        perm: 0o644, nlink: 1, uid: 0, gid: 0, rdev: 0,
+                        blksize: 4096, flags: 0,
+                    });
+                } else {
+                    reply.error(Errno::ENOENT);
+                }
                 return;
             }
         };
@@ -785,7 +797,7 @@ impl Filesystem for TdFs {
     }
 
     fn statfs(&self, _req: &Request, _ino: INodeNo, reply: fuser::ReplyStatfs) {
-        reply.statfs(0, 0, 0, 0, 0, 4096, 255, 0);
+        reply.statfs(1 << 30, 1 << 30, 1 << 30, 1 << 20, 1 << 20, 4096, 255, 0);
     }
 }
 

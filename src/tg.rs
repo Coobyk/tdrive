@@ -198,6 +198,7 @@ pub fn spawn() -> Handle {
                 actor_id: 0,
                 channel_kind: String::new(),
                 paused_downloads: HashMap::new(),
+                live_sync_queued: Default::default(),
                 ns_shared: Arc::new(Mutex::new(Arc::new(Namespace::new()))),
                 fuse_session: None,
                 thumb_sem: Arc::new(tokio::sync::Semaphore::new(8)),
@@ -237,6 +238,7 @@ struct Worker {
     channel_kind: String,
     /// Paused downloads: transfer id -> (file_id, dest dir) for Resume.
     paused_downloads: HashMap<String, (String, PathBuf)>,
+    live_sync_queued: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Latest namespace snapshot shared with the WebDAV server.
     ns_shared: Arc<Mutex<Arc<Namespace>>>,
     /// Live FUSE mount session — dropping it unmounts.
@@ -374,9 +376,14 @@ impl Worker {
         // Any incoming update hints at new history — trigger a (cheap)
         // incremental sync back through the command queue.
         let cmd_tx = self.cmd_tx.clone();
+        let queued = self.live_sync_queued.clone();
         tokio::spawn(async move {
             while updates.recv().await.is_some() {
-                if cmd_tx.send(Command::LiveSync).is_err() {
+                // Coalesce — a chatty account must not queue a resync
+                // backlog that starves user commands.
+                if !queued.swap(true, std::sync::atomic::Ordering::Relaxed)
+                    && cmd_tx.send(Command::LiveSync).is_err()
+                {
                     break;
                 }
             }
@@ -913,7 +920,7 @@ impl Worker {
 
         // Encrypt to a staged ciphertext when the drive vault is unlocked.
         let (source, size, encrypted) = if let Some(master) = *self.master_key.lock().unwrap() {
-            let ct_path = std::env::temp_dir().join(format!(
+            let ct_path = config::staging_dir().unwrap_or_else(|_| std::env::temp_dir()).join(format!(
                 "tdrive-enc-{}.bin",
                 uuid::Uuid::new_v4()
             ));
@@ -1083,7 +1090,7 @@ impl Worker {
         if job.encrypted && !job.local_path.exists() {
             let master = (*self.master_key.lock().unwrap())
                 .context("drive locked — cannot resume encrypted upload")?;
-            let ct_path = std::env::temp_dir().join(format!(
+            let ct_path = config::staging_dir().unwrap_or_else(|_| std::env::temp_dir()).join(format!(
                 "tdrive-enc-{}.bin",
                 uuid::Uuid::new_v4()
             ));
@@ -1475,13 +1482,14 @@ impl Worker {
             if skip > 0 {
                 dl = dl.skip_chunks(skip);
             }
+            let mut since_ckpt = 0u32;
             while let Some(chunk) = dl.next().await? {
                 if token.is_cancelled() {
+                    self.save_journal();
                     return Err(anyhow!("download cancelled"));
                 }
                 out.write_all(&chunk).await?;
                 written += chunk.len() as i64;
-                out.sync_data().await?;
                 if let Some(j) = self
                     .journal
                     .downloads
@@ -1490,9 +1498,18 @@ impl Worker {
                 {
                     j.confirmed_bytes = written;
                 }
-                self.save_journal();
-                self.upload_update(&transfer_id, &job.name, written, job.total_size, TransferState::Active);
+                since_ckpt += 1;
+                if since_ckpt >= 8 {
+                    // TDrive checkpoints every 8 blocks — per-chunk fsync +
+                    // full-journal rewrite is pathologically slow.
+                    since_ckpt = 0;
+                    out.sync_data().await?;
+                    self.save_journal();
+                    self.upload_update(&transfer_id, &job.name, written, job.total_size, TransferState::Active);
+                }
             }
+            out.sync_data().await?;
+            self.save_journal();
         }
         drop(out);
         if job.encrypted {
@@ -2245,6 +2262,8 @@ impl Worker {
 
     /// Debounced incremental refresh triggered by incoming updates.
     async fn live_sync(&mut self) -> Result<()> {
+        self.live_sync_queued
+            .store(false, std::sync::atomic::Ordering::Relaxed);
         // A zero watermark just means empty-or-unsynced — full scan is the
         // correct response, not a permanent wedge.
         if self.channel.is_none() {

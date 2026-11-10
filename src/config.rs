@@ -64,3 +64,11 @@ pub fn namespace_path(channel_id: i64) -> Result<PathBuf> {
 pub fn journal_path() -> Result<PathBuf> {
     Ok(data_dir()?.join("journal.json"))
 }
+
+/// Whole-file ciphertext staging — data_dir, never tmpfs (a 40 GiB
+/// staged ciphertext would live in RAM under /tmp).
+pub fn staging_dir() -> Result<PathBuf> {
+    let d = data_dir()?.join("staging");
+    std::fs::create_dir_all(&d)?;
+    Ok(d)
+}
