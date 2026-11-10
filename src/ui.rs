@@ -81,6 +81,10 @@ pub struct Root {
     entries_cache: Vec<Entry>,
     grid_cols: usize,
     list_scroll: UniformListScrollHandle,
+    /// View key (cwd/mode) — when it changes the scroll handle resets, so
+    /// a deep scroll in one folder can't point past the next folder's
+    /// end and show a blank list.
+    last_view_key: String,
 }
 
 impl Root {
@@ -135,6 +139,7 @@ impl Root {
             entries_cache: Vec::new(),
             grid_cols: 4,
             list_scroll: UniformListScrollHandle::new(),
+            last_view_key: String::new(),
         };
 
         match AppConfig::load() {
@@ -829,6 +834,16 @@ impl Root {
         }
 
         // File rows — trash view, search results, or folder listing.
+        let view_key = format!(
+            "{}|{}|{}",
+            self.cwd,
+            self.trash,
+            self.channel.as_ref().map(|c| c.id).unwrap_or(0)
+        );
+        if view_key != self.last_view_key {
+            self.list_scroll = UniformListScrollHandle::new();
+            self.last_view_key = view_key;
+        }
         self.entries_cache = self.current_entries(cx);
         let mut rows = div()
             .id("rows")
