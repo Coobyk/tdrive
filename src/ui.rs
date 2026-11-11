@@ -113,6 +113,7 @@ pub struct Root {
     last_items_len: usize,
     viewer: Option<Viewer>,
     activity_frame: u8,
+    transfers_expanded: bool,
     /// Auto-open the last drive only on the first channel list — a relist
     /// after "Drives" must not reopen it and bounce back.
     auto_open_done: bool,
@@ -180,6 +181,7 @@ impl Root {
             last_view_key: String::new(),
             viewer: None,
             activity_frame: 0u8,
+            transfers_expanded: false,
             auto_open_done: false,
             syncing: false,
             nav_back: Vec::new(),
@@ -1220,9 +1222,88 @@ impl Root {
             }
         }
 
-        // Transfers
-        let mut transfers = div().flex().flex_col().gap_1().px_3().py_2();
-        for t in self.transfers.values() {
+        // Transfers — collapsed shows up to `upload_limit` rows (the live
+        // concurrency), expanded shows everything. Always scrollable.
+        let active_count = self
+            .transfers
+            .values()
+            .filter(|t| t.state == TransferState::Active || t.state == TransferState::Paused)
+            .count();
+        let total = self.transfers.len();
+        let limit = self
+            .config
+            .as_ref()
+            .map(|c| c.upload_limit)
+            .unwrap_or(3)
+            .max(1);
+        let cap = if self.transfers_expanded { 8usize } else { limit };
+        let mut transfers = div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_3()
+                    .pt_2()
+                    .pb_1()
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(rgb(DIM))
+                            .child(format!(
+                                "Transfers · {active_count} active · {total} total"
+                            )),
+                    )
+                    .child(div().flex_1())
+                    .child(if total > limit {
+                        div()
+                            .id("transfers-toggle")
+                            .px_2()
+                            .rounded_md()
+                            .text_xs()
+                            .text_color(rgb(DIM))
+                            .hover(|s| s.bg(rgb(PANEL2)).text_color(rgb(TEXT)))
+                            .cursor_pointer()
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                                    this.transfers_expanded = !this.transfers_expanded;
+                                    cx.notify();
+                                }),
+                            )
+                            .child(if self.transfers_expanded {
+                                "▾ collapse"
+                            } else {
+                                "▸ show all"
+                            })
+                            .into_any_element()
+                    } else {
+                        div().into_any_element()
+                    }),
+            )
+            .child({
+                let mut list = div()
+                    .id("transfers-scroll")
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .px_3()
+                    .pb_2()
+                    .max_h(px(28. * cap as f32 + 8.))
+                    .overflow_y_scroll();
+                // Active/paused first, failed, then done — live work on top.
+                let mut ordered: Vec<&TransferUpdate> = self.transfers.values().collect();
+                ordered.sort_by_key(|t| match t.state {
+                    TransferState::Active => 0,
+                    TransferState::Paused => 1,
+                    TransferState::Failed => 2,
+                    TransferState::Done => 3,
+                });
+                for t in ordered {
             let frac = if t.total > 0 {
                 (t.sent as f32 / t.total as f32).clamp(0., 1.)
             } else {
@@ -1275,52 +1356,47 @@ impl Root {
             if t.state == TransferState::Active || t.state == TransferState::Paused {
                 let id = t.id.clone();
                 let resume_id = t.id.clone();
-                if t.state == TransferState::Active {
-                    row = row.child(
-                        div()
-                            .id(SharedString::from(format!("pa-{id}")))
-                            .px_2()
-                            .rounded_md()
-                            .text_sm()
-                            .text_color(rgb(TEXT))
-                            .hover(|s| s.bg(rgb(PANEL2)))
-                            .cursor_pointer()
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |this, _: &MouseDownEvent, _, cx| {
-                                    this.send(Command::Pause { id: id.clone() });
-                                    cx.notify();
-                                }),
-                            )
-                            .child("⏸"),
-                    );
+                let action = if t.state == TransferState::Active {
+                    ("pause", format!("pa-{id}"))
                 } else {
-                    row = row.child(
-                        div()
-                            .id(SharedString::from(format!("rs-{resume_id}")))
-                            .px_2()
-                            .rounded_md()
-                            .text_sm()
-                            .text_color(rgb(TEXT))
-                            .hover(|s| s.bg(rgb(PANEL2)))
-                            .cursor_pointer()
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |this, _: &MouseDownEvent, _, cx| {
-                                    this.send(Command::Resume { id: resume_id.clone() });
-                                    cx.notify();
-                                }),
-                            )
-                            .child("▶"),
-                    );
-                }
+                    ("resume", format!("rs-{id}"))
+                };
+                let send = if t.state == TransferState::Active {
+                    id.clone()
+                } else {
+                    resume_id.clone()
+                };
+                row = row.child(
+                    div()
+                        .id(SharedString::from(action.1))
+                        .px_2()
+                        .rounded_md()
+                        .text_xs()
+                        .text_color(rgb(DIM))
+                        .hover(|s| s.bg(rgb(PANEL2)).text_color(rgb(TEXT)))
+                        .cursor_pointer()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                                if action.0 == "pause" {
+                                    this.send(Command::Pause { id: send.clone() });
+                                } else {
+                                    this.send(Command::Resume { id: send.clone() });
+                                }
+                                cx.notify();
+                            }),
+                        )
+                        .child(action.0),
+                );
                 let id = t.id.clone();
                 row = row.child(
                     div()
                         .id(SharedString::from(format!("cx-{id}")))
                         .px_2()
                         .rounded_md()
-                        .hover(|s| s.bg(rgb(PANEL2)))
+                        .text_xs()
+                        .text_color(rgb(DANGER))
+                        .hover(|s| s.bg(rgba(0xe06c751f)))
                         .cursor_pointer()
                         .on_mouse_down(
                             MouseButton::Left,
@@ -1329,11 +1405,13 @@ impl Root {
                                 cx.notify();
                             }),
                         )
-                        .child(div().text_sm().text_color(rgb(DANGER)).child("✕")),
+                        .child("cancel"),
                 );
             }
-            transfers = transfers.child(row);
-        }
+                list = list.child(row);
+            }
+            list
+            });
 
         div()
             .flex()
