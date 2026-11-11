@@ -229,7 +229,7 @@ pub fn spawn() -> Handle {
                         .ok()
                         .flatten()
                         .map(|c| c.upload_limit)
-                        .unwrap_or(10)
+                        .unwrap_or(3)
                         .max(1),
                 )),
                 cancels: HashMap::new(),
@@ -1273,6 +1273,26 @@ impl Worker {
         if !dir.is_dir() {
             return Err(anyhow!("not a directory"));
         }
+        // Walk + mkdirs + enqueues run off the command loop — otherwise
+        // every folder's mkdir awaits a Telegram RTT (and flood-wait
+        // sleeps) serially on the loop, starving uploads in bursts.
+        // Files stream into the upload queue as they're discovered, so
+        // the semaphore always has work while the walk continues.
+        let ctx = self.transfer_ctx(CancellationToken::new())?;
+        tokio::spawn(async move {
+            if let Err(e) = Self::upload_dir_task(&ctx, dir, parent).await {
+                ctx.emit(Event::Error {
+                    context: "upload dir",
+                    message: format!("{e:#}"),
+                });
+            }
+        });
+        Ok(())
+    }
+
+    /// Background worker for UploadDir: creates folders as they're found
+    /// and feeds each file back to the loop as an Upload command.
+    async fn upload_dir_task(ctx: &TransferCtx, dir: PathBuf, parent: String) -> Result<()> {
         // Create the folder itself first — contents land inside it, not
         // scattered into the current directory.
         let root_obj = wire::new_folder_id();
@@ -1280,16 +1300,18 @@ impl Worker {
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "folder".into());
-        self.send_and_project(&Op {
+        let op = Op {
             op_type: OpTypeOrUnknown::Known(OpType::Mkdir),
             obj: root_obj.clone(),
             parent,
             name,
             ..Default::default()
-        })
-        .await?;
+        };
+        let header = wire::format(&op);
+        let msg_id = ctx.send_op(&header).await?;
+        ctx.op_applied(header, msg_id);
+
         let mut queue = vec![(dir, root_obj)];
-        let mut files = 0usize;
         while let Some((d, pid)) = queue.pop() {
             let mut entries: Vec<_> = std::fs::read_dir(&d)?
                 .filter_map(|e| e.ok())
@@ -1306,15 +1328,20 @@ impl Worker {
                         name: e.file_name().to_string_lossy().to_string(),
                         ..Default::default()
                     };
-                    self.send_and_project(&op).await?;
+                    let header = wire::format(&op);
+                    let msg_id = ctx.send_op(&header).await?;
+                    ctx.op_applied(header, msg_id);
                     queue.push((p, obj));
                 } else if p.is_file() {
-                    self.upload(p, pid.clone()).await?;
-                    files += 1;
+                    // Back to the loop — it registers + spawns the
+                    // transfer without blocking the walk.
+                    ctx.journal(Command::Upload {
+                        path: p,
+                        parent: pid.clone(),
+                    });
                 }
             }
         }
-        let _ = files;
         Ok(())
     }
 

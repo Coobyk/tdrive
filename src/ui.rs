@@ -418,7 +418,7 @@ impl Root {
             api_hash: api_hash.clone(),
             last_channel_id: None,
             download_dir: None,
-            upload_limit: 10,
+            upload_limit: 3,
         };
         if let Err(e) = cfg.save() {
             self.status = format!("cannot save config: {e}");
@@ -2249,7 +2249,7 @@ impl Root {
                         div()
                             .text_sm()
                             .text_color(rgb(DIM))
-                            .child("Max parallel uploads (1–16, default 10)"),
+                            .child("Max parallel uploads (1–16, default 3)"),
                     )
                     .child(self.f_name.clone())
                     .child({
