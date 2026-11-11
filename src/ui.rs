@@ -2317,8 +2317,8 @@ impl Root {
             }
             Modal::Adopt => {
                 let mut list = div().flex().flex_col().gap_1();
-                for (id, name, size, _, _) in self.namespace.unadopted.iter() {
-                    let msg_id = *id;
+                for e in self.namespace.unadopted.iter() {
+                    let msg_id = e.msg_id;
                     let parent = self.cwd.clone();
                     let ab = cx.listener(move |this, _: &MouseDownEvent, _, cx| {
                         this.send(Command::Adopt { msg_id, parent: parent.clone() });
@@ -2330,8 +2330,8 @@ impl Root {
                             .flex()
                             .items_center()
                             .gap_2()
-                            .child(div().flex_1().text_sm().child(format!("{name} ({})", human_size(*size))))
-                            .child(tool_button_id(format!("adopt-{id}"), "Adopt", ab)),
+                            .child(div().flex_1().text_sm().child(format!("{} ({})", e.name, human_size(e.size))))
+                            .child(tool_button_id(format!("adopt-{}", e.msg_id), "Adopt", ab)),
                     );
                 }
                 ("Unadopted attachments".into(), list.into_any_element())

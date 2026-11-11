@@ -41,6 +41,45 @@ pub struct FileEntry {
     pub revision: i64,
 }
 
+/// A channel message carrying a document but no TDX1 op — an adoptable
+/// raw attachment in a shared drive.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnadoptedEntry {
+    pub msg_id: i64,
+    pub name: String,
+    pub size: i64,
+    pub sender_id: i64,
+    pub date: i64,
+}
+
+/// A live or tombstoned object as seen by CAS writers.
+#[derive(Debug, Clone)]
+pub struct Dirent {
+    pub is_folder: bool,
+    pub revision: i64,
+    pub tombstoned: bool,
+    pub parent: String,
+    pub name: String,
+}
+
+/// Borrowed child entry — zero-cost view for path resolution.
+#[derive(Debug, Clone, Copy)]
+pub enum EntryRef<'a> {
+    Folder(&'a FolderEntry),
+    File(&'a FileEntry),
+}
+
+impl FileEntry {
+    /// Size as the user sees it: plaintext length when encrypted.
+    pub fn logical_size(&self) -> i64 {
+        if self.encrypted {
+            self.plaintext_size
+        } else {
+            self.size
+        }
+    }
+}
+
 /// Restorable-trash record created by a `trash` op.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrashEntry {
@@ -59,8 +98,6 @@ struct PartGroup {
     parts: HashMap<i32, (i64, i64)>,
 }
 
-/// Persisted projection snapshot (excludes the encfg op — it re-parses from
-/// history on the next incremental scan anyway).
 #[derive(Debug, Serialize, Deserialize)]
 pub struct NamespaceSnapshot {
     pub folders: HashMap<String, FolderEntry>,
@@ -69,9 +106,12 @@ pub struct NamespaceSnapshot {
     pub trash: HashMap<String, TrashEntry>,
     seen_ops: HashSet<String>,
     pub last_msg_id: i64,
+    /// Latest `encfg` op — the drive's encryption vault descriptor.
     pub encfg: Option<Op>,
     #[serde(default)]
     pub renditions: HashMap<String, HashMap<String, (i64, wire::Rendition)>>,
+    #[serde(default)]
+    pub unadopted: Vec<UnadoptedEntry>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -89,9 +129,8 @@ pub struct Namespace {
     pub encfg: Option<Op>,
     /// file id → kind ("thumb"|"preview") → (body msg id, descriptor)
     pub renditions: HashMap<String, HashMap<String, (i64, wire::Rendition)>>,
-    /// Channel messages carrying a document but no TDX1 op — adoptable raw
-    /// attachments in shared drives. (msg_id, name, size, sender id, date)
-    pub unadopted: Vec<(i64, String, i64, i64, i64)>,
+    /// Adoptable raw attachments (shared drives), oldest first.
+    pub unadopted: Vec<UnadoptedEntry>,
 }
 
 /// A visible listing row.
@@ -119,8 +158,10 @@ impl Namespace {
         self.apply(msg_id, &op);
         // Projection-owned messages aren't adoptable: the op itself, body
         // messages bound by fcommit/freplace, and meta targets.
-        self.unadopted.retain(|(id, _, _, _, _)| {
-            *id != msg_id && *id != op.content_msg_id && file_msg_id(&op.obj) != Some(*id)
+        self.unadopted.retain(|e| {
+            e.msg_id != msg_id
+                && e.msg_id != op.content_msg_id
+                && file_msg_id(&op.obj) != Some(e.msg_id)
         });
         true
     }
@@ -138,8 +179,14 @@ impl Namespace {
         if msg_id > self.last_msg_id {
             self.last_msg_id = msg_id;
         }
-        if self.unadopted.iter().all(|(id, _, _, _, _)| *id != msg_id) {
-            self.unadopted.push((msg_id, name, size, sender_id, date));
+        if self.unadopted.iter().all(|e| e.msg_id != msg_id) {
+            self.unadopted.push(UnadoptedEntry {
+                msg_id,
+                name,
+                size,
+                sender_id,
+                date,
+            });
         }
     }
 
@@ -384,7 +431,9 @@ impl Namespace {
                     return;
                 }
                 // Source CAS first — Go rejects before touching the dst.
-                let Some((src_is_folder, live_rev)) = self.dirent(&op.obj) else {
+                let Some((src_is_folder, live_rev)) =
+                    self.dirent(&op.obj).map(|d| (d.is_folder, d.revision))
+                else {
                     return;
                 };
                 if live_rev != op.expected_revision {
@@ -400,11 +449,11 @@ impl Namespace {
                     if !op.overwrite {
                         return;
                     }
-                    let Some((v_is_folder, v_rev, v_tomb, v_parent, v_name)) =
-                        self.dirent_info(&op.destination_obj)
-                    else {
+                    let Some(v) = self.dirent(&op.destination_obj) else {
                         return;
                     };
+                    let (v_is_folder, v_rev, v_tomb, v_parent, v_name) =
+                        (v.is_folder, v.revision, v.tombstoned, v.parent, v.name);
                     if v_is_folder
                         || v_tomb
                         || (op.expected_destination_revision > 0
@@ -455,7 +504,7 @@ impl Namespace {
                 {
                     return;
                 }
-                self.apply_trash(op, true);
+                self.apply_trash(op);
             }
             OpType::RestoreTree => {
                 if op.expected_revision <= 0 {
@@ -513,43 +562,9 @@ impl Namespace {
         }
     }
 
-    /// Returns (is_folder, revision) for the object when present (live or
-    /// tombstoned).
-    fn dirent(&self, obj: &str) -> Option<(bool, i64)> {
-        if let Some(f) = self.files.get(obj) {
-            return Some((false, f.revision));
-        }
-        if let Some(d) = self.folders.get(obj) {
-            return Some((true, d.revision));
-        }
-        None
-    }
-
-    /// CAS a relocate destination tombstone: `dst` objects must be live with
-    /// the expected revision, then are trashed in place.
-    fn destination_obj_trash(&mut self, dst: &str, drev: i64) -> bool {
-        if dst.is_empty() {
-            return true;
-        }
-        let Some((is_folder, rev)) = self.dirent(dst) else {
-            return true; // missing destination is not an obstacle
-        };
-        if drev > 0 && rev != drev {
-            return false;
-        }
-        let id = dst.to_string();
-        if is_folder {
-            self.tombstone_subtree_folder(&id);
-        } else if let Some(f) = self.files.get_mut(&id) {
-            f.tombstoned = true;
-            f.revision += 1;
-        }
-        true
-    }
-
     /// `trash` apply: CAS on live dirent revision, record trash entry,
     /// tombstone object + subtree, each revision+1.
-    fn apply_trash(&mut self, op: &Op, use_current_state: bool) {
+    fn apply_trash(&mut self, op: &Op) {
         let Some((is_folder, live_parent, live_name, live_rev)) = (|| {
             if let Some(f) = self.files.get(&op.obj) {
                 (!f.tombstoned).then(|| (false, f.parent.clone(), f.name.clone(), f.revision))
@@ -565,11 +580,7 @@ impl Namespace {
         if live_rev != op.expected_revision {
             return;
         }
-        let (orig_parent, orig_name) = if use_current_state {
-            (live_parent, live_name)
-        } else {
-            (live_parent, live_name)
-        };
+        let (orig_parent, orig_name) = (live_parent, live_name);
         self.trash.insert(
             op.obj.clone(),
             TrashEntry {
@@ -881,38 +892,104 @@ impl Namespace {
         by_pix.iter().map(|(_, id, sz)| (*id, *sz)).collect()
     }
 
-    /// Message ids carrying a file's bytes, in read order.
-    pub fn body_msg_ids(&self, file: &FileEntry) -> Vec<i64> {
-        if file.content_msg_id > 0 {
-            vec![file.content_msg_id]
-        } else if !file.upload_uuid.is_empty() && file.part_count > 0 {
-            self.part_msg_ids(&file.upload_uuid, file.part_count)
-                .unwrap_or_default()
-        } else {
-            vec![file.msg_id]
+    /// Body parts carrying a file's bytes, in read order:
+    /// (body message id, stored size).
+    pub fn body_parts(&self, file: &FileEntry) -> Vec<(i64, i64)> {
+        if !file.upload_uuid.is_empty() {
+            let parts = self.part_sizes(&file.upload_uuid);
+            if !parts.is_empty() {
+                return parts;
+            }
         }
+        if file.content_msg_id > 0 {
+            return vec![(file.content_msg_id, file.size)];
+        }
+        vec![(file.msg_id, file.size)]
     }
 
-    /// Live dirent (object id, kind flag, revision, tombstoned, parent, name).
-    pub fn dirent_info(&self, obj: &str) -> Option<(bool, i64, bool, String, String)> {
+    /// Message ids carrying a file's bytes, in read order.
+    pub fn body_msg_ids(&self, file: &FileEntry) -> Vec<i64> {
+        self.body_parts(file)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect()
+    }
+
+    /// Dirent for CAS writers: kind, revision, tombstone, parent, name.
+    pub fn dirent(&self, obj: &str) -> Option<Dirent> {
         if let Some(f) = self.files.get(obj) {
-            return Some((
-                false,
-                f.revision,
-                f.tombstoned,
-                f.parent.clone(),
-                f.name.clone(),
-            ));
+            return Some(Dirent {
+                is_folder: false,
+                revision: f.revision,
+                tombstoned: f.tombstoned,
+                parent: f.parent.clone(),
+                name: f.name.clone(),
+            });
         }
-        self.folders.get(obj).map(|d| {
-            (
-                true,
-                d.revision,
-                d.tombstoned,
-                d.parent.clone(),
-                d.name.clone(),
-            )
+        self.folders.get(obj).map(|d| Dirent {
+            is_folder: true,
+            revision: d.revision,
+            tombstoned: d.tombstoned,
+            parent: d.parent.clone(),
+            name: d.name.clone(),
         })
+    }
+
+    /// Live child of `parent` named `name` (exact match).
+    pub fn find_child<'a>(&'a self, parent: &str, name: &str) -> Option<EntryRef<'a>> {
+        if let Some(d) = self
+            .folders
+            .values()
+            .find(|d| !d.tombstoned && d.parent == parent && d.name == name)
+        {
+            return Some(EntryRef::Folder(d));
+        }
+        self.files
+            .values()
+            .find(|f| !f.tombstoned && f.parent == parent && f.name == name)
+            .map(EntryRef::File)
+    }
+
+    /// Resolve a `/`-separated path to a live entry.
+    pub fn resolve_path<'a>(&'a self, path: &str) -> Option<EntryRef<'a>> {
+        let segs: Vec<&str> = path
+            .trim_matches('/')
+            .split('/')
+            .filter(|s| !s.is_empty())
+            .collect();
+        let mut parent = "";
+        let mut cur: Option<EntryRef<'a>> = None;
+        for (i, seg) in segs.iter().enumerate() {
+            let c = self.find_child(parent, seg)?;
+            match c {
+                // A file mid-path means the rest can never resolve.
+                EntryRef::File(_) if i + 1 < segs.len() => return None,
+                EntryRef::Folder(d) => parent = &d.id,
+                _ => {}
+            }
+            cur = Some(c);
+        }
+        cur
+    }
+
+    /// Whether `obj` sits under folder `root` (bounded walk).
+    pub fn subtree_contains(&self, root: &str, obj: &str) -> bool {
+        let mut parent = match self.dirent(obj) {
+            Some(d) => d.parent,
+            None => return false,
+        };
+        let mut guard = 0;
+        while !parent.is_empty() && guard < 64 {
+            if parent == root {
+                return true;
+            }
+            guard += 1;
+            parent = match self.folders.get(&parent) {
+                Some(d) => d.parent.clone(),
+                None => return false,
+            };
+        }
+        false
     }
 
     /// Body message ids for every file under a folder subtree.
@@ -965,6 +1042,7 @@ impl Namespace {
             last_msg_id: self.last_msg_id,
             encfg: self.encfg.clone(),
             renditions: self.renditions.clone(),
+            unadopted: self.unadopted.clone(),
         }
     }
 
@@ -978,7 +1056,7 @@ impl Namespace {
             last_msg_id: s.last_msg_id,
             encfg: s.encfg,
             renditions: s.renditions,
-            unadopted: Vec::new(),
+            unadopted: s.unadopted,
         }
     }
 

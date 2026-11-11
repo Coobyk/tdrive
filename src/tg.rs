@@ -1193,9 +1193,10 @@ impl Worker {
     /// Move a live object to the trash — same `trash` op TDrive emits, with
     /// the deterministic op id and 30-day retention window.
     async fn delete(&mut self, obj: String) -> Result<()> {
-        let Some((_, revision, tombstoned, _, _)) = self.namespace.dirent_info(&obj) else {
-            return Err(anyhow!("item not found"));
+        let Some(d) = self.namespace.dirent(&obj) else {
+            return Err(anyhow!("no such object"));
         };
+        let (revision, tombstoned) = (d.revision, d.tombstoned);
         if tombstoned {
             return Err(anyhow!("item is already in the trash"));
         }
@@ -1216,9 +1217,10 @@ impl Worker {
     /// Permanently purge a trashed object: `harddel` marker plus physical
     /// deletion of the file's Telegram body messages.
     async fn purge(&mut self, obj: String) -> Result<()> {
-        let Some((is_folder, revision, tombstoned, _, _)) = self.namespace.dirent_info(&obj) else {
-            return Err(anyhow!("item not found"));
+        let Some(d) = self.namespace.dirent(&obj) else {
+            return Err(anyhow!("no such object"));
         };
+        let (is_folder, revision, tombstoned) = (d.is_folder, d.revision, d.tombstoned);
         if !tombstoned {
             return Err(anyhow!("only trashed items can be purged"));
         }
@@ -2241,9 +2243,10 @@ impl Worker {
             .get(&obj)
             .cloned()
             .context("item is not in the trash")?;
-        let Some((_, revision, tombstoned, _, _)) = self.namespace.dirent_info(&obj) else {
-            return Err(anyhow!("item not found"));
+        let Some(d) = self.namespace.dirent(&obj) else {
+            return Err(anyhow!("no such object"));
         };
+        let (revision, tombstoned) = (d.revision, d.tombstoned);
         if !tombstoned {
             return Err(anyhow!("item is not in the trash"));
         }
@@ -2655,13 +2658,14 @@ impl Worker {
     /// Adopt a raw channel attachment into the namespace with a `meta` op —
     /// the same op TDrive emits when claiming an unop'd document.
     async fn adopt(&mut self, msg_id: i64, parent: String) -> Result<()> {
-        let (_, name, size, sender, date) = self
+        let e = self
             .namespace
             .unadopted
             .iter()
-            .find(|(id, _, _, _, _)| *id == msg_id)
+            .find(|e| e.msg_id == msg_id)
             .cloned()
             .context("no adoptable attachment with that id")?;
+        let (name, size, sender, date) = (e.name, e.size, e.sender_id, e.date);
         // TDrive's rule: only the uploader can manage a raw attachment.
         if self.actor_id != 0 && sender != self.actor_id {
             return Err(anyhow!("only the uploader can manage this file"));
@@ -2816,12 +2820,11 @@ impl Worker {
             }
             DavOp::Delete { obj } => {
                 // Mounted deletes go through the durable hard-delete flow.
-                let Some((_is_folder, rev, tomb, _name, _parent)) =
-                    self.namespace.dirent_info(&obj)
+                let Some(d) = self.namespace.dirent(&obj)
                 else {
                     return Err(anyhow!("no such object"));
                 };
-                if tomb {
+                if d.tombstoned {
                     return Err(anyhow!("already deleted"));
                 }
                 // Collect body msg ids BEFORE applying — the projection
@@ -2841,9 +2844,9 @@ impl Worker {
                 let op = Op {
                     op_type: OpTypeOrUnknown::Known(OpType::HardDeleteTree),
                     protocol_version: 1,
-                    op_id: wire::deterministic_op_id("purge", &obj, rev),
+                    op_id: wire::deterministic_op_id("purge", &obj, d.revision),
                     obj: obj.clone(),
-                    expected_revision: rev,
+                    expected_revision: d.revision,
                     ..Default::default()
                 };
                 self.send_and_project(&op).await?;
@@ -2860,10 +2863,10 @@ impl Worker {
                 dst_parent,
                 name,
             } => {
-                let Some((_f, rev, tomb, _n, _p)) = self.namespace.dirent_info(&obj) else {
+                let Some(d) = self.namespace.dirent(&obj) else {
                     return Err(anyhow!("no such object"));
                 };
-                if tomb {
+                if d.tombstoned {
                     return Err(anyhow!("deleted"));
                 }
                 let op = Op {
@@ -2873,7 +2876,7 @@ impl Worker {
                     obj,
                     parent: dst_parent,
                     name,
-                    expected_revision: rev,
+                    expected_revision: d.revision,
                     ..Default::default()
                 };
                 self.send_and_project(&op).await
@@ -2924,9 +2927,10 @@ impl Worker {
             DavOp::Replace { obj, bytes } => {
                 // freplace rebinds an existing file to fresh content —
                 // TDrive's mount overwrite path.
-                let Some((_f, rev, tomb, _n, _p)) = self.namespace.dirent_info(&obj) else {
+                let Some(d) = self.namespace.dirent(&obj) else {
                     return Err(anyhow!("no such object"));
                 };
+                let (rev, tomb) = (d.revision, d.tombstoned);
                 if tomb {
                     return Err(anyhow!("deleted"));
                 }
