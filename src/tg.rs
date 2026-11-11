@@ -224,7 +224,7 @@ pub fn spawn() -> Handle {
                         .ok()
                         .flatten()
                         .map(|c| c.upload_limit)
-                        .unwrap_or(3)
+                        .unwrap_or(10)
                         .max(1),
                 )),
                 cancels: HashMap::new(),

@@ -20,7 +20,7 @@ pub struct AppConfig {
 }
 
 fn default_upload_limit() -> usize {
-    3
+    10
 }
 
 fn data_dir() -> Result<PathBuf> {
