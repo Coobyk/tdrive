@@ -114,6 +114,10 @@ pub struct Root {
     viewer: Option<Viewer>,
     activity_frame: u8,
     transfers_expanded: bool,
+    /// Height of the expanded transfers pane (draggable).
+    transfers_height: f32,
+    /// In-progress pane resize: (grab y, height at grab).
+    transfers_drag: Option<(f32, f32)>,
     /// Auto-open the last drive only on the first channel list — a relist
     /// after "Drives" must not reopen it and bounce back.
     auto_open_done: bool,
@@ -182,6 +186,8 @@ impl Root {
             viewer: None,
             activity_frame: 0u8,
             transfers_expanded: false,
+            transfers_height: 168.,
+            transfers_drag: None,
             auto_open_done: false,
             syncing: false,
             nav_back: Vec::new(),
@@ -1222,8 +1228,8 @@ impl Root {
             }
         }
 
-        // Transfers — collapsed shows up to `upload_limit` rows (the live
-        // concurrency), expanded shows everything. Always scrollable.
+        // Transfers — collapsed pins the in-flight rows on top; expanded
+        // swaps in a draggable pane with the full list.
         let active_count = self
             .transfers
             .values()
@@ -1236,7 +1242,15 @@ impl Root {
             .map(|c| c.upload_limit)
             .unwrap_or(3)
             .max(1);
-        let cap = if self.transfers_expanded { 8usize } else { limit };
+        // Live work first, then failed, then done.
+        let mut ordered: Vec<TransferUpdate> = self.transfers.values().cloned().collect();
+        ordered.sort_by_key(|t| match t.state {
+            TransferState::Active => 0,
+            TransferState::Paused => 1,
+            TransferState::Failed => 2,
+            TransferState::Done => 3,
+        });
+
         let mut transfers = div()
             .flex()
             .flex_col()
@@ -1284,134 +1298,58 @@ impl Root {
                     } else {
                         div().into_any_element()
                     }),
-            )
-            .child({
-                let mut list = div()
-                    .id("transfers-scroll")
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .px_3()
-                    .pb_2()
-                    .max_h(px(28. * cap as f32 + 8.))
-                    .overflow_y_scroll();
-                // Active/paused first, failed, then done — live work on top.
-                let mut ordered: Vec<&TransferUpdate> = self.transfers.values().collect();
-                ordered.sort_by_key(|t| match t.state {
-                    TransferState::Active => 0,
-                    TransferState::Paused => 1,
-                    TransferState::Failed => 2,
-                    TransferState::Done => 3,
-                });
-                for t in ordered {
-            let frac = if t.total > 0 {
-                (t.sent as f32 / t.total as f32).clamp(0., 1.)
-            } else {
-                0.
-            };
-            let (state_label, color) = match t.state {
-                TransferState::Active => ("", ACCENT),
-                TransferState::Paused => ("paused", DIM),
-                TransferState::Done => ("done", OK),
-                TransferState::Failed => ("failed", DANGER),
-            };
-            let mut row = div()
-                .flex()
-                .items_center()
-                .gap_3()
+            );
+        if self.transfers_expanded {
+            // Drag handle — mouse_move on the root tracks the resize.
+            transfers = transfers
                 .child(
                     div()
-                        .w(px(200.))
-                        .text_sm()
-                        .text_color(rgb(TEXT))
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .child(t.label.clone()),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .h(px(4.))
-                        .rounded_full()
-                        .bg(rgb(PANEL2))
+                        .id("transfers-drag")
+                        .h(px(8.))
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .cursor(gpui::CursorStyle::ResizeUpDown)
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, ev: &MouseDownEvent, _, cx| {
+                                this.transfers_drag =
+                                    Some((f32::from(ev.position.y), this.transfers_height));
+                                cx.notify();
+                            }),
+                        )
                         .child(
                             div()
-                                .h(px(4.))
-                                .w(relative(frac))
+                                .w(px(36.))
+                                .h(px(3.))
                                 .rounded_full()
-                                .bg(rgb(color)),
+                                .bg(rgb(BORDER)),
                         ),
                 )
-                .child(
-                    div()
-                        .w(px(110.))
-                        .text_sm()
-                        .text_color(rgb(DIM))
-                        .child(if state_label.is_empty() {
-                            format!("{} / {}", human_size(t.sent), human_size(t.total))
-                        } else {
-                            state_label.to_string()
-                        }),
-                );
-            if t.state == TransferState::Active || t.state == TransferState::Paused {
-                let id = t.id.clone();
-                let resume_id = t.id.clone();
-                let action = if t.state == TransferState::Active {
-                    ("pause", format!("pa-{id}"))
-                } else {
-                    ("resume", format!("rs-{id}"))
-                };
-                let send = if t.state == TransferState::Active {
-                    id.clone()
-                } else {
-                    resume_id.clone()
-                };
-                row = row.child(
-                    div()
-                        .id(SharedString::from(action.1))
-                        .px_2()
-                        .rounded_md()
-                        .text_xs()
-                        .text_color(rgb(DIM))
-                        .hover(|s| s.bg(rgb(PANEL2)).text_color(rgb(TEXT)))
-                        .cursor_pointer()
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, _: &MouseDownEvent, _, cx| {
-                                if action.0 == "pause" {
-                                    this.send(Command::Pause { id: send.clone() });
-                                } else {
-                                    this.send(Command::Resume { id: send.clone() });
-                                }
-                                cx.notify();
-                            }),
-                        )
-                        .child(action.0),
-                );
-                let id = t.id.clone();
-                row = row.child(
-                    div()
-                        .id(SharedString::from(format!("cx-{id}")))
-                        .px_2()
-                        .rounded_md()
-                        .text_xs()
-                        .text_color(rgb(DANGER))
-                        .hover(|s| s.bg(rgba(0xe06c751f)))
-                        .cursor_pointer()
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, _, _, cx| {
-                                this.send(Command::Cancel { id: id.clone() });
-                                cx.notify();
-                            }),
-                        )
-                        .child("cancel"),
-                );
+                .child({
+                    let mut list = div()
+                        .id("transfers-scroll")
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .px_3()
+                        .pb_2()
+                        .h(px(self.transfers_height))
+                        .overflow_y_scroll();
+                    for t in &ordered {
+                        list = list.child(self.render_transfer(t, cx));
+                    }
+                    list
+                });
+        } else {
+            // Pinned view: the in-flight transfers only.
+            let mut pinned = div().flex().flex_col().gap_1().px_3().pb_2();
+            for t in ordered.iter().take(limit) {
+                pinned = pinned.child(self.render_transfer(t, cx));
             }
-                list = list.child(row);
-            }
-            list
-            });
+            transfers = transfers.child(pinned);
+        }
 
         div()
             .flex()
@@ -1433,6 +1371,17 @@ impl Root {
                     cx.notify();
                 }),
             )
+            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
+                if let Some((sy, sh)) = this.transfers_drag {
+                    if ev.pressed_button.is_some() {
+                        this.transfers_height =
+                            (sh + (sy - f32::from(ev.position.y))).clamp(64., 480.);
+                    } else {
+                        this.transfers_drag = None;
+                    }
+                    cx.notify();
+                }
+            }))
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
                 if this.modal.is_some() || this.f_search.read(cx).is_focused(window) {
                     return;
@@ -1788,6 +1737,118 @@ impl Root {
             .into_any_element()
     }
 
+    /// One transfers-pane row: name, progress bar, size/state, controls.
+    fn render_transfer(
+        &mut self,
+        t: &TransferUpdate,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let frac = if t.total > 0 {
+            (t.sent as f32 / t.total as f32).clamp(0., 1.)
+        } else {
+            0.
+        };
+        let (state_label, color) = match t.state {
+            TransferState::Active => ("", ACCENT),
+            TransferState::Paused => ("paused", DIM),
+            TransferState::Done => ("done", OK),
+            TransferState::Failed => ("failed", DANGER),
+        };
+        let mut row = div()
+            .flex()
+            .items_center()
+            .gap_3()
+            .child(
+                div()
+                    .w(px(200.))
+                    .text_sm()
+                    .text_color(rgb(TEXT))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .child(t.label.clone()),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .h(px(4.))
+                    .rounded_full()
+                    .bg(rgb(PANEL2))
+                    .child(
+                        div()
+                            .h(px(4.))
+                            .w(relative(frac))
+                            .rounded_full()
+                            .bg(rgb(color)),
+                    ),
+            )
+            .child(
+                div()
+                    .w(px(150.))
+                    .text_xs()
+                    .font_family("monospace")
+                    .whitespace_nowrap()
+                    .overflow_hidden()
+                    .text_color(rgb(DIM))
+                    .flex()
+                    .justify_end()
+                    .child(if state_label.is_empty() {
+                        format!("{} / {}", human_size(t.sent), human_size(t.total))
+                    } else {
+                        state_label.to_string()
+                    }),
+            );
+        if t.state == TransferState::Active || t.state == TransferState::Paused {
+            let id = t.id.clone();
+            let action = if t.state == TransferState::Active {
+                ("pause", format!("pa-{id}"))
+            } else {
+                ("resume", format!("rs-{id}"))
+            };
+            row = row.child(
+                div()
+                    .id(SharedString::from(action.1))
+                    .px_2()
+                    .rounded_md()
+                    .text_xs()
+                    .text_color(rgb(DIM))
+                    .hover(|s| s.bg(rgb(PANEL2)).text_color(rgb(TEXT)))
+                    .cursor_pointer()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                            if action.0 == "pause" {
+                                this.send(Command::Pause { id: id.clone() });
+                            } else {
+                                this.send(Command::Resume { id: id.clone() });
+                            }
+                            cx.notify();
+                        }),
+                    )
+                    .child(action.0),
+            );
+            let id = t.id.clone();
+            row = row.child(
+                div()
+                    .id(SharedString::from(format!("cx-{id}")))
+                    .px_2()
+                    .rounded_md()
+                    .text_xs()
+                    .text_color(rgb(DANGER))
+                    .hover(|s| s.bg(rgba(0xe06c751f)))
+                    .cursor_pointer()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| {
+                            this.send(Command::Cancel { id: id.clone() });
+                            cx.notify();
+                        }),
+                    )
+                    .child("cancel"),
+            );
+        }
+        row
+    }
+
     /// Ordered object ids matching the visible listing (folders first),
     /// for keyboard navigation.
     fn visible_ids(&self, cx: &App) -> Vec<String> {
@@ -2063,6 +2124,9 @@ impl Root {
                 div()
                     .w(px(140.))
                     .text_xs()
+                    .font_family("monospace")
+                    .whitespace_nowrap()
+                    .overflow_hidden()
                     .text_color(rgb(DIM))
                     .flex()
                     .justify_end()

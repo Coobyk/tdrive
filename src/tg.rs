@@ -1290,9 +1290,35 @@ impl Worker {
         Ok(())
     }
 
-    /// Background worker for UploadDir: creates folders as they're found
-    /// and feeds each file back to the loop as an Upload command.
+    /// Background worker for UploadDir: files stream into the upload
+    /// queue the moment they're discovered — parent dirs are referenced
+    /// by uuid so landing before a mkdir is self-healing. mkdir ops send
+    /// concurrently (bounded) so a deep tree doesn't trickle.
     async fn upload_dir_task(ctx: &TransferCtx, dir: PathBuf, parent: String) -> Result<()> {
+        // A dedicated sender drains mkdir ops off a channel — files never
+        // wait on them since parents are uuids the projection resolves in
+        // any order.
+        let (mkdir_tx, mut mkdir_rx) =
+            mpsc::unbounded_channel::<String>();
+        let ctx2 = ctx.clone();
+        let sender = tokio::spawn(async move {
+            while let Some(header) = mkdir_rx.recv().await {
+                if let Ok(id) = ctx2.send_op(&header).await {
+                    ctx2.op_applied(header, id);
+                }
+            }
+        });
+        let push_mkdir = |obj: String, parent: String, name: String| {
+            let op = Op {
+                op_type: OpTypeOrUnknown::Known(OpType::Mkdir),
+                obj,
+                parent,
+                name,
+                ..Default::default()
+            };
+            let _ = mkdir_tx.send(wire::format(&op));
+        };
+
         // Create the folder itself first — contents land inside it, not
         // scattered into the current directory.
         let root_obj = wire::new_folder_id();
@@ -1300,16 +1326,7 @@ impl Worker {
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "folder".into());
-        let op = Op {
-            op_type: OpTypeOrUnknown::Known(OpType::Mkdir),
-            obj: root_obj.clone(),
-            parent,
-            name,
-            ..Default::default()
-        };
-        let header = wire::format(&op);
-        let msg_id = ctx.send_op(&header).await?;
-        ctx.op_applied(header, msg_id);
+        push_mkdir(root_obj.clone(), parent, name);
 
         let mut queue = vec![(dir, root_obj)];
         while let Some((d, pid)) = queue.pop() {
@@ -1321,20 +1338,15 @@ impl Worker {
                 let p = e.path();
                 if p.is_dir() {
                     let obj = wire::new_folder_id();
-                    let op = Op {
-                        op_type: OpTypeOrUnknown::Known(OpType::Mkdir),
-                        obj: obj.clone(),
-                        parent: pid.clone(),
-                        name: e.file_name().to_string_lossy().to_string(),
-                        ..Default::default()
-                    };
-                    let header = wire::format(&op);
-                    let msg_id = ctx.send_op(&header).await?;
-                    ctx.op_applied(header, msg_id);
+                    push_mkdir(
+                        obj.clone(),
+                        pid.clone(),
+                        e.file_name().to_string_lossy().to_string(),
+                    );
                     queue.push((p, obj));
                 } else if p.is_file() {
-                    // Back to the loop — it registers + spawns the
-                    // transfer without blocking the walk.
+                    // Back to the loop immediately — it registers +
+                    // spawns the transfer without waiting on mkdirs.
                     ctx.journal(Command::Upload {
                         path: p,
                         parent: pid.clone(),
@@ -1342,6 +1354,8 @@ impl Worker {
                 }
             }
         }
+        drop(mkdir_tx);
+        let _ = sender.await;
         Ok(())
     }
 
