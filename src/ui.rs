@@ -9,16 +9,17 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-const BG: u32 = 0x0c0e12;
-const PANEL: u32 = 0x12151b;
-const PANEL2: u32 = 0x1a1f28;
-const BORDER: u32 = 0x222835;
-const TEXT: u32 = 0xeceef4;
-const DIM: u32 = 0x7c8294;
-const ACCENT: u32 = 0xd9a441;
-const ACCENT_DARK: u32 = 0x141109;
-const DANGER: u32 = 0xe06262;
-const OK: u32 = 0x4db88a;
+// One Dark — Zed's default workbench palette.
+const BG: u32 = 0x282c34;
+const PANEL: u32 = 0x21252b;
+const PANEL2: u32 = 0x2c313a;
+const BORDER: u32 = 0x3e4451;
+const TEXT: u32 = 0xabb2bf;
+const DIM: u32 = 0x5c6370;
+const ACCENT: u32 = 0x61afef;
+const ACCENT_DARK: u32 = 0x1e222a;
+const DANGER: u32 = 0xe06c75;
+const OK: u32 = 0x98c379;
 
 #[derive(Debug, Clone, PartialEq)]
 enum Screen {
@@ -691,8 +692,8 @@ impl Root {
                     .flex()
                     .flex_col()
                     .gap_4()
-                    .p_8()
-                    .rounded_xl()
+                    .p_6()
+                    .rounded_lg()
                     .bg(rgb(PANEL))
                     .border_1()
                     .border_color(rgb(BORDER))
@@ -1041,7 +1042,7 @@ impl Root {
             );
         for (id, name) in self.namespace.folder_path(&self.cwd) {
             crumbs = crumbs
-                .child(div().text_color(rgb(0x3a4152)).child(" / "))
+                .child(div().text_color(rgb(0x4d5666)).child(" / "))
                 .child(
                     div()
                         .id(SharedString::from(format!("crumb-{id}")))
@@ -1438,11 +1439,11 @@ impl Root {
                     .border_color(rgb(BORDER))
                     .child(
                         div()
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(ACCENT))
-                            .child("TDRIVE"),
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(rgb(TEXT))
+                            .child("TDrive"),
                     )
-                    .child(div().text_color(rgb(BORDER)).child("·"))
+                    .child(div().text_color(rgb(DIM)).child("·"))
                     .child(
                         div()
                             .font_weight(FontWeight::MEDIUM)
@@ -1849,7 +1850,7 @@ impl Root {
             .w(px(100.))
             .p_2()
             .rounded_lg()
-            .bg(if selected { rgba(0xd9a4411f) } else { rgba(0x00000000) })
+            .bg(if selected { rgba(0x61afef21) } else { rgba(0x00000000) })
             .hover(|s| s.bg(rgb(PANEL)))
             .cursor_pointer()
             .on_mouse_down(
@@ -1881,7 +1882,7 @@ impl Root {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .bg(if is_folder { rgba(0xd9a44114) } else { rgb(PANEL2) })
+                            .bg(if is_folder { rgba(0x61afef1a) } else { rgb(PANEL2) })
                             .child(
                                 div()
                                     .w(px(14.))
@@ -1890,7 +1891,7 @@ impl Root {
                                     .bg(if is_folder {
                                         rgb(ACCENT)
                                     } else {
-                                        rgb(0x3a4152)
+                                        rgb(0x4d5666)
                                     }),
                             )
                             .into_any_element()
@@ -1931,19 +1932,13 @@ impl Root {
             .gap_3()
             .w_full()
             .px_4()
-            .py_2()
-            .border_l_2()
-            .border_color(if selected {
-                rgb(ACCENT)
-            } else {
-                rgba(0x00000000)
-            })
+            .py_1()
             .bg(if selected {
-                rgba(0xd9a4411f)
+                rgb(0x3e4452)
             } else {
                 rgba(0x00000000)
             })
-            .hover(|s| s.bg(rgb(PANEL)))
+            .hover(|s| s.bg(rgb(PANEL2)))
             .cursor_pointer()
             .on_mouse_down(
                 MouseButton::Left,
@@ -1973,14 +1968,15 @@ impl Root {
                             .bg(if is_folder {
                                 rgb(ACCENT)
                             } else {
-                                rgb(0x3a4152)
+                                rgb(0x4d5666)
                             }),
                     ),
             )
             .child(
                 div()
                     .flex_1()
-                    .text_color(if selected { rgb(TEXT) } else { rgb(0xc9cdd8) })
+                    .text_sm()
+                    .text_color(rgb(TEXT))
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .child(name),
@@ -2312,8 +2308,8 @@ impl Root {
                     .flex()
                     .flex_col()
                     .gap_4()
-                    .p_6()
-                    .rounded_xl()
+                    .p_5()
+                    .rounded_lg()
                     .bg(rgb(PANEL))
                     .border_1()
                     .border_color(rgb(BORDER))
@@ -2411,7 +2407,7 @@ fn button_secondary(
         .child(
             div()
                 .text_sm()
-                .text_color(rgb(0xb8bdcc))
+                .text_color(rgb(0x9ea8ba))
                 .font_weight(FontWeight::MEDIUM)
                 .child(label.to_string()),
         )
@@ -2427,7 +2423,7 @@ fn tool_button_primary(
         .py_1()
         .rounded_md()
         .bg(rgb(ACCENT))
-        .hover(|s| s.bg(rgb(0xe8b955)))
+        .hover(|s| s.bg(rgb(0x7db9f2)))
         .cursor_pointer()
         .on_mouse_down(MouseButton::Left, on_click)
         .child(
@@ -2462,7 +2458,7 @@ fn tool_button_id(
         .child(
             div()
                 .text_sm()
-                .text_color(rgb(0xb8bdcc))
+                .text_color(rgb(0x9ea8ba))
                 .child(label.to_string()),
         )
 }
@@ -2476,7 +2472,7 @@ fn tool_button_danger(
         .px_3()
         .py_1()
         .rounded_md()
-        .hover(|s| s.bg(rgba(0xe0626220)))
+        .hover(|s| s.bg(rgba(0xe06c751f)))
         .cursor_pointer()
         .on_mouse_down(MouseButton::Left, on_click)
         .child(div().text_sm().text_color(rgb(DANGER)).child(label.to_string()))
