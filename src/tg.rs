@@ -8,7 +8,8 @@ use crate::fusefs;
 use crate::journal::{DownloadJob, Journal, PartReceipt, UploadJob};
 use crate::project::Namespace;
 use crate::stream;
-use crate::wire::{self, Op, OpType, OpTypeOrUnknown};
+use crate::ops::{self, VfsOp};
+use crate::wire::{self, Op};
 use anyhow::{Context, Result, anyhow};
 use futures_util::FutureExt;
 use grammers_client::client::{LoginToken, PasswordToken};
@@ -141,8 +142,8 @@ pub enum Command {
         obj: String,
     },
     /// Write op issued by the WebDAV server; reply carries the result.
-    DavWrite {
-        op: DavOp,
+    VfsWrite {
+        op: VfsOp,
         reply: tokio::sync::oneshot::Sender<Result<(), String>>,
     },
     Pause {
@@ -180,6 +181,7 @@ pub enum Command {
     UploadJobPatch {
         uuid: String,
         local_path: PathBuf,
+        manifest_msg_id: Option<i64>,
     },
     DlConfirmed {
         file_id: String,
@@ -309,29 +311,6 @@ impl grammers_client::sender::RetryPolicy for FloodSleep {
             _ => std::ops::ControlFlow::Break(()),
         }
     }
-}
-
-/// Write operations arriving over the WebDAV surface.
-#[derive(Debug)]
-pub enum DavOp {
-    /// MKCOL: create folder `name` under `parent` (folder id or "").
-    Mkdir { parent: String, name: String },
-    /// DELETE: permanently remove an object (TDrive mount flow = harddel).
-    Delete { obj: String },
-    /// MOVE: relocate `obj` under `dst_parent` as `name`.
-    Move {
-        obj: String,
-        dst_parent: String,
-        name: String,
-    },
-    /// PUT: write `bytes` as `name` under `parent` — single-body fcommit.
-    Put {
-        parent: String,
-        name: String,
-        bytes: Vec<u8>,
-    },
-    /// Overwrite an existing file's content — single-body freplace.
-    Replace { obj: String, bytes: Vec<u8> },
 }
 
 pub struct Handle {
@@ -577,7 +556,7 @@ impl Worker {
             Command::FetchPreview { file_id } => self.spawn_preview_fetch(&file_id),
             Command::Adopt { msg_id, parent } => self.adopt(msg_id, parent).await,
             Command::Stream { obj } => self.stream(&obj).await,
-            Command::DavWrite { op, reply } => {
+            Command::VfsWrite { op, reply } => {
                 let _ = reply.send(self.dav_write(op).await.map_err(|e| format!("{e:#}")));
                 Ok(())
             }
@@ -630,7 +609,11 @@ impl Worker {
                 self.save_journal();
                 Ok(())
             }
-            Command::UploadJobPatch { uuid, local_path } => {
+            Command::UploadJobPatch {
+                uuid,
+                local_path,
+                manifest_msg_id,
+            } => {
                 if let Some(j) = self
                     .journal
                     .uploads
@@ -638,6 +621,9 @@ impl Worker {
                     .find(|j| j.upload_uuid == uuid)
                 {
                     j.local_path = local_path;
+                    if let Some(id) = manifest_msg_id {
+                        j.manifest_msg_id = Some(id);
+                    }
                 }
                 self.save_journal();
                 Ok(())
@@ -1010,7 +996,7 @@ impl Worker {
             .journal
             .downloads
             .iter()
-            .filter(|j| j.channel_id == id && !j.done)
+            .filter(|j| j.channel_id == id)
             .cloned()
             .collect();
         for job in pending_downloads {
@@ -1082,19 +1068,13 @@ impl Worker {
                 }
             }
         }
-        if self.channel_id != 0 {
-            self.journal
-                .watermarks
-                .insert(self.channel_id, ns.last_msg_id);
-            self.save_journal();
-        }
         self.namespace = Arc::new(ns);
         self.save_namespace();
         self.push_namespace();
 
         // Retention sweep: physically purge entries past purge_after, like
         // TDrive's expired-trash sweep. Failures are surfaced, not fatal.
-        let now = unix_now();
+        let now = ops::unix_now();
         let expired: Vec<String> = self
             .namespace
             .trash
@@ -1160,33 +1140,17 @@ impl Worker {
         if name.is_empty() {
             return Err(anyhow!("folder name required"));
         }
-        let op = Op {
-            op_type: OpTypeOrUnknown::Known(OpType::Mkdir),
-            obj: wire::new_folder_id(),
-            parent,
-            name,
-            ..Default::default()
-        };
+        let op = ops::mkdir(parent, name);
         self.send_and_project(&op).await
     }
 
     async fn rename(&mut self, obj: String, name: String) -> Result<()> {
-        let op = Op {
-            op_type: OpTypeOrUnknown::Known(OpType::Rename),
-            obj,
-            name,
-            ..Default::default()
-        };
+        let op = ops::rename(obj, name);
         self.send_and_project(&op).await
     }
 
     async fn move_obj(&mut self, obj: String, parent: String) -> Result<()> {
-        let op = Op {
-            op_type: OpTypeOrUnknown::Known(OpType::Move),
-            obj,
-            parent,
-            ..Default::default()
-        };
+        let op = ops::move_obj(obj, parent);
         self.send_and_project(&op).await
     }
 
@@ -1200,17 +1164,7 @@ impl Worker {
         if tombstoned {
             return Err(anyhow!("item is already in the trash"));
         }
-        let now = unix_now();
-        let op = Op {
-            op_type: OpTypeOrUnknown::Known(OpType::TrashTree),
-            protocol_version: 1,
-            op_id: wire::deterministic_op_id("trash", &obj, revision),
-            obj,
-            expected_revision: revision,
-            deleted_at: now,
-            purge_after: now + 30 * 24 * 3600,
-            ..Default::default()
-        };
+        let op = ops::trash(obj, revision);
         self.send_and_project(&op).await
     }
 
@@ -1266,14 +1220,7 @@ impl Worker {
                 bodies.extend(kinds.values().map(|(id, _)| *id));
             }
         }
-        let op = Op {
-            op_type: OpTypeOrUnknown::Known(OpType::HardDeleteTree),
-            protocol_version: 1,
-            op_id: wire::deterministic_op_id("purge", &obj, revision),
-            obj,
-            expected_revision: revision,
-            ..Default::default()
-        };
+        let op = ops::hard_delete(obj, revision);
         self.send_and_project(&op).await?;
         // Telegram caps delete at 100 ids per call — chunk, and surface
         // failures instead of silently leaving bodies behind.
@@ -1406,7 +1353,7 @@ impl Worker {
                 encrypted,
                 parts,
                 manifest_msg_id: None,
-                started_at: unix_now(),
+                started_at: ops::unix_now(),
             };
             let id = format!("up:{}", job.upload_uuid);
             let token = CancellationToken::new();
@@ -1472,14 +1419,7 @@ impl Worker {
             }
         });
         let push_mkdir = |obj: String, parent: String, name: String| {
-            let op = Op {
-                op_type: OpTypeOrUnknown::Known(OpType::Mkdir),
-                obj,
-                parent,
-                name,
-                ..Default::default()
-            };
-            let _ = mkdir_tx.send(wire::format(&op));
+            let _ = mkdir_tx.send(wire::format(&ops::mkdir_with_id(obj, parent, name)));
         };
 
         // Create the folder itself first — contents land inside it, not
@@ -1589,17 +1529,7 @@ impl Worker {
             let _ = std::fs::remove_file(ct);
         }
         match res {
-            Ok(msg_id) => {
-                let header = wire::format(&Op {
-                    op_type: OpTypeOrUnknown::Known(OpType::FileUpload),
-                    parent,
-                    name: name.clone(),
-                    file_size: size,
-                    file_upload_time: unix_now(),
-                    encrypted,
-                    plaintext_size: if encrypted { plaintext_size } else { 0 },
-                    ..Default::default()
-                });
+            Ok((msg_id, header)) => {
                 ctx.op_applied(header, msg_id);
                 ctx.update(&id, &name, size, size, TransferState::Done);
                 drop(permit);
@@ -1622,7 +1552,7 @@ impl Worker {
         size: i64,
         encrypted: bool,
         plaintext_size: i64,
-    ) -> Result<i64> {
+    ) -> Result<(i64, String)> {
         let file = tokio::fs::File::open(path).await?;
         let progress = ProgressReader::new(file, {
             let tx = ctx.tx.clone();
@@ -1643,28 +1573,25 @@ impl Worker {
             .client
             .upload_stream(&mut reader, size as usize, name.to_string())
             .await?;
-        let caption = wire::format(&Op {
-            op_type: OpTypeOrUnknown::Known(OpType::FileUpload),
-            parent: parent.to_string(),
-            name: name.to_string(),
-            file_size: size,
-            file_upload_time: unix_now(),
+        let caption = wire::format(&ops::file_upload(
+            parent.to_string(),
+            name.to_string(),
+            size,
             encrypted,
-            plaintext_size: if encrypted { plaintext_size } else { 0 },
-            ..Default::default()
-        });
+            plaintext_size,
+        ));
         let msg = ctx
             .client
             .send_message(
                 ctx.peer,
-                InputMessage::new().document(uploaded).text(caption),
+                InputMessage::new().document(uploaded).text(caption.clone()),
             )
             .await?;
         let id = msg.id() as i64;
         if id <= 0 {
             anyhow::bail!("send outcome unknown (msg id 0)");
         }
-        Ok(id)
+        Ok((id, caption))
     }
 
     /// Continue (or start) a multipart journal job until the manifest lands.
@@ -1697,6 +1624,7 @@ impl Worker {
             ctx.journal(Command::UploadJobPatch {
                 uuid: job.upload_uuid.clone(),
                 local_path: ct_path,
+                manifest_msg_id: None,
             });
         }
 
@@ -1746,21 +1674,24 @@ impl Worker {
         }
 
         // Manifest — the file's visibility boundary.
-        let manifest = Op {
-            op_type: OpTypeOrUnknown::Known(OpType::FileManifest),
-            upload_uuid: job.upload_uuid.clone(),
-            parent: job.parent.clone(),
-            name: job.name.clone(),
-            part_count: job.parts.len() as i32,
-            file_size: job.stored_size,
-            file_upload_time: job.started_at,
-            encrypted: job.encrypted,
-            plaintext_size: if job.encrypted { job.plaintext_size } else { 0 },
-            ..Default::default()
-        };
+        let manifest = ops::file_manifest(
+            job.upload_uuid.clone(),
+            job.parent.clone(),
+            job.name.clone(),
+            job.parts.len() as i32,
+            job.stored_size,
+            job.started_at,
+            job.encrypted,
+            job.plaintext_size,
+        );
         let header = wire::format(&manifest);
         let msg_id = ctx.send_op(&header).await?;
         ctx.op_applied(header, msg_id);
+        ctx.journal(Command::UploadJobPatch {
+            uuid: job.upload_uuid.clone(),
+            local_path: job.local_path.clone(),
+            manifest_msg_id: Some(msg_id),
+        });
         ctx.journal(Command::TransferDone {
             id: transfer_id.clone(),
         });
@@ -1897,14 +1828,7 @@ impl Worker {
             .client
             .upload_stream(&mut reader, body.len(), "rendition.jpg".to_string())
             .await?;
-        let caption = wire::format(&Op {
-            op_type: OpTypeOrUnknown::Known(OpType::FilePart),
-            upload_uuid: uuid::Uuid::new_v4().to_string(),
-            part_index: 0,
-            file_size: stored,
-            rendition: rend.encode(),
-            ..Default::default()
-        });
+        let caption = wire::format(&ops::rendition_part(stored, &rend));
         ctx.client
             .send_message(
                 ctx.peer,
@@ -1955,13 +1879,11 @@ impl Worker {
             .client
             .upload_stream(&mut reader, size as usize, part_name)
             .await?;
-        let caption = wire::format(&Op {
-            op_type: OpTypeOrUnknown::Known(OpType::FilePart),
-            upload_uuid: job.upload_uuid.clone(),
-            part_index: index,
-            file_size: size,
-            ..Default::default()
-        });
+        let caption = wire::format(&ops::file_part(
+            job.upload_uuid.clone(),
+            index,
+            size,
+        ));
         let msg = ctx
             .client
             .send_message(
@@ -2006,7 +1928,6 @@ impl Worker {
             total_size: file.size,
             dest,
             confirmed_bytes: 0,
-            done: false,
             encrypted: file.encrypted,
         };
         self.cancels
@@ -2202,17 +2123,7 @@ impl Worker {
         let (vault, master) =
             tokio::task::spawn_blocking(move || crypto::create_vault(password.as_bytes(), &hint))
                 .await??;
-        let (salt, kdf, wrap, check, _, cv) = vault.to_op_fields();
-        let op = Op {
-            op_type: OpTypeOrUnknown::Known(OpType::EncConfig),
-            kdf_salt_b64: salt,
-            kdf_params_json: kdf,
-            wrapped_key_b64: wrap,
-            key_check_b64: check,
-            hint: vault.hint.clone(),
-            config_version: cv,
-            ..Default::default()
-        };
+        let op = ops::enc_config(&vault);
         self.send_and_project(&op).await?;
         *self.master_key.lock().unwrap() = Some(master);
         self.emit_vault_state();
@@ -2265,16 +2176,7 @@ impl Worker {
         let name =
             self.namespace
                 .next_free_sibling_name(&parent, &entry.original_name, entry.is_folder);
-        let op = Op {
-            op_type: OpTypeOrUnknown::Known(OpType::RestoreTree),
-            protocol_version: 1,
-            op_id: wire::deterministic_op_id("restore", &obj, revision),
-            obj,
-            parent,
-            name,
-            expected_revision: revision,
-            ..Default::default()
-        };
+        let op = ops::restore(obj, parent, name, revision);
         self.send_and_project(&op).await
     }
 
@@ -2670,15 +2572,7 @@ impl Worker {
         if self.actor_id != 0 && sender != self.actor_id {
             return Err(anyhow!("only the uploader can manage this file"));
         }
-        let op = Op {
-            op_type: OpTypeOrUnknown::Known(OpType::Meta),
-            obj: wire::file_obj_id(msg_id),
-            parent,
-            name,
-            file_size: size,
-            file_upload_time: date,
-            ..Default::default()
-        };
+        let op = ops::meta(msg_id, parent, name, size, date);
         self.send_and_project(&op).await
     }
 
@@ -2742,14 +2636,8 @@ impl Worker {
         let folder_id = match folder_id {
             Some(id) => id,
             None => {
-                let id = format!("d:{}", uuid::Uuid::new_v4());
-                let op = Op {
-                    op_type: OpTypeOrUnknown::Known(OpType::Mkdir),
-                    obj: id.clone(),
-                    parent: String::new(),
-                    name: "Photos".to_string(),
-                    ..Default::default()
-                };
+                let op = ops::mkdir("", "Photos");
+                let id = op.obj.clone();
                 self.send_and_project(&op).await?;
                 id
             }
@@ -2803,22 +2691,13 @@ impl Worker {
 
     /// Apply a WebDAV write through the durable mount-write ops TDrive's
     /// mount emits (dcommit/relocate/harddel/fcommit).
-    async fn dav_write(&mut self, op: DavOp) -> Result<()> {
+    async fn dav_write(&mut self, op: VfsOp) -> Result<()> {
         match op {
-            DavOp::Mkdir { parent, name } => {
-                let op = Op {
-                    op_type: OpTypeOrUnknown::Known(OpType::FolderCommit),
-                    protocol_version: 1,
-                    op_id: format!("dcommit-{}", uuid::Uuid::new_v4()),
-                    obj: wire::new_folder_id(),
-                    parent,
-                    name: name.trim().to_string(),
-                    file_upload_time: unix_now(),
-                    ..Default::default()
-                };
+            VfsOp::Mkdir { parent, name } => {
+                let op = ops::folder_commit(parent, name.trim());
                 self.send_and_project(&op).await
             }
-            DavOp::Delete { obj } => {
+            VfsOp::Delete { obj } => {
                 // Mounted deletes go through the durable hard-delete flow.
                 let Some(d) = self.namespace.dirent(&obj)
                 else {
@@ -2841,14 +2720,7 @@ impl Worker {
                 if let Some(kinds) = self.namespace.renditions.get(&obj) {
                     bodies.extend(kinds.values().map(|(id, _)| *id));
                 }
-                let op = Op {
-                    op_type: OpTypeOrUnknown::Known(OpType::HardDeleteTree),
-                    protocol_version: 1,
-                    op_id: wire::deterministic_op_id("purge", &obj, d.revision),
-                    obj: obj.clone(),
-                    expected_revision: d.revision,
-                    ..Default::default()
-                };
+                let op = ops::hard_delete(&obj, d.revision);
                 self.send_and_project(&op).await?;
                 for body in bodies {
                     let _ = self
@@ -2858,7 +2730,7 @@ impl Worker {
                 }
                 Ok(())
             }
-            DavOp::Move {
+            VfsOp::Move {
                 obj,
                 dst_parent,
                 name,
@@ -2869,19 +2741,10 @@ impl Worker {
                 if d.tombstoned {
                     return Err(anyhow!("deleted"));
                 }
-                let op = Op {
-                    op_type: OpTypeOrUnknown::Known(OpType::Relocate),
-                    protocol_version: 1,
-                    op_id: format!("relocate-{}", uuid::Uuid::new_v4()),
-                    obj,
-                    parent: dst_parent,
-                    name,
-                    expected_revision: d.revision,
-                    ..Default::default()
-                };
+                let op = ops::relocate(obj, dst_parent, name, d.revision);
                 self.send_and_project(&op).await
             }
-            DavOp::Put {
+            VfsOp::Put {
                 parent,
                 name,
                 bytes,
@@ -2909,22 +2772,17 @@ impl Worker {
                     .client()?
                     .send_message(self.channel()?, InputMessage::new().document(uploaded))
                     .await?;
-                let op = Op {
-                    op_type: OpTypeOrUnknown::Known(OpType::FileCommit),
-                    protocol_version: 1,
-                    op_id: format!("fcommit-{}", uuid::Uuid::new_v4()),
+                let op = ops::file_commit(
                     parent,
                     name,
-                    file_size: stored,
-                    file_upload_time: unix_now(),
+                    stored,
                     encrypted,
-                    plaintext_size: if encrypted { pt_len } else { 0 },
-                    content_msg_id: msg.id() as i64,
-                    ..Default::default()
-                };
+                    pt_len,
+                    msg.id() as i64,
+                );
                 self.send_and_project(&op).await
             }
-            DavOp::Replace { obj, bytes } => {
+            VfsOp::Replace { obj, bytes } => {
                 // freplace rebinds an existing file to fresh content —
                 // TDrive's mount overwrite path.
                 let Some(d) = self.namespace.dirent(&obj) else {
@@ -2955,20 +2813,14 @@ impl Worker {
                     .client()?
                     .send_message(self.channel()?, InputMessage::new().document(uploaded))
                     .await?;
-                let op = Op {
-                    op_type: OpTypeOrUnknown::Known(OpType::FileReplace),
-                    protocol_version: 1,
-                    retained_until: unix_now() + 30 * 24 * 60 * 60,
-                    op_id: format!("freplace-{}", uuid::Uuid::new_v4()),
+                let op = ops::file_replace(
                     obj,
-                    file_size: stored,
-                    file_upload_time: unix_now(),
+                    stored,
                     encrypted,
-                    plaintext_size: if encrypted { pt_len } else { 0 },
-                    content_msg_id: msg.id() as i64,
-                    expected_revision: rev,
-                    ..Default::default()
-                };
+                    pt_len,
+                    msg.id() as i64,
+                    rev,
+                );
                 self.send_and_project(&op).await
             }
         }
@@ -3008,12 +2860,6 @@ impl Worker {
     }
 }
 
-fn unix_now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
 
 fn media_size(media: &Media) -> usize {
     match media {

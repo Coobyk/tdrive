@@ -147,7 +147,7 @@ fn propfind(ns: &Namespace, path: &str, depth: &str) -> String {
     format!("{xml}</D:multistatus>")
 }
 
-/// Route a write method to the worker via DavOp and translate the result.
+/// Route a write method to the worker via VfsOp and translate the result.
 async fn write_method(
     method: &str,
     path: &str,
@@ -170,12 +170,12 @@ async fn write_method(
             let (dir, name) = path.rsplit_once('/').unwrap_or(("", path));
             let name = urlencoding::decode(name).unwrap_or_default().to_string();
             match resolve_dir(snapshot, dir) {
-                Ok(parent) => crate::tg::DavOp::Mkdir { parent, name },
+                Ok(parent) => crate::ops::VfsOp::Mkdir { parent, name },
                 Err(_) => return (409, b"bad parent".to_vec()),
             }
         }
         "DELETE" => match resolve_obj(snapshot, path) {
-            Ok(obj) => crate::tg::DavOp::Delete { obj },
+            Ok(obj) => crate::ops::VfsOp::Delete { obj },
             Err(_) => return (404, b"not found".to_vec()),
         },
         "MOVE" => {
@@ -191,7 +191,7 @@ async fn write_method(
             let (dir, name) = dest.rsplit_once('/').unwrap_or(("", dest));
             let name = urlencoding::decode(name).unwrap_or_default().to_string();
             match resolve_dir(snapshot, dir) {
-                Ok(dst_parent) => crate::tg::DavOp::Move {
+                Ok(dst_parent) => crate::ops::VfsOp::Move {
                     obj: src,
                     dst_parent,
                     name,
@@ -225,10 +225,10 @@ async fn write_method(
                     // Overwrite → freplace (TDrive's mount PUT), else fcommit.
                     match resolve_obj(snapshot, path) {
                         Ok(obj) if obj.starts_with('f') => {
-                            crate::tg::DavOp::Replace { obj, bytes: body }
+                            crate::ops::VfsOp::Replace { obj, bytes: body }
                         }
                         Ok(_) => return (405, b"can't overwrite dir".to_vec()),
-                        Err(_) => crate::tg::DavOp::Put {
+                        Err(_) => crate::ops::VfsOp::Put {
                             parent,
                             name,
                             bytes: body,
@@ -242,7 +242,7 @@ async fn write_method(
     };
     let (tx, rx) = tokio::sync::oneshot::channel();
     if cmd
-        .send(crate::tg::Command::DavWrite { op, reply: tx })
+        .send(crate::tg::Command::VfsWrite { op, reply: tx })
         .is_err()
     {
         return (500, b"worker gone".to_vec());

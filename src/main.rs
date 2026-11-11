@@ -4,6 +4,7 @@ mod dav;
 mod fusefs;
 mod input;
 mod journal;
+mod ops;
 mod project;
 mod stream;
 mod tg;

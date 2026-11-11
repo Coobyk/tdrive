@@ -7,7 +7,8 @@
 
 use crate::project::{Entry, FileEntry, Namespace};
 use crate::stream;
-use crate::tg::{Command, DavOp};
+use crate::ops::VfsOp;
+use crate::tg::Command;
 use anyhow::Result;
 use fuser::{
     Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo, OpenFlags,
@@ -113,10 +114,10 @@ impl TdFs {
     }
 
     /// Run a durable write op through the worker and wait for the result.
-    fn write_op(&self, op: DavOp) -> Result<(), Errno> {
+    fn write_op(&self, op: VfsOp) -> Result<(), Errno> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.cmd
-            .send(Command::DavWrite { op, reply: tx })
+            .send(Command::VfsWrite { op, reply: tx })
             .map_err(|_| Errno::EIO)?;
         self.rt
             .block_on(rx)
@@ -137,8 +138,8 @@ impl TdFs {
             _ => return Ok(()),
         };
         let res = self.write_op(match p.obj {
-            Some(obj) => DavOp::Replace { obj, bytes: p.data },
-            None => DavOp::Put {
+            Some(obj) => VfsOp::Replace { obj, bytes: p.data },
+            None => VfsOp::Put {
                 parent: p.parent,
                 name: p.name,
                 bytes: p.data,
@@ -279,7 +280,7 @@ impl TdFs {
                 return;
             }
         }
-        match self.write_op(DavOp::Delete { obj }) {
+        match self.write_op(VfsOp::Delete { obj }) {
             Ok(()) => reply.ok(),
             Err(e) => reply.error(e),
         }
@@ -560,7 +561,7 @@ impl Filesystem for TdFs {
             reply.error(Errno::EINVAL);
             return;
         };
-        match self.write_op(DavOp::Mkdir {
+        match self.write_op(VfsOp::Mkdir {
             parent: dir.clone(),
             name: name.clone(),
         }) {
@@ -619,7 +620,7 @@ impl Filesystem for TdFs {
             .unwrap_or_default()
             .to_string();
         let name = newname.to_str().unwrap_or_default().to_string();
-        match self.write_op(DavOp::Move {
+        match self.write_op(VfsOp::Move {
             obj,
             dst_parent: dst,
             name,

@@ -7,7 +7,6 @@
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,7 +60,6 @@ pub struct DownloadJob {
     pub dest: PathBuf,
     /// Blocks confirmed (flushed) so far, 1 MiB each.
     pub confirmed_bytes: i64,
-    pub done: bool,
     /// Ciphertext staged on disk; decrypted to `dest` when complete.
     #[serde(default)]
     pub encrypted: bool,
@@ -73,11 +71,6 @@ pub struct Journal {
     pub uploads: Vec<UploadJob>,
     #[serde(default)]
     pub downloads: Vec<DownloadJob>,
-    #[serde(default)]
-    pub next_part_msg_check: BTreeMap<String, i64>,
-    /// channel_id → highest synced message id (incremental sync watermark).
-    #[serde(default)]
-    pub watermarks: BTreeMap<i64, i64>,
     /// Photo-backup ledger: paths already uploaded by the watcher.
     #[serde(default)]
     pub backup_seen: std::collections::HashSet<String>,
