@@ -953,6 +953,82 @@ impl Namespace {
         })
     }
 
+    /// Live entries whose name contains `q` (case-insensitive):
+    /// folders first, then files, each name-sorted.
+    pub fn search(&self, q: &str) -> Vec<Entry> {
+        let q = q.to_lowercase();
+        let by_name = |a: &Entry, b: &Entry| {
+            let an = match a {
+                Entry::Folder(d) => &d.name,
+                Entry::File(f) => &f.name,
+            };
+            let bn = match b {
+                Entry::Folder(d) => &d.name,
+                Entry::File(f) => &f.name,
+            };
+            an.to_lowercase().cmp(&bn.to_lowercase())
+        };
+        let mut out: Vec<Entry> = self
+            .folders
+            .values()
+            .filter(|d| !d.tombstoned && d.name.to_lowercase().contains(&q))
+            .cloned()
+            .map(Entry::Folder)
+            .collect();
+        let mut files: Vec<Entry> = self
+            .files
+            .values()
+            .filter(|f| !f.tombstoned && f.name.to_lowercase().contains(&q))
+            .cloned()
+            .map(Entry::File)
+            .collect();
+        out.sort_by(by_name);
+        files.sort_by(by_name);
+        out.extend(files);
+        out
+    }
+
+    /// Trash rows as view entries — the real entry where the object still
+    /// exists, a thin shell (name, kind, delete time) where it doesn't.
+    pub fn trash_entries(&self) -> Vec<Entry> {
+        self.list_trash()
+            .into_iter()
+            .map(|t| {
+                if t.is_folder {
+                    self.folders
+                        .get(&t.object_id)
+                        .map(|d| Entry::Folder(d.clone()))
+                        .unwrap_or(Entry::Folder(FolderEntry {
+                            id: t.object_id,
+                            name: t.original_name,
+                            parent: t.original_parent,
+                            tombstoned: true,
+                            revision: t.original_revision,
+                        }))
+                } else {
+                    self.files
+                        .get(&t.object_id)
+                        .map(|f| Entry::File(f.clone()))
+                        .unwrap_or(Entry::File(FileEntry {
+                            id: t.object_id,
+                            msg_id: 0,
+                            name: t.original_name,
+                            size: 0,
+                            parent: t.original_parent,
+                            upload_time: t.deleted_at,
+                            tombstoned: true,
+                            encrypted: false,
+                            plaintext_size: 0,
+                            upload_uuid: String::new(),
+                            part_count: 0,
+                            content_msg_id: 0,
+                            revision: t.original_revision,
+                        }))
+                }
+            })
+            .collect()
+    }
+
     /// Live child of `parent` named `name` (exact match).
     pub fn find_child<'a>(&'a self, parent: &str, name: &str) -> Option<EntryRef<'a>> {
         if let Some(d) = self

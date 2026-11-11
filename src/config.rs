@@ -19,7 +19,7 @@ pub struct AppConfig {
     pub upload_limit: usize,
 }
 
-fn default_upload_limit() -> usize {
+pub fn default_upload_limit() -> usize {
     3
 }
 
