@@ -949,9 +949,13 @@ impl<R: AsyncRead + Unpin> AsyncRead for ProgressReader<R> {
             std::task::Poll::Ready(Ok(())) => {
                 let got = (buf.filled().len() - before) as u64;
                 self.sent += got;
-                // Throttle: at most one event per ~256 KiB.
-                if self.sent - self.last_emit > 256 * 1024 {
+                // Emit at ~10 Hz or every 64 KiB — whichever comes first
+                // keeps bars smooth on both fast and slow links.
+                if self.sent - self.last_emit >= 64 * 1024
+                    || self.last_emit_at.elapsed() >= std::time::Duration::from_millis(100)
+                {
                     self.last_emit = self.sent;
+                    self.last_emit_at = std::time::Instant::now();
                     (self.on_progress)(self.sent as i64);
                 }
                 std::task::Poll::Ready(Ok(()))
@@ -974,6 +978,7 @@ pub(super) struct ProgressReader<R> {
     inner: R,
     sent: u64,
     last_emit: u64,
+    last_emit_at: std::time::Instant,
     on_progress: Box<dyn Fn(i64) + Send + Sync>,
 }
 
@@ -983,6 +988,7 @@ impl<R: AsyncRead + Unpin> ProgressReader<R> {
             inner,
             sent: 0,
             last_emit: 0,
+            last_emit_at: std::time::Instant::now(),
             on_progress: Box::new(on_progress),
         }
     }

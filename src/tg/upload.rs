@@ -257,6 +257,7 @@ impl Worker {
         let (send_path, send_size) = stored.clone().unwrap_or((path.clone(), size));
         let res = Self::upload_single_inner(
             ctx,
+            &id,
             &send_path,
             &name,
             &parent,
@@ -285,6 +286,7 @@ impl Worker {
 
     pub(super) async fn upload_single_inner(
         ctx: &TransferCtx,
+        id: &str,
         path: &PathBuf,
         name: &str,
         parent: &str,
@@ -295,7 +297,7 @@ impl Worker {
         let file = tokio::fs::File::open(path).await?;
         let progress = ProgressReader::new(file, {
             let tx = ctx.tx.clone();
-            let id = upload_transfer_id(&uuid::Uuid::new_v4().to_string());
+            let id = id.to_string();
             let label = name.to_string();
             move |sent| {
                 let _ = tx.try_send(Event::Transfer(TransferUpdate {
