@@ -43,14 +43,37 @@ pub(crate) use media::{is_image_name, is_video_name};
 pub const MAX_PART_BYTES: i64 = 1900 * 1024 * 1024;
 pub const LARGE_FILE_MAX_BYTES: i64 = 40 * 1024 * 1024 * 1024;
 pub const MAX_PARTS: usize = 32;
-const DOWNLOAD_CHUNK: i32 = 512 * 1024;
+use crate::remote::BODY_CHUNK as DOWNLOAD_CHUNK;
+
+/// The two drive channel shapes TDrive distinguishes — a personal
+/// broadcast channel (encryption-eligible) vs a shared megagroup.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DriveKind {
+    Personal,
+    Shared,
+}
+
+impl DriveKind {
+    /// TDrive's channel-type string on the wire/UI boundary.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Personal => "broadcast",
+            Self::Shared => "megagroup",
+        }
+    }
+
+    /// Personal drives are the only encryption-eligible surface.
+    pub fn is_personal(self) -> bool {
+        matches!(self, Self::Personal)
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct ChannelInfo {
     pub id: i64,
     pub access_hash: i64,
     pub title: String,
-    pub kind: &'static str,
+    pub kind: DriveKind,
 }
 
 #[derive(Debug)]
@@ -80,7 +103,7 @@ pub enum Command {
         id: i64,
         access_hash: i64,
         title: String,
-        kind: String,
+        kind: DriveKind,
     },
     Sync,
     Upload {
@@ -209,7 +232,7 @@ pub enum Command {
         id: i64,
         access_hash: i64,
         title: String,
-        kind: String,
+        kind: DriveKind,
     },
     TransferFailed {
         id: String,
@@ -380,8 +403,8 @@ pub fn spawn() -> Handle {
                 namespace: Arc::new(Namespace::new()),
                 master_key: Arc::new(Mutex::new(None)),
                 actor_id: 0,
-                channel_kind: String::new(),
-                paused_downloads: HashMap::new(),
+                channel_kind: DriveKind::Personal,
+                paused_downloads: std::collections::HashSet::new(),
                 live_sync_queued: Default::default(),
                 ns_shared: Arc::new(Mutex::new(Arc::new(Namespace::new()))),
                 fuse_session: None,
@@ -466,10 +489,11 @@ struct Worker {
     master_key: Arc<Mutex<Option<[u8; crypto::MASTER_KEY_LEN]>>>,
     /// Our own user id — adoption ownership checks.
     actor_id: i64,
-    /// "broadcast" (personal) or group kind — encryption is personal-only.
-    channel_kind: String,
-    /// Paused downloads: transfer id -> (file_id, dest dir) for Resume.
-    paused_downloads: HashMap<String, (String, PathBuf)>,
+    /// Encryption-eligibility: only personal (broadcast) drives.
+    channel_kind: DriveKind,
+    /// Paused downloads (transfer ids) — resume looks the job up
+    /// in the journal, which still holds the destination.
+    paused_downloads: std::collections::HashSet<String>,
     live_sync_queued: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Latest namespace snapshot shared with the WebDAV server.
     ns_shared: Arc<Mutex<Arc<Namespace>>>,
@@ -683,7 +707,7 @@ impl Worker {
                 self.cancels.remove(&id);
                 // A pause also unwinds as an error — don't overwrite the
                 // Paused state the pause() handler already set.
-                if !self.paused_downloads.contains_key(&id) {
+                if !self.paused_downloads.contains(&id) {
                     self.emit(Event::Error {
                         context: "transfer",
                         message: format!("{label}: {err}"),
@@ -711,6 +735,21 @@ impl Worker {
             token,
             upload_sem: self.upload_sem.clone(),
         })
+    }
+
+    /// Mint the cancellation token, register it under `id`, and spawn —
+    /// every cancellable transfer goes through here so pause/cancel can
+    /// always find the token the task actually checks.
+    fn spawn_cancellable<F, Fut>(&mut self, id: &str, label: &str, f: F) -> Result<()>
+    where
+        F: FnOnce(TransferCtx) -> Fut,
+        Fut: std::future::Future<Output = Result<()>> + Send + 'static,
+    {
+        let token = CancellationToken::new();
+        self.cancels.insert(id.to_string(), token.clone());
+        let ctx = self.transfer_ctx(token)?;
+        self.spawn_transfer(id, label, f(ctx));
+        Ok(())
     }
 
     /// Spawn a transfer task and route its failure back as a Command —
@@ -766,13 +805,7 @@ impl Worker {
             return;
         }
         if let Ok(path) = config::namespace_path(self.channel_id) {
-            if let Ok(json) = serde_json::to_string(&self.namespace.snapshot()) {
-                // tmp+rename — a torn write must not corrupt the snapshot.
-                let tmp = path.with_extension("tmp");
-                if std::fs::write(&tmp, json).is_ok() {
-                    let _ = std::fs::rename(tmp, path);
-                }
-            }
+            let _ = config::atomic_json_write(&path, &self.namespace.snapshot());
         }
     }
 
@@ -802,12 +835,8 @@ impl Worker {
             // is_cancelled() fires instantly and the job can never resume.
             token.cancel();
         }
-        if let Some(fid) = id.strip_prefix("dl:") {
-            if let Some(j) = self.journal.downloads.iter().find(|j| j.file_id == fid) {
-                let dir = j.dest.parent().map(|p| p.to_path_buf()).unwrap_or_default();
-                self.paused_downloads
-                    .insert(id.to_string(), (j.file_id.clone(), dir));
-            }
+        if id.strip_prefix("dl:").is_some() {
+            self.paused_downloads.insert(id.to_string());
         }
         self.emit(Event::Transfer(TransferUpdate {
             id: id.to_string(),
@@ -823,7 +852,8 @@ impl Worker {
         if id.starts_with("up:") {
             return self.resume_uploads().await;
         }
-        if let Some((file_id, _dir)) = self.paused_downloads.remove(id) {
+        if self.paused_downloads.remove(id) {
+            let file_id = id.strip_prefix("dl:").unwrap_or_default().to_string();
             // Reuse the existing journal row — a fresh DownloadJob would
             // reset confirmed_bytes and re-download from scratch.
             let job = self
@@ -860,15 +890,7 @@ impl Worker {
                 .downloads
                 .iter()
                 .find(|j| j.file_id == fid)
-                .map(|j| {
-                    j.dest.with_extension(format!(
-                        "{}.tdrive-part",
-                        j.dest
-                            .extension()
-                            .map(|e| e.to_string_lossy().to_string())
-                            .unwrap_or_default()
-                    ))
-                });
+                .map(|j| download::staging_path(&j.dest));
             self.journal.downloads.retain(|j| j.file_id != fid);
             if let Some(staging) = dest {
                 let _ = std::fs::remove_file(staging);
@@ -900,7 +922,7 @@ impl<R: AsyncRead + Unpin> AsyncRead for ProgressReader<R> {
                 // Throttle: at most one event per ~256 KiB.
                 if self.sent - self.last_emit > 256 * 1024 {
                     self.last_emit = self.sent;
-                    (self.on_progress)(self.sent as i64, self.total as i64);
+                    (self.on_progress)(self.sent as i64);
                 }
                 std::task::Poll::Ready(Ok(()))
             }
@@ -921,17 +943,15 @@ pub(super) fn media_size(media: &Media) -> usize {
 pub(super) struct ProgressReader<R> {
     inner: R,
     sent: u64,
-    total: u64,
     last_emit: u64,
-    on_progress: Box<dyn Fn(i64, i64) + Send + Sync>,
+    on_progress: Box<dyn Fn(i64) + Send + Sync>,
 }
 
 impl<R: AsyncRead + Unpin> ProgressReader<R> {
-    pub(super) fn new(inner: R, on_progress: impl Fn(i64, i64) + Send + Sync + 'static) -> Self {
+    pub(super) fn new(inner: R, on_progress: impl Fn(i64) + Send + Sync + 'static) -> Self {
         Self {
             inner,
             sent: 0,
-            total: 0,
             last_emit: 0,
             on_progress: Box::new(on_progress),
         }

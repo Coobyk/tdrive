@@ -279,7 +279,7 @@ impl TdFs {
             .to_string();
         // unlink on a dir → EISDIR; rmdir on a file or non-empty dir →
         // ENOTDIR/ENOTEMPTY (never hard-delete a live subtree).
-        let is_folder = obj.starts_with('d');
+        let is_folder = crate::wire::is_folder_id(&obj);
         if !dir_only && is_folder {
             reply.error(Errno::EISDIR);
             return;
@@ -615,7 +615,7 @@ impl Filesystem for TdFs {
         if let Some(sz) = size {
             if let Some(h) = fh {
                 if let Some(p) = self.write_bufs.lock().unwrap().get_mut(&h.0) {
-                    if sz > 512 * 1024 * 1024 {
+                    if sz > MAX_PUT_BYTES as u64 {
                         reply.error(Errno::EFBIG);
                         return;
                     }
@@ -735,11 +735,7 @@ impl Filesystem for TdFs {
             return;
         }
         let ns = self.snapshot();
-        let parts: Vec<(i64, i64)> = if !file.upload_uuid.is_empty() {
-            ns.part_sizes(&file.upload_uuid)
-        } else {
-            vec![(file.content_msg_id, file.size)]
-        };
+        let parts = ns.body_parts(&file);
         let remote = self.remote.clone();
         let encrypted = file.encrypted;
         let end = (offset + size as u64).min(total);

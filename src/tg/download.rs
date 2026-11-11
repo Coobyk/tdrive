@@ -1,6 +1,17 @@
 //! Download engine — chunked body fetch and journal-backed resume.
 use super::*;
 
+/// The in-flight staging path for `dest` — the `.tdrive-part` suffix
+/// marks a partial body; cancel cleans it up, success renames it away.
+pub(super) fn staging_path(dest: &std::path::Path) -> std::path::PathBuf {
+    dest.with_extension(format!(
+        "{}.tdrive-part",
+        dest.extension()
+            .map(|e| e.to_string_lossy().to_string())
+            .unwrap_or_default()
+    ))
+}
+
 impl Worker {
     pub(super) async fn download(&mut self, file_id: String, dest_dir: PathBuf) -> Result<()> {
         let file = self
@@ -33,15 +44,12 @@ impl Worker {
             encrypted: file.encrypted,
         };
         let id = format!("dl:{}", job.file_id);
-        let token = CancellationToken::new();
-        self.cancels.insert(id.clone(), token.clone());
         self.journal.downloads.push(job.clone());
         self.save_journal();
-        let ctx = self.transfer_ctx(token)?;
         let name = job.name.clone();
-        self.spawn_transfer(&id, &name, async move {
+        self.spawn_cancellable(&id, &name, move |ctx| async move {
             Self::run_download_task(&ctx, job).await
-        });
+        })?;
         Ok(())
     }
 
@@ -59,13 +67,7 @@ impl Worker {
             TransferState::Active,
         );
 
-        let staging = job.dest.with_extension(format!(
-            "{}.tdrive-part",
-            job.dest
-                .extension()
-                .map(|e| e.to_string_lossy().to_string())
-                .unwrap_or_default()
-        ));
+        let staging = staging_path(&job.dest);
         let mut out = tokio::fs::OpenOptions::new()
             .create(true)
             .write(true)

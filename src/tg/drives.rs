@@ -16,12 +16,14 @@ impl Worker {
                         continue;
                     }
                     match ch.kind() {
-                        Some(ChannelKind::Broadcast) => ("broadcast", ch.title().to_string()),
+                        Some(ChannelKind::Broadcast) => {
+                            (DriveKind::Personal, ch.title().to_string())
+                        }
                         _ => continue,
                     }
                 }
                 Peer::Group(g) if g.is_megagroup() => {
-                    ("megagroup", g.title().unwrap_or_default().to_string())
+                    (DriveKind::Shared, g.title().unwrap_or_default().to_string())
                 }
                 _ => continue,
             };
@@ -72,7 +74,11 @@ impl Worker {
                     c.id,
                     c.access_hash.unwrap_or(0),
                     c.title,
-                    if shared { "megagroup" } else { "broadcast" }.to_string(),
+                    if shared {
+                        DriveKind::Shared
+                    } else {
+                        DriveKind::Personal
+                    },
                 )
                 .await?;
                 if shared {
@@ -112,7 +118,7 @@ impl Worker {
         id: i64,
         access_hash: i64,
         title: String,
-        kind: String,
+        kind: DriveKind,
     ) -> Result<()> {
         let peer_id = PeerId::channel(id).context("bad channel id")?;
         *self.peer_cell.lock().unwrap() = Some(PeerRef {
@@ -142,22 +148,13 @@ impl Worker {
             ns.drop_zero_ids();
             ns
         });
-        let pending = self
-            .journal
-            .uploads
-            .iter()
-            .filter(|j| j.channel_id == id && j.manifest_msg_id.is_none())
-            .count();
+        let pending = self.journal.resumable_uploads(id).len();
         self.emit(Event::ChannelOpened {
             info: ChannelInfo {
                 id,
                 access_hash,
                 title,
-                kind: match self.channel_kind.as_str() {
-                    "megagroup" => "megagroup",
-                    "gigagroup" => "gigagroup",
-                    _ => "broadcast",
-                },
+                kind: self.channel_kind,
             },
             pending_uploads: pending,
         });
@@ -174,19 +171,14 @@ impl Worker {
             .collect();
         for job in pending_downloads {
             let id = format!("dl:{}", job.file_id);
-            let token = CancellationToken::new();
-            self.cancels.insert(id.clone(), token.clone());
-            match self.transfer_ctx(token) {
-                Ok(ctx) => {
-                    let name = job.name.clone();
-                    self.spawn_transfer(&id, &name, async move {
-                        Self::run_download_task(&ctx, job).await
-                    });
-                }
-                Err(e) => self.emit(Event::Error {
+            let name = job.name.clone();
+            if let Err(e) = self.spawn_cancellable(&id, &name, move |ctx| async move {
+                Self::run_download_task(&ctx, job).await
+            }) {
+                self.emit(Event::Error {
                     context: "download",
                     message: format!("{e:#}"),
-                }),
+                });
             }
         }
         Ok(())
@@ -241,11 +233,10 @@ impl Worker {
                                     access_hash: c.access_hash.unwrap_or(0),
                                     title: c.title,
                                     kind: if c.megagroup {
-                                        "megagroup"
+                                        DriveKind::Shared
                                     } else {
-                                        "broadcast"
-                                    }
-                                    .to_string(),
+                                        DriveKind::Personal
+                                    },
                                 });
                                 return;
                             }
@@ -272,11 +263,10 @@ impl Worker {
                     c.access_hash.unwrap_or(0),
                     c.title,
                     if c.megagroup {
-                        "megagroup"
+                        DriveKind::Shared
                     } else {
-                        "broadcast"
-                    }
-                    .to_string(),
+                        DriveKind::Personal
+                    },
                 )
                 .await?;
                 self.list_channels().await?;

@@ -10,26 +10,20 @@ impl Worker {
             .unwrap_or(0);
         let jobs: Vec<UploadJob> = self
             .journal
-            .uploads
-            .iter()
-            .filter(|j| j.channel_id == channel_id && j.manifest_msg_id.is_none())
+            .resumable_uploads(channel_id)
+            .into_iter()
             .cloned()
             .collect();
         for job in jobs {
             let id = format!("up:{}", job.upload_uuid);
-            let token = CancellationToken::new();
-            self.cancels.insert(id.clone(), token.clone());
-            match self.transfer_ctx(token) {
-                Ok(ctx) => {
-                    let name = job.name.clone();
-                    self.spawn_transfer(&id, &name, async move {
-                        Self::run_upload_task(&ctx, job).await
-                    });
-                }
-                Err(e) => self.emit(Event::Error {
+            let name = job.name.clone();
+            if let Err(e) = self.spawn_cancellable(&id, &name, move |ctx| async move {
+                Self::run_upload_task(&ctx, job).await
+            }) {
+                self.emit(Event::Error {
                     context: "upload",
                     message: format!("{e:#}"),
-                }),
+                });
             }
         }
         Ok(())
@@ -62,11 +56,8 @@ impl Worker {
 
         let res: Result<()> = if size <= MAX_PART_BYTES {
             let id = format!("up:{name}");
-            let token = CancellationToken::new();
-            self.cancels.insert(id.clone(), token.clone());
-            let ctx = self.transfer_ctx(token)?;
             let name2 = name.clone();
-            self.spawn_transfer(&id, &name, async move {
+            self.spawn_cancellable(&id, &name, move |ctx| async move {
                 Self::upload_single_task(
                     &ctx,
                     path.clone(),
@@ -78,7 +69,7 @@ impl Worker {
                     plaintext_size,
                 )
                 .await
-            });
+            })?;
             Ok(())
         } else {
             let channel_id = self.channel()?.id.bare_id_unchecked();
@@ -110,9 +101,6 @@ impl Worker {
                 manifest_msg_id: None,
                 started_at: ops::unix_now(),
             };
-            let id = format!("up:{}", job.upload_uuid);
-            let token = CancellationToken::new();
-            self.cancels.insert(id.clone(), token.clone());
             // TDrive only journals resumable *unencrypted* uploads —
             // encrypted multipart resume would re-encrypt under a fresh
             // salt and produce permanently corrupt output.
@@ -120,14 +108,11 @@ impl Worker {
                 self.journal.uploads.push(job.clone());
                 self.save_journal();
             }
-            let ctx = self.transfer_ctx(token)?;
+            let id = format!("up:{}", job.upload_uuid);
             let name = job.name.clone();
-            self.spawn_transfer(
-                &id,
-                &name,
-                async move { Self::run_upload_task(&ctx, job).await },
-            );
-            Ok(())
+            self.spawn_cancellable(&id, &name, move |ctx| async move {
+                Self::run_upload_task(&ctx, job).await
+            })
         };
         res
     }
@@ -317,7 +302,7 @@ impl Worker {
             let tx = ctx.tx.clone();
             let id = format!("up:{name}");
             let label = name.to_string();
-            move |sent, _| {
+            move |sent| {
                 let _ = tx.try_send(Event::Transfer(TransferUpdate {
                     id: id.clone(),
                     label: label.clone(),
@@ -378,12 +363,10 @@ impl Worker {
             job.stored_size = std::fs::metadata(&ct_path)
                 .map(|m| m.len() as i64)
                 .unwrap_or(job.stored_size);
-            let n = job.parts.len() as i64;
             for (i, p) in job.parts.iter_mut().enumerate() {
                 let start = i as i64 * MAX_PART_BYTES;
                 p.size = (job.stored_size - start).min(MAX_PART_BYTES);
             }
-            let _ = n;
             ctx.journal(Command::UploadJobPatch {
                 uuid: job.upload_uuid.clone(),
                 local_path: ct_path,
@@ -506,7 +489,7 @@ impl Worker {
                 .filter(|p| p.msg_id.is_some())
                 .map(|p| p.size)
                 .sum();
-            move |sent, _| {
+            move |sent| {
                 let _ = tx.try_send(Event::Transfer(TransferUpdate {
                     id: id.clone(),
                     label: label.clone(),

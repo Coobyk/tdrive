@@ -104,7 +104,6 @@ pub struct Root {
     cwd: String,
     selected: Option<String>,
     transfers: BTreeMap<String, TransferUpdate>,
-    pending_uploads: usize,
     modal: Option<Modal>,
     signed_in_as: String,
     f_search: Entity<TextField>,
@@ -117,7 +116,7 @@ pub struct Root {
     thumbnails: std::collections::HashMap<String, std::path::PathBuf>,
     thumb_requested: std::collections::HashSet<String>,
     grid: bool,
-    channel_kind: String,
+    channel_kind: crate::tg::DriveKind,
     mount_dir: Option<String>,
     /// Entries selected for the current view — cached so the virtualized
     /// list can index them without rebuilding per row.
@@ -182,7 +181,6 @@ impl Root {
             cwd: String::new(),
             selected: None,
             transfers: BTreeMap::new(),
-            pending_uploads: 0,
             modal: None,
             signed_in_as: String::new(),
             f_search,
@@ -195,7 +193,7 @@ impl Root {
             thumbnails: Default::default(),
             thumb_requested: Default::default(),
             grid: false,
-            channel_kind: String::new(),
+            channel_kind: crate::tg::DriveKind::Personal,
             mount_dir: None,
             entries_cache: Vec::new(),
             last_items_len: 0,
@@ -320,8 +318,7 @@ impl Root {
                 pending_uploads,
             } => {
                 self.channel = Some(info.clone());
-                self.channel_kind = info.kind.to_string();
-                self.pending_uploads = pending_uploads;
+                self.channel_kind = info.kind;
                 self.screen = Screen::Drive;
                 self.cwd = String::new();
                 self.nav_back.clear();
@@ -437,7 +434,7 @@ impl Root {
             id: info.id,
             access_hash: info.access_hash,
             title: info.title,
-            kind: info.kind.to_string(),
+            kind: info.kind,
         });
     }
 

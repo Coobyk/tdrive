@@ -23,6 +23,10 @@ pub struct Remote {
     ns: Arc<Mutex<Arc<Namespace>>>,
 }
 
+/// Telegram download granularity — resume offsets and range reads must
+/// agree on the chunk size or skip math drifts.
+pub const BODY_CHUNK: i32 = 512 * 1024;
+
 impl Remote {
     pub fn new(
         client: Client,
@@ -63,6 +67,32 @@ impl Remote {
             return Ok(id);
         }
         Ok(recover_msg_id(&self.client, peer, header).await)
+    }
+
+    /// Send a file body (uploaded bytes + TDX1 caption) and return its
+    /// message id, recovering it by caption scan when grammers reports
+    /// `Empty{id:0}`. Single-body files and parts both bind their commit
+    /// op to this id — a 0 here would corrupt the commit.
+    pub async fn send_doc_op(
+        &self,
+        peer: PeerRef,
+        uploaded: grammers_client::media::Uploaded,
+        caption: &str,
+    ) -> Result<i64> {
+        let msg = self
+            .client
+            .send_message(
+                peer,
+                InputMessage::new()
+                    .document(uploaded)
+                    .text(caption.to_string()),
+            )
+            .await?;
+        let id = msg.id() as i64;
+        if id > 0 {
+            return Ok(id);
+        }
+        Ok(recover_msg_id(&self.client, peer, caption).await)
     }
 
     /// Delete body messages, honoring Telegram's 100-ids-per-call cap.
@@ -133,7 +163,7 @@ impl Remote {
         start: u64,
         end: u64,
     ) -> Result<Vec<u8>> {
-        const CHUNK: u64 = 512 * 1024;
+        const CHUNK: u64 = BODY_CHUNK as u64;
         let msgs = self
             .client
             .get_messages_by_id(*peer, &[msg_id as i32])
@@ -178,7 +208,9 @@ pub(crate) async fn recover_msg_id(client: &Client, peer: PeerRef, header: &str)
             Ok(Some(m)) => m,
             _ => break,
         };
-        if m.text() == header {
+        // Empty caption can't be matched on text — the newest message is
+        // the one just sent.
+        if header.is_empty() || m.text() == header {
             return m.id() as i64;
         }
     }

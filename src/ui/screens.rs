@@ -181,7 +181,7 @@ impl Root {
                         }),
                     )
                     .child(div().text_color(rgb(TEXT)).child(ch.title.clone()))
-                    .child(div().text_sm().text_color(rgb(DIM)).child(ch.kind)),
+                    .child(div().text_sm().text_color(rgb(DIM)).child(ch.kind.as_str())),
             );
         }
         if self.channels.is_empty() {

@@ -9,6 +9,10 @@ use crate::wire::{self, Op, OpType, OpTypeOrUnknown};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
+/// Ancestor walks bound at this depth — a cycle or runaway chain stops
+/// here rather than looping forever.
+const MAX_DEPTH: i32 = 64;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FolderEntry {
     pub id: String,
@@ -699,7 +703,7 @@ impl Namespace {
             self.files.retain(|_, f| {
                 let mut anc = f.parent.clone();
                 let mut guard = 0;
-                while !anc.is_empty() && guard < 64 {
+                while !anc.is_empty() && guard < MAX_DEPTH {
                     guard += 1;
                     if anc == obj {
                         return false;
@@ -726,7 +730,7 @@ impl Namespace {
         ids.insert(folder_id.to_string());
         let mut changed = true;
         let mut guard = 0;
-        while changed && guard < 64 {
+        while changed && guard < MAX_DEPTH {
             changed = false;
             guard += 1;
             for d in self.folders.values() {
@@ -900,7 +904,7 @@ impl Namespace {
     /// subtree bodies (or the file's own) plus each rendition bound to
     /// any of those files. Shared by purge and mount deletes.
     pub fn delete_body_msg_ids(&self, obj: &str) -> Vec<i64> {
-        let mut bodies = if obj.starts_with('d') {
+        let mut bodies = if wire::is_folder_id(obj) {
             self.subtree_body_msg_ids(obj)
         } else {
             self.files
@@ -908,7 +912,7 @@ impl Namespace {
                 .map(|f| self.body_msg_ids(f))
                 .unwrap_or_default()
         };
-        let file_ids: Vec<&String> = if obj.starts_with('d') {
+        let file_ids: Vec<&String> = if wire::is_folder_id(obj) {
             self.files
                 .values()
                 .filter(|f| self.subtree_contains(obj, &f.id))
@@ -1073,7 +1077,7 @@ impl Namespace {
             None => return false,
         };
         let mut guard = 0;
-        while !parent.is_empty() && guard < 64 {
+        while !parent.is_empty() && guard < MAX_DEPTH {
             if parent == root {
                 return true;
             }
@@ -1158,7 +1162,7 @@ impl Namespace {
     pub fn folder_path<'a>(&'a self, mut id: &'a str) -> Vec<(String, String)> {
         let mut out = Vec::new();
         let mut guard = 0;
-        while !id.is_empty() && guard < 64 {
+        while !id.is_empty() && guard < MAX_DEPTH {
             guard += 1;
             if let Some(d) = self.folders.get(id) {
                 out.push((d.id.clone(), d.name.clone()));
@@ -1192,7 +1196,7 @@ fn would_cycle(ns: &Namespace, obj: &str, parent: &str) -> bool {
     }
     let mut cur = parent.to_string();
     let mut guard = 0;
-    while !cur.is_empty() && guard < 64 {
+    while !cur.is_empty() && guard < MAX_DEPTH {
         guard += 1;
         if cur == obj {
             return true;

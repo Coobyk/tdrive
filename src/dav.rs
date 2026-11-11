@@ -60,25 +60,27 @@ fn split_path(path: &str) -> (String, String) {
     (decode(dir), decode(name))
 }
 
+/// The decoded, "/" joined path under /dav — every resolver starts here.
+fn decoded_path(path: &str) -> String {
+    path.trim_matches('/')
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .map(decode)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 /// Resolve a DAV path to a folder id ("" = root).
 fn resolve_dir(ns: &crate::project::Namespace, path: &str) -> Result<String> {
     if path.trim_matches('/').is_empty() {
         return Ok(String::new());
     }
-    let segs: Vec<String> = path
-        .trim_matches('/')
-        .split('/')
-        .filter(|s| !s.is_empty())
-        .map(decode)
-        .collect();
-    let mut cur = String::new();
-    for seg in segs {
-        match ns.find_child(&cur, &seg) {
-            Some(EntryRef::Folder(d)) => cur = d.id.clone(),
-            _ => anyhow::bail!("no such folder"),
-        }
+    let p = decoded_path(path);
+    match ns.resolve_path(&p) {
+        Some(EntryRef::Folder(d)) => Ok(d.id.clone()),
+        None if p.is_empty() => Ok(String::new()),
+        _ => anyhow::bail!("no such folder"),
     }
-    Ok(cur)
 }
 
 fn propfind(ns: &crate::project::Namespace, path: &str, depth: &str) -> Result<String> {
@@ -98,13 +100,7 @@ fn propfind(ns: &crate::project::Namespace, path: &str, depth: &str) -> Result<S
              </D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>"
         ));
     };
-    let decoded: Vec<String> = path
-        .trim_matches('/')
-        .split('/')
-        .filter(|s| !s.is_empty())
-        .map(decode)
-        .collect();
-    let decoded_path = decoded.join("/");
+    let decoded_path = decoded_path(path);
     let base = format!("/dav/{decoded_path}");
     match ns.resolve_path(&decoded_path) {
         Some(EntryRef::File(f)) => {
@@ -151,13 +147,7 @@ fn propfind(ns: &crate::project::Namespace, path: &str, depth: &str) -> Result<S
 
 /// Resolve a path to an object id (file or folder).
 fn resolve_obj(ns: &crate::project::Namespace, path: &str) -> Result<String> {
-    let decoded: Vec<String> = path
-        .trim_matches('/')
-        .split('/')
-        .filter(|s| !s.is_empty())
-        .map(decode)
-        .collect();
-    match ns.resolve_path(&decoded.join("/")) {
+    match ns.resolve_path(&decoded_path(path)) {
         Some(EntryRef::Folder(d)) => Ok(d.id.clone()),
         Some(EntryRef::File(f)) => Ok(f.id.clone()),
         None => anyhow::bail!("not found"),
@@ -166,13 +156,7 @@ fn resolve_obj(ns: &crate::project::Namespace, path: &str) -> Result<String> {
 
 /// Resolve a path to a file entry.
 fn resolve_file<'a>(ns: &'a crate::project::Namespace, path: &str) -> Result<&'a FileEntry> {
-    let decoded: Vec<String> = path
-        .trim_matches('/')
-        .split('/')
-        .filter(|s| !s.is_empty())
-        .map(decode)
-        .collect();
-    match ns.resolve_path(&decoded.join("/")) {
+    match ns.resolve_path(&decoded_path(path)) {
         Some(EntryRef::File(f)) => Ok(f),
         _ => anyhow::bail!("no such file"),
     }
@@ -241,7 +225,7 @@ async fn write_method(
             match resolve_dir(&ns, &dir) {
                 Ok(parent) => match resolve_obj(&ns, path) {
                     // Overwrite → freplace (TDrive's mount PUT), else fcommit.
-                    Ok(obj) if obj.starts_with('f') => VfsOp::Replace { obj, bytes: body },
+                    Ok(obj) if crate::wire::is_file_id(&obj) => VfsOp::Replace { obj, bytes: body },
                     Ok(_) => {
                         return http::respond(&mut sock, 405, &[], b"can't overwrite dir").await;
                     }

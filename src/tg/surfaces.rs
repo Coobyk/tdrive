@@ -47,28 +47,8 @@ impl Worker {
             } => {
                 // Single-body commit: upload the doc, then fcommit binds it —
                 // the same two-step TDrive's writable mount performs.
-                let pt_len = bytes.len() as i64;
-                let encrypted = self.master_key.lock().unwrap().is_some();
-                let (body, stored) = if encrypted {
-                    let key = (*self.master_key.lock().unwrap()).unwrap();
-                    let ct =
-                        tokio::task::spawn_blocking(move || crypto::encrypt_bytes(&key, &bytes))
-                            .await??;
-                    let len = ct.len() as i64;
-                    (ct, len)
-                } else {
-                    (bytes, pt_len)
-                };
-                let mut reader = std::io::Cursor::new(&body);
-                let uploaded = self
-                    .client()?
-                    .upload_stream(&mut reader, body.len(), name.clone())
-                    .await?;
-                let msg = self
-                    .client()?
-                    .send_message(self.channel()?, InputMessage::new().document(uploaded))
-                    .await?;
-                let op = ops::file_commit(parent, name, stored, encrypted, pt_len, msg.id() as i64);
+                let (msg_id, stored, pt_len, encrypted) = self.mount_put(&name, bytes).await?;
+                let op = ops::file_commit(parent, name, stored, encrypted, pt_len, msg_id);
                 self.send_and_project(&op).await
             }
             VfsOp::Replace { obj, bytes } => {
@@ -77,35 +57,45 @@ impl Worker {
                 let Some(d) = self.namespace.dirent(&obj) else {
                     return Err(anyhow!("no such object"));
                 };
-                let (rev, tomb) = (d.revision, d.tombstoned);
-                if tomb {
+                if d.tombstoned {
                     return Err(anyhow!("deleted"));
                 }
-                let pt_len = bytes.len() as i64;
-                let encrypted = self.master_key.lock().unwrap().is_some();
-                let (body, stored) = if encrypted {
-                    let key = (*self.master_key.lock().unwrap()).unwrap();
-                    let ct =
-                        tokio::task::spawn_blocking(move || crypto::encrypt_bytes(&key, &bytes))
-                            .await??;
-                    let len = ct.len() as i64;
-                    (ct, len)
-                } else {
-                    (bytes, pt_len)
-                };
-                let mut reader = std::io::Cursor::new(&body);
-                let uploaded = self
-                    .client()?
-                    .upload_stream(&mut reader, body.len(), String::new())
-                    .await?;
-                let msg = self
-                    .client()?
-                    .send_message(self.channel()?, InputMessage::new().document(uploaded))
-                    .await?;
-                let op = ops::file_replace(obj, stored, encrypted, pt_len, msg.id() as i64, rev);
+                let (msg_id, stored, pt_len, encrypted) = self.mount_put("", bytes).await?;
+                let op = ops::file_replace(obj, stored, encrypted, pt_len, msg_id, d.revision);
                 self.send_and_project(&op).await
             }
         }
+    }
+
+    /// Upload a mount-write body and return (msg_id, stored_size,
+    /// plaintext_size, encrypted). TDE1-encrypts when the vault is
+    /// unlocked; the message id recovers on `Empty{id:0}` like every
+    /// other op send.
+    async fn mount_put(&self, name: &str, bytes: Vec<u8>) -> Result<(i64, i64, i64, bool)> {
+        let pt_len = bytes.len() as i64;
+        let key = *self.master_key.lock().unwrap();
+        let (body, stored) = match key {
+            Some(k) => {
+                let ct = tokio::task::spawn_blocking(move || crypto::encrypt_bytes(&k, &bytes))
+                    .await??;
+                let len = ct.len() as i64;
+                (ct, len)
+            }
+            None => (bytes, pt_len),
+        };
+        let mut reader = std::io::Cursor::new(&body);
+        let uploaded = self
+            .client()?
+            .upload_stream(&mut reader, body.len(), name.to_string())
+            .await?;
+        let msg_id = self
+            .remote()?
+            .send_doc_op(self.channel()?, uploaded, "")
+            .await?;
+        if msg_id <= 0 {
+            anyhow::bail!("send outcome unknown");
+        }
+        Ok((msg_id, stored, pt_len, key.is_some()))
     }
 
     /// Mount the drive read-write at `dir` via FUSE — TDrive's mount surface
@@ -131,22 +121,14 @@ impl Worker {
         if file.encrypted && self.master_key.lock().unwrap().is_none() {
             return Err(anyhow!("unlock the drive to stream encrypted files"));
         }
-        let parts: Vec<(i64, i64)> = if !file.upload_uuid.is_empty() {
-            self.namespace.part_sizes(&file.upload_uuid)
-        } else {
-            vec![(file.content_msg_id, file.size)]
-        };
+        let parts = self.namespace.body_parts(&file);
         if parts.is_empty() {
             return Err(anyhow!("no body messages for this file"));
         }
         stream::ensure_server(self.remote()?).await?;
         let url = stream::open(stream::Session {
             parts,
-            plaintext_size: if file.encrypted {
-                file.plaintext_size
-            } else {
-                file.size
-            },
+            plaintext_size: file.logical_size(),
             name: file.name,
             encrypted: file.encrypted,
         })?;

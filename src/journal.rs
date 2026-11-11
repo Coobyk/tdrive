@@ -80,6 +80,16 @@ pub struct Journal {
 }
 
 impl Journal {
+    /// Uploads that can resume on the next open: this channel's jobs
+    /// that never committed a manifest. TDrive's rule — a manifest op
+    /// means done; everything else re-runs from its part receipts.
+    pub fn resumable_uploads(&self, channel_id: i64) -> Vec<&UploadJob> {
+        self.uploads
+            .iter()
+            .filter(|j| j.channel_id == channel_id && j.manifest_msg_id.is_none())
+            .collect()
+    }
+
     pub fn load(path: &std::path::Path) -> Self {
         std::fs::read_to_string(path)
             .ok()
@@ -88,9 +98,6 @@ impl Journal {
     }
 
     pub fn save(&self, path: &std::path::Path) -> Result<()> {
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_string_pretty(self)?)?;
-        std::fs::rename(tmp, path)?;
-        Ok(())
+        crate::config::atomic_json_write(path, self)
     }
 }

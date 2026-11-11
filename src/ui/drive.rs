@@ -105,7 +105,7 @@ impl Root {
             });
             toolbar = toolbar.child(tool_button("Empty trash", Tone::Danger, et));
         }
-        if self.channel_kind == "broadcast" {
+        if self.channel_kind.is_personal() {
             let lock_label = if self.vault_configured {
                 if self.vault_unlocked {
                     "Unlocked"
@@ -510,7 +510,7 @@ impl Root {
                         let Some(sel) = this.selected.clone() else {
                             return;
                         };
-                        if sel.starts_with('d') {
+                        if crate::wire::is_folder_id(&sel) {
                             this.set_cwd(sel);
                         } else if let Some(f) = this.namespace.files.get(&sel).cloned() {
                             if !this.trash {

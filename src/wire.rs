@@ -450,7 +450,7 @@ pub fn parse(raw: &str) -> Result<Op, WireError> {
                     return Err(WireError::Malformed);
                 }
                 // kdf JSON is url-escaped on the wire; the rest are base64url.
-                *dst = if key == "kdf" || key == "hint" {
+                *dst = if key == "kdf" {
                     query_unescape(raw)?
                 } else {
                     raw.to_string()
@@ -782,7 +782,7 @@ pub fn format(op: &Op) -> String {
             );
         }
     }
-    if !op.rendition.is_empty() {
+    if !op.rendition.is_empty() && op.op_type == OpTypeOrUnknown::Known(OpType::FilePart) {
         let _ = write!(b, "|rend={}", op.rendition);
     }
     b

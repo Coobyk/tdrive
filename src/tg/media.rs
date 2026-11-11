@@ -1,6 +1,19 @@
 //! Media pipeline — thumbnail/preview fetch and rendition publish.
 use super::*;
 
+/// TDR1 rendition envelope → bare JPEG, in place. Plain bodies pass
+/// through unchanged.
+fn strip_tdr1(path: &std::path::Path) -> std::io::Result<()> {
+    let data = std::fs::read(path)?;
+    if data.len() > 8 && &data[..4] == b"TDR1" {
+        let n = u32::from_be_bytes(data[4..8].try_into().unwrap()) as usize;
+        if 8 + n <= data.len() {
+            std::fs::write(path, &data[8 + n..])?;
+        }
+    }
+    Ok(())
+}
+
 impl Worker {
     /// Best-effort rendition publish — TDrive generates a 512px "thumb" and
     /// 1600px "preview" JPEG for image uploads, sent as `rend` part ops.
@@ -139,7 +152,7 @@ impl Worker {
             return Ok(());
         };
         let dir = dirs::cache_dir()
-            .unwrap_or_else(std::env::temp_dir)
+            .unwrap_or_else(|| std::env::temp_dir().join("tdrive-rs-staging"))
             .join("tdrive-rs/thumbs");
         std::fs::create_dir_all(&dir)?;
         let out = dir.join(format!("{body_id}.bin"));
@@ -171,17 +184,7 @@ impl Worker {
                                     let staging2 = staging.clone();
                                     let dec = tokio::task::spawn_blocking(move || {
                                         crypto::decrypt_file(&key, &staging2, &out2)?;
-                                        // Encrypted renditions are TDR1-
-                                        // enveloped — strip to the JPEG.
-                                        let data = std::fs::read(&out2)?;
-                                        if data.len() > 8 && &data[..4] == b"TDR1" {
-                                            let n =
-                                                u32::from_be_bytes(data[4..8].try_into().unwrap())
-                                                    as usize;
-                                            if 8 + n <= data.len() {
-                                                std::fs::write(&out2, &data[8 + n..])?;
-                                            }
-                                        }
+                                        strip_tdr1(&out2)?;
                                         Ok::<_, anyhow::Error>(())
                                     })
                                     .await;
@@ -246,7 +249,7 @@ impl Worker {
             return Err(anyhow!("no previewable body for {}", file.name));
         };
         let dir = dirs::cache_dir()
-            .unwrap_or_else(std::env::temp_dir)
+            .unwrap_or_else(|| std::env::temp_dir().join("tdrive-rs-staging"))
             .join("tdrive-rs/previews");
         std::fs::create_dir_all(&dir)?;
         let out = dir.join(format!("{body_id}.img"));
@@ -284,14 +287,7 @@ impl Worker {
                     tokio::task::spawn_blocking(move || -> Result<()> {
                         crypto::decrypt_file(&key, &st, &o)?;
                         if is_rendition {
-                            // TDR1-wrapped rendition — strip to the JPEG.
-                            let data = std::fs::read(&o)?;
-                            if data.len() > 8 && &data[..4] == b"TDR1" {
-                                let n = u32::from_be_bytes(data[4..8].try_into().unwrap()) as usize;
-                                if 8 + n <= data.len() {
-                                    std::fs::write(&o, &data[8 + n..])?;
-                                }
-                            }
+                            strip_tdr1(&o)?;
                         }
                         Ok(())
                     })

@@ -47,12 +47,17 @@ impl AppConfig {
     }
 
     pub fn save(&self) -> Result<()> {
-        let path = Self::path()?;
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_string_pretty(self)?)?;
-        std::fs::rename(tmp, path)?;
-        Ok(())
+        atomic_json_write(&Self::path()?, self)
     }
+}
+
+/// Write `v` as pretty JSON via a sibling `.tmp` + rename — a torn
+/// write can never leave a half-file at `path` (POSIX rename is atomic).
+pub fn atomic_json_write<T: serde::Serialize>(path: &std::path::Path, v: &T) -> Result<()> {
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_string_pretty(v)?)?;
+    std::fs::rename(tmp, path)?;
+    Ok(())
 }
 
 /// SQLite-backed grammers session file.

@@ -43,7 +43,7 @@ impl Worker {
     }
 
     pub(super) async fn enable_encryption(&mut self, password: &str, hint: &str) -> Result<()> {
-        if self.channel_kind != "broadcast" {
+        if !self.channel_kind.is_personal() {
             return Err(anyhow!("encryption is only supported on personal drives"));
         }
         if self.namespace.encfg.is_some() {
