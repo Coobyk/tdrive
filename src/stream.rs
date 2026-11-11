@@ -1,19 +1,22 @@
 //! Local media streaming — a tokenized HTTP server on 127.0.0.1 serving
 //! plaintext byte ranges over a resolved logical file, like TDrive's media
-//! service. Plain files map 1:1 onto stored bytes; encrypted files go through
-//! TDE1 range decryption. URLs carry a random token — the capability — and
-//! sessions stay open so players can issue many range requests.
+//! service. Plain files map 1:1 onto stored bytes; encrypted files go
+//! through TDE1 range decryption. URLs carry a random token — the
+//! capability — and sessions stay open so players can issue many range
+//! requests.
 
-use crate::crypto;
+use crate::http::{self, Range};
+use crate::remote::Remote;
 use anyhow::{Context, Result};
-use grammers_client::Client;
-use grammers_client::session::types::PeerRef;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
-static REGISTRY: OnceLock<Registry> = OnceLock::new();
-static PORT: OnceLock<u16> = OnceLock::new();
-static STARTED: OnceLock<()> = OnceLock::new();
+static SERVER: OnceLock<Server> = OnceLock::new();
+
+struct Server {
+    port: u16,
+    sessions: Arc<Mutex<HashMap<String, Session>>>,
+}
 
 /// Everything needed to serve one logical file.
 pub struct Session {
@@ -26,143 +29,108 @@ pub struct Session {
     pub encrypted: bool,
 }
 
-type Registry = Arc<Mutex<HashMap<String, Session>>>;
-
-/// Spawn the streaming listener inside the worker's runtime — only once.
-/// The master key is shared by reference so locking the drive revokes
-/// encrypted streams the way TDrive's session teardown does.
-pub fn ensure_server(
-    client: Client,
-    peer: PeerRef,
-    master: Arc<Mutex<Option<[u8; crypto::MASTER_KEY_LEN]>>>,
-) {
-    if STARTED.set(()).is_err() {
-        return;
+/// Bind the streaming listener once. The shared master-key cell means
+/// locking the drive revokes encrypted streams the way TDrive's session
+/// teardown does.
+pub async fn ensure_server(remote: Remote) -> Result<()> {
+    if SERVER.get().is_some() {
+        return Ok(());
     }
-    let reg: Registry = Arc::new(Mutex::new(HashMap::new()));
-    let _ = REGISTRY.set(reg.clone());
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+    let port = listener.local_addr()?.port();
+    let server = Server {
+        port,
+        sessions: Arc::new(Mutex::new(HashMap::new())),
+    };
+    let sessions = server.sessions.clone();
+    let _ = SERVER.set(server);
     tokio::spawn(async move {
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
-        let _ = PORT.set(listener.local_addr()?.port());
         loop {
-            let (sock, _) = listener.accept().await?;
-            tokio::spawn(serve_conn(
-                sock,
-                reg.clone(),
-                client.clone(),
-                peer.clone(),
-                master.clone(),
-            ));
+            let Ok((sock, _)) = listener.accept().await else {
+                continue;
+            };
+            tokio::spawn(serve_conn(sock, sessions.clone(), remote.clone()));
         }
-        #[allow(unreachable_code)]
-        Ok::<(), anyhow::Error>(())
     });
+    Ok(())
 }
 
-/// Register a session and return its stream URL. Waits briefly for the
-/// listener's port — `ensure_server` binds it inside a spawned task.
+/// Register a session and return its stream URL.
 pub fn open(session: Session) -> Result<String> {
-    let mut tries = 0;
-    let port = loop {
-        if let Some(p) = PORT.get() {
-            break *p;
-        }
-        tries += 1;
-        if tries > 100 {
-            anyhow::bail!("stream server not ready");
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    };
-    let reg = REGISTRY.get().context("no registry")?;
+    let server = SERVER.get().context("stream server not started")?;
     let token = uuid::Uuid::new_v4().simple().to_string();
     let name = urlencoding::encode(&session.name).to_string();
-    reg.lock().unwrap().insert(token.clone(), session);
-    Ok(format!("http://127.0.0.1:{port}/stream/{token}/{name}"))
+    server
+        .sessions
+        .lock()
+        .unwrap()
+        .insert(token.clone(), session);
+    Ok(format!(
+        "http://127.0.0.1:{}/stream/{token}/{name}",
+        server.port
+    ))
 }
 
 async fn serve_conn(
     mut sock: tokio::net::TcpStream,
-    reg: Registry,
-    client: Client,
-    peer: PeerRef,
-    master: Arc<Mutex<Option<[u8; crypto::MASTER_KEY_LEN]>>>,
+    sessions: Arc<Mutex<HashMap<String, Session>>>,
+    remote: Remote,
 ) -> Result<()> {
-    use tokio::io::AsyncReadExt;
-    let mut buf = vec![0u8; 8192];
-    let n = sock.read(&mut buf).await?;
-    let req = String::from_utf8_lossy(&buf[..n]);
-    let mut lines = req.lines();
-    let req_line = lines.next().unwrap_or("");
-    let mut range = None;
-    for l in lines {
-        if let Some(v) = l
-            .strip_prefix("Range:")
-            .or_else(|| l.strip_prefix("range:"))
-        {
-            range = Some(v.trim().to_string());
-        }
-    }
-    let path = req_line
-        .strip_prefix("GET ")
-        .and_then(|r| r.split_whitespace().next())
-        .unwrap_or("");
-    let token = path.split('/').nth(2).unwrap_or("");
-    let found = {
-        let g = reg.lock().unwrap();
-        g.get(token).map(|s| {
-            (
-                s.parts.clone(),
-                s.plaintext_size,
-                s.encrypted,
-                s.name.clone(),
-            )
-        })
+    let (req, _rest) = match http::read_head(&mut sock).await {
+        Ok(r) => r,
+        Err(_) => return http::reply(&mut sock, 400).await,
     };
+    if req.method != "GET" {
+        return http::reply(&mut sock, 405).await;
+    }
+    let token = req.path.split('/').nth(2).unwrap_or("");
+    let found = sessions.lock().unwrap().get(token).map(|s| {
+        (
+            s.parts.clone(),
+            s.plaintext_size,
+            s.encrypted,
+            s.name.clone(),
+        )
+    });
     let Some((parts, pt_size, encrypted, name)) = found else {
-        return respond(&mut sock, 404, "text/plain", b"gone", None).await;
+        return http::respond(&mut sock, 404, &[], b"gone").await;
     };
-    let (start, end_incl, partial) = parse_range(range.as_deref(), pt_size as u64);
-    if pt_size <= 0 || start >= pt_size as u64 {
-        return respond(&mut sock, 416, "text/plain", b"range", None).await;
+    let total = pt_size as u64;
+    let (start, end_excl, partial) = match http::range(req.header("range"), total) {
+        Range::Span(s, e) => (s, e, true),
+        Range::Unsatisfiable => {
+            return http::respond(&mut sock, 416, &[], b"range").await;
+        }
+        Range::Full => (0, total, false),
+    };
+    if total == 0 {
+        return http::respond(&mut sock, 416, &[], b"range").await;
     }
-    let end_incl = end_incl.min(pt_size as u64 - 1);
-    let bytes = match read_range(
-        &client,
-        &peer,
-        &parts,
-        start,
-        end_incl + 1,
-        encrypted,
-        &master,
-    )
-    .await
-    {
+    let bytes = match remote.read_range(&parts, start, end_excl, encrypted).await {
         Ok(b) => b,
-        Err(_) => return respond(&mut sock, 404, "text/plain", b"read failed", None).await,
+        Err(_) => return http::respond(&mut sock, 500, &[], b"read failed").await,
     };
-    let mime = mime_for(&name);
-    let crange = partial.then(|| format!("bytes {start}-{end_incl}/{pt_size}"));
-    respond(
+    let mut headers = vec![
+        ("Content-Type", mime_for(&name).to_string()),
+        ("Accept-Ranges", "bytes".to_string()),
+        ("Cache-Control", "no-store".to_string()),
+    ];
+    if partial {
+        headers.push((
+            "Content-Range",
+            format!("bytes {start}-{}/{pt_size}", end_excl - 1),
+        ));
+    }
+    http::respond(
         &mut sock,
         if partial { 206 } else { 200 },
-        &mime,
+        &headers
+            .iter()
+            .map(|(k, v)| (*k, v.as_str()))
+            .collect::<Vec<_>>(),
         &bytes,
-        crange.as_deref(),
     )
     .await
-}
-
-fn parse_range(h: Option<&str>, total: u64) -> (u64, u64, bool) {
-    let Some(h) = h.and_then(|h| h.strip_prefix("bytes=")) else {
-        return (0, total.saturating_sub(1), false);
-    };
-    let mut it = h.split('-');
-    let s: u64 = it.next().and_then(|v| v.parse().ok()).unwrap_or(0);
-    let e: u64 = it
-        .next()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(total.saturating_sub(1));
-    (s, e, true)
 }
 
 fn mime_for(name: &str) -> &'static str {
@@ -177,6 +145,7 @@ fn mime_for(name: &str) -> &'static str {
         "webm" => "video/webm",
         "mkv" | "mk3d" => "video/x-matroska",
         "avi" => "video/x-msvideo",
+        "ts" => "video/mp2t",
         "jpg" | "jpeg" => "image/jpeg",
         "png" => "image/png",
         "webp" => "image/webp",
@@ -189,116 +158,4 @@ fn mime_for(name: &str) -> &'static str {
         "pdf" => "application/pdf",
         _ => "application/octet-stream",
     }
-}
-
-async fn respond(
-    sock: &mut tokio::net::TcpStream,
-    code: u16,
-    ctype: &str,
-    body: &[u8],
-    crange: Option<&str>,
-) -> Result<()> {
-    use tokio::io::AsyncWriteExt;
-    let reason = match code {
-        200 => "OK",
-        206 => "Partial Content",
-        404 => "Not Found",
-        416 => "Range Not Satisfiable",
-        _ => "Error",
-    };
-    let mut h = format!(
-        "HTTP/1.1 {code} {reason}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nAccept-Ranges: bytes\r\nCache-Control: no-store\r\n",
-        body.len()
-    );
-    if let Some(c) = crange {
-        h.push_str(&format!("Content-Range: {c}\r\n"));
-    }
-    h.push_str("Connection: close\r\n\r\n");
-    sock.write_all(h.as_bytes()).await?;
-    sock.write_all(body).await?;
-    Ok(())
-}
-
-/// Assemble plaintext `[start, end)` from the stored body parts.
-pub(crate) async fn read_range(
-    client: &Client,
-    peer: &PeerRef,
-    parts: &[(i64, i64)],
-    start: u64,
-    end: u64,
-    encrypted: bool,
-    master: &Arc<Mutex<Option<[u8; crypto::MASTER_KEY_LEN]>>>,
-) -> Result<Vec<u8>> {
-    if encrypted {
-        let key = { *master.lock().unwrap() }.context("drive locked")?;
-        // The TDE1 header sits at the start of the stored stream.
-        let header = stored_read(client, peer, parts, 0, crypto::HEADER_LEN as u64).await?;
-        let dec = crypto::RangeDecryptor::new(&key, &header)?;
-        let (cs, ce) = dec.ct_range(start, end);
-        let ct = stored_read(client, peer, parts, cs, ce).await?;
-        return dec.decrypt_range(start, end, &ct);
-    }
-    stored_read(client, peer, parts, start, end).await
-}
-
-/// Concatenate `[start, end)` from the stored stream spanning body parts.
-async fn stored_read(
-    client: &Client,
-    peer: &PeerRef,
-    parts: &[(i64, i64)],
-    start: u64,
-    end: u64,
-) -> Result<Vec<u8>> {
-    let mut out = Vec::new();
-    let mut base = 0u64;
-    for (msg_id, size) in parts {
-        let lo = base;
-        let hi = base + *size as u64;
-        base = hi;
-        if start >= hi || end <= lo {
-            continue;
-        }
-        let seg = part_read(client, peer, *msg_id, start.max(lo) - lo, end.min(hi) - lo).await?;
-        out.extend_from_slice(&seg);
-    }
-    Ok(out)
-}
-
-/// Fetch `[start, end)` bytes of one stored message body via chunk-aligned
-/// downloads (`skip_chunks` only skips whole chunks).
-async fn part_read(
-    client: &Client,
-    peer: &PeerRef,
-    msg_id: i64,
-    start: u64,
-    end: u64,
-) -> Result<Vec<u8>> {
-    const CHUNK: u64 = 512 * 1024;
-    let msgs = client.get_messages_by_id(*peer, &[msg_id as i32]).await?;
-    let media = msgs
-        .into_iter()
-        .flatten()
-        .next()
-        .and_then(|m| m.media())
-        .context("body missing")?;
-    let skip = (start / CHUNK) as i32;
-    let mut it = client
-        .iter_download(&media)
-        .chunk_size(CHUNK as i32)
-        .skip_chunks(skip);
-    let mut buf = Vec::new();
-    while let Some(b) = it.next().await? {
-        buf.extend_from_slice(&b);
-        if skip as u64 * CHUNK + buf.len() as u64 >= end {
-            break;
-        }
-    }
-    let rel = (start % CHUNK) as usize;
-    let take = (end - start) as usize;
-    // A body shorter than the declared size must not panic — the slice
-    // would otherwise kill the FUSE dispatch thread.
-    if rel >= buf.len() {
-        return Ok(Vec::new());
-    }
-    Ok(buf[rel..(rel + take).min(buf.len())].to_vec())
 }

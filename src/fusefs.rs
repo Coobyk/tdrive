@@ -5,17 +5,15 @@
 //! durable mount-write ops (`fcommit`/`freplace`/`dcommit`/`relocate`/
 //! `harddel`) so other TDrive clients see identical metadata.
 
-use crate::project::{Entry, FileEntry, Namespace};
-use crate::stream;
 use crate::ops::VfsOp;
+use crate::project::{Entry, FileEntry, Namespace};
+use crate::remote::Remote;
 use crate::tg::Command;
 use anyhow::Result;
 use fuser::{
     Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo, OpenFlags,
     ReplyAttr, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request,
 };
-use grammers_client::Client;
-use grammers_client::session::types::PeerRef;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::sync::{Arc, Mutex};
@@ -26,10 +24,7 @@ const ROOT_INO: u64 = 1;
 
 /// Filesystem backed by the shared namespace snapshot.
 pub struct TdFs {
-    ns: Arc<Mutex<Arc<Namespace>>>,
-    client: Client,
-    peer: PeerRef,
-    master: Arc<Mutex<Option<[u8; crate::crypto::MASTER_KEY_LEN]>>>,
+    remote: Remote,
     rt: tokio::runtime::Handle,
     inos: Mutex<InoMap>,
     /// Write ops route through the worker's durable mount-write commands.
@@ -89,20 +84,14 @@ impl InoMap {
 
 impl TdFs {
     pub fn new(
-        ns: Arc<Mutex<Arc<Namespace>>>,
-        client: Client,
-        peer: PeerRef,
-        master: Arc<Mutex<Option<[u8; crate::crypto::MASTER_KEY_LEN]>>>,
+        remote: Remote,
         rt: tokio::runtime::Handle,
         cmd: tokio::sync::mpsc::UnboundedSender<Command>,
     ) -> Self {
         let uid = unsafe { libc::getuid() };
         let gid = unsafe { libc::getgid() };
         Self {
-            ns,
-            client,
-            peer,
-            master,
+            remote,
             rt,
             cmd,
             write_bufs: Mutex::new(HashMap::new()),
@@ -162,7 +151,7 @@ impl TdFs {
     }
 
     fn snapshot(&self) -> Arc<Namespace> {
-        self.ns.lock().unwrap().clone()
+        self.remote.namespace()
     }
 
     /// Map an inode to a namespace directory id (root ino -> "").
@@ -274,7 +263,7 @@ impl TdFs {
                 reply.error(Errno::ENOTDIR);
                 return;
             }
-            let ns = self.ns.lock().unwrap();
+            let ns = self.remote.namespace();
             if !ns.list(&obj).is_empty() {
                 reply.error(Errno::ENOTEMPTY);
                 return;
@@ -778,14 +767,12 @@ impl Filesystem for TdFs {
         } else {
             vec![(file.content_msg_id, file.size)]
         };
-        let client = self.client.clone();
-        let peer = self.peer.clone();
-        let master = self.master.clone();
+        let remote = self.remote.clone();
         let encrypted = file.encrypted;
         let end = (offset + size as u64).min(total);
-        let bytes = self.rt.block_on(async move {
-            stream::read_range(&client, &peer, &parts, offset, end, encrypted, &master).await
-        });
+        let bytes = self
+            .rt
+            .block_on(async move { remote.read_range(&parts, offset, end, encrypted).await });
         match bytes {
             Ok(b) => reply.data(&b),
             Err(_) => reply.error(Errno::EIO),

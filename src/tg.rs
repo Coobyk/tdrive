@@ -6,9 +6,10 @@ use crate::crypto::{self, VaultConfig};
 use crate::dav;
 use crate::fusefs;
 use crate::journal::{DownloadJob, Journal, PartReceipt, UploadJob};
-use crate::project::Namespace;
-use crate::stream;
 use crate::ops::{self, VfsOp};
+use crate::project::Namespace;
+use crate::remote::Remote;
+use crate::stream;
 use crate::wire::{self, Op};
 use anyhow::{Context, Result, anyhow};
 use futures_util::FutureExt;
@@ -353,7 +354,7 @@ pub fn spawn() -> Handle {
                 api_hash: String::new(),
                 login_token: None,
                 password_token: None,
-                channel: None,
+                peer_cell: Arc::new(Mutex::new(None)),
                 channel_id: 0,
                 channel_title: String::new(),
                 namespace: Arc::new(Namespace::new()),
@@ -397,9 +398,10 @@ pub fn spawn() -> Handle {
 /// back as Commands so the worker keeps sole ownership of that state.
 #[derive(Clone)]
 struct TransferCtx {
-    client: Client,
+    remote: Remote,
+    /// Drive pinned at spawn — an in-flight transfer finishes on the
+    /// drive it started on even if the user switches channels.
     peer: PeerRef,
-    master: Arc<Mutex<Option<[u8; crypto::MASTER_KEY_LEN]>>>,
     tx: async_channel::Sender<Event>,
     cmd: mpsc::UnboundedSender<Command>,
     token: CancellationToken,
@@ -426,11 +428,7 @@ impl TransferCtx {
         self.journal(Command::OpApplied { header, msg_id });
     }
     async fn send_op(&self, header: &str) -> Result<i64> {
-        let msg = self
-            .client
-            .send_message(self.peer, InputMessage::new().text(header))
-            .await?;
-        Ok(recover_msg_id(&self.client, self.peer, msg.id() as i64, header).await)
+        self.remote.send_op(self.peer, header).await
     }
 }
 
@@ -439,7 +437,9 @@ struct Worker {
     api_hash: String,
     login_token: Option<LoginToken>,
     password_token: Option<PasswordToken>,
-    channel: Option<PeerRef>,
+    /// Current drive peer, shared with dav/stream/fuse so a
+    /// channel switch repoints mounted surfaces live.
+    peer_cell: Arc<Mutex<Option<PeerRef>>>,
     channel_id: i64,
     channel_title: String,
     namespace: Arc<Namespace>,
@@ -675,9 +675,8 @@ impl Worker {
     /// Bundle the worker's shared handles for a detached transfer task.
     fn transfer_ctx(&self, token: CancellationToken) -> Result<TransferCtx> {
         Ok(TransferCtx {
-            client: self.client()?.clone(),
+            remote: self.remote()?,
             peer: self.channel()?,
-            master: self.master_key.clone(),
             tx: self.tx.clone(),
             cmd: self.cmd_tx.clone(),
             token,
@@ -712,7 +711,19 @@ impl Worker {
     }
 
     fn channel(&self) -> Result<PeerRef> {
-        self.channel.context("no drive open")
+        self.peer_cell.lock().unwrap().context("no drive open")
+    }
+
+    /// The live drive connection handed to dav/stream/fuse and
+    /// transfer contexts — the cells are shared, so callers ride along
+    /// on channel switches and vault lock/unlock automatically.
+    fn remote(&self) -> Result<Remote> {
+        Ok(Remote::new(
+            self.client()?.clone(),
+            self.peer_cell.clone(),
+            self.master_key.clone(),
+            self.ns_shared.clone(),
+        ))
     }
 
     async fn connect(&mut self, api_id: i32, api_hash: String) -> Result<()> {
@@ -935,19 +946,12 @@ impl Worker {
         kind: String,
     ) -> Result<()> {
         let peer_id = PeerId::channel(id).context("bad channel id")?;
-        self.channel = Some(PeerRef {
+        *self.peer_cell.lock().unwrap() = Some(PeerRef {
             id: peer_id,
             auth: PeerAuth::from_hash(access_hash),
         });
         // Read-write WebDAV surface for this drive.
-        dav::ensure_server(
-            self.client()?.clone(),
-            self.channel()?,
-            self.ns_shared.clone(),
-            self.master_key.clone(),
-            self.cmd_tx.clone(),
-        )
-        .await;
+        dav::ensure_server(self.remote()?, self.cmd_tx.clone()).await;
         if let Some(url) = dav::url() {
             self.emit(Event::DavUrl { url });
         }
@@ -1111,14 +1115,7 @@ impl Worker {
     }
 
     async fn send_op(&self, header: &str) -> Result<i64> {
-        let msg = self
-            .client()?
-            .send_message(self.channel()?, InputMessage::new().text(header))
-            .await?;
-        // grammers may return Empty{id:0} when the send outcome isn't in
-        // the response updates — the op IS on the channel, so recover
-        // the real id by scanning the newest messages for our header.
-        Ok(recover_msg_id(self.client()?, self.channel()?, msg.id() as i64, header).await)
+        self.remote()?.send_op(self.channel()?, header).await
     }
 
     /// Send a control op and fold it into the local namespace.
@@ -1174,64 +1171,21 @@ impl Worker {
         let Some(d) = self.namespace.dirent(&obj) else {
             return Err(anyhow!("no such object"));
         };
-        let (is_folder, revision, tombstoned) = (d.is_folder, d.revision, d.tombstoned);
+        let (revision, tombstoned) = (d.revision, d.tombstoned);
         if !tombstoned {
             return Err(anyhow!("only trashed items can be purged"));
         }
-        // Collect body messages before the marker lands — content bodies
-        // of the whole subtree plus every rendition bound to any of its
-        // files. Purging a folder must delete descendant media too —
-        // tombstoning alone only hides them.
-        let mut bodies = if is_folder {
-            self.namespace.subtree_body_msg_ids(&obj)
-        } else {
-            self.namespace
-                .files
-                .get(&obj)
-                .map(|f| self.namespace.body_msg_ids(f))
-                .unwrap_or_default()
-        };
-        let file_ids: Vec<String> = if is_folder {
-            self.namespace
-                .files
-                .values()
-                .filter(|f| {
-                    // descendant-of check via subtree body collection was
-                    // for msg ids; here match the same subtree member set
-                    // through parents
-                    let mut p = f.parent.clone();
-                    loop {
-                        if p == obj {
-                            return true;
-                        }
-                        match self.namespace.folders.get(&p) {
-                            Some(d) => p = d.parent.clone(),
-                            None => return false,
-                        }
-                    }
-                })
-                .map(|f| f.id.clone())
-                .collect()
-        } else {
-            vec![obj.clone()]
-        };
-        for fid in &file_ids {
-            if let Some(kinds) = self.namespace.renditions.get(fid) {
-                bodies.extend(kinds.values().map(|(id, _)| *id));
-            }
-        }
+        // Collect body messages before the marker lands — purging a
+        // folder must delete descendant media too; tombstoning alone
+        // only hides them.
+        let bodies = self.namespace.delete_body_msg_ids(&obj);
         let op = ops::hard_delete(obj, revision);
         self.send_and_project(&op).await?;
-        // Telegram caps delete at 100 ids per call — chunk, and surface
-        // failures instead of silently leaving bodies behind.
-        for chunk in bodies.chunks(100) {
-            let ids: Vec<i32> = chunk.iter().map(|&m| m as i32).collect();
-            if let Err(e) = self.client()?.delete_messages(self.channel()?, &ids).await {
-                self.emit(Event::Error {
-                    context: "purge",
-                    message: format!("body delete: {e:#}"),
-                });
-            }
+        if let Err(e) = self.remote()?.delete_bodies(&bodies).await {
+            self.emit(Event::Error {
+                context: "purge",
+                message: format!("body delete: {e:#}"),
+            });
         }
         Ok(())
     }
@@ -1268,16 +1222,6 @@ impl Worker {
             }
         }
         Ok(())
-    }
-
-    fn upload_update(&self, id: &str, label: &str, sent: i64, total: i64, state: TransferState) {
-        self.emit(Event::Transfer(TransferUpdate {
-            id: id.to_string(),
-            label: label.to_string(),
-            sent,
-            total,
-            state,
-        }));
     }
 
     async fn upload(&mut self, path: PathBuf, parent: String) -> Result<()> {
@@ -1501,7 +1445,7 @@ impl Worker {
         ctx.update(&id, &name, 0, size, TransferState::Active);
         // Encrypt to staged ciphertext first when the vault is unlocked.
         let stored = if encrypted {
-            let master = (*ctx.master.lock().unwrap()).context("drive locked")?;
+            let master = ctx.remote.master_key().context("drive locked")?;
             let ct_path = config::staging_dir()
                 .unwrap_or_else(|_| std::env::temp_dir())
                 .join(format!("tdrive-enc-{}.bin", uuid::Uuid::new_v4()));
@@ -1570,6 +1514,7 @@ impl Worker {
         });
         let mut reader = progress;
         let uploaded = ctx
+            .remote
             .client
             .upload_stream(&mut reader, size as usize, name.to_string())
             .await?;
@@ -1581,6 +1526,7 @@ impl Worker {
             plaintext_size,
         ));
         let msg = ctx
+            .remote
             .client
             .send_message(
                 ctx.peer,
@@ -1603,7 +1549,9 @@ impl Worker {
         // Encrypt to staged ciphertext when the vault is unlocked — done
         // inside the task so even a multi-GB encrypt never blocks the loop.
         if job.encrypted && (!job.local_path.exists() || job.local_path == job.source_path) {
-            let master = (*ctx.master.lock().unwrap())
+            let master = ctx
+                .remote
+                .master_key()
                 .context("drive locked — cannot resume encrypted upload")?;
             let ct_path = config::staging_dir()
                 .unwrap_or_else(|_| std::env::temp_dir())
@@ -1789,7 +1737,7 @@ impl Worker {
         .await??;
         let pt_len = jpeg.len() as i64;
         let (body, stored) = if encrypted {
-            let master = (*ctx.master.lock().unwrap()).context("drive locked")?;
+            let master = ctx.remote.master_key().context("drive locked")?;
             // TDrive wraps encrypted renditions in a TDR1 envelope binding
             // the descriptor (s=0) — Go's decryptRendition requires it.
             let desc = serde_json::json!({
@@ -1825,11 +1773,13 @@ impl Worker {
         };
         let mut reader = std::io::Cursor::new(&body);
         let uploaded = ctx
+            .remote
             .client
             .upload_stream(&mut reader, body.len(), "rendition.jpg".to_string())
             .await?;
         let caption = wire::format(&ops::rendition_part(stored, &rend));
-        ctx.client
+        ctx.remote
+            .client
             .send_message(
                 ctx.peer,
                 InputMessage::new().document(uploaded).text(caption),
@@ -1876,15 +1826,13 @@ impl Worker {
         let mut reader = progress;
         let part_name = part_attachment_name(&job.name, index, job.parts.len() as i32);
         let uploaded = ctx
+            .remote
             .client
             .upload_stream(&mut reader, size as usize, part_name)
             .await?;
-        let caption = wire::format(&ops::file_part(
-            job.upload_uuid.clone(),
-            index,
-            size,
-        ));
+        let caption = wire::format(&ops::file_part(job.upload_uuid.clone(), index, size));
         let msg = ctx
+            .remote
             .client
             .send_message(
                 ctx.peer,
@@ -1946,7 +1894,7 @@ impl Worker {
     /// Download state machine — spawned task; journal/namespace writes
     /// flow back through Commands on `ctx.cmd`.
     async fn run_download_task(ctx: &TransferCtx, job: DownloadJob) -> Result<()> {
-        let client = ctx.client.clone();
+        let client = ctx.remote.client.clone();
         let peer = ctx.peer;
         let transfer_id = format!("dl:{}", job.file_id);
         ctx.update(
@@ -2047,7 +1995,10 @@ impl Worker {
         }
         drop(out);
         if job.encrypted {
-            let master = (*ctx.master.lock().unwrap()).context("drive locked mid-download")?;
+            let master = ctx
+                .remote
+                .master_key()
+                .context("drive locked mid-download")?;
             let staging2 = staging.clone();
             let dest2 = job.dest.clone();
             tokio::task::spawn_blocking(move || crypto::decrypt_file(&master, &staging2, &dest2))
@@ -2593,9 +2544,7 @@ impl Worker {
         if parts.is_empty() {
             return Err(anyhow!("no body messages for this file"));
         }
-        let client = self.client()?.clone();
-        let peer = self.channel()?;
-        stream::ensure_server(client, peer, self.master_key.clone());
+        stream::ensure_server(self.remote()?).await?;
         let url = stream::open(stream::Session {
             parts,
             plaintext_size: if file.encrypted {
@@ -2676,10 +2625,7 @@ impl Worker {
     /// for Linux file managers. Writes emit durable mount-write ops.
     async fn mount_drive(&mut self, dir: PathBuf) -> Result<()> {
         let fs = fusefs::TdFs::new(
-            self.ns_shared.clone(),
-            self.client()?.clone(),
-            self.channel()?,
-            self.master_key.clone(),
+            self.remote()?,
             tokio::runtime::Handle::current(),
             self.cmd_tx.clone(),
         );
@@ -2699,8 +2645,7 @@ impl Worker {
             }
             VfsOp::Delete { obj } => {
                 // Mounted deletes go through the durable hard-delete flow.
-                let Some(d) = self.namespace.dirent(&obj)
-                else {
+                let Some(d) = self.namespace.dirent(&obj) else {
                     return Err(anyhow!("no such object"));
                 };
                 if d.tombstoned {
@@ -2708,26 +2653,10 @@ impl Worker {
                 }
                 // Collect body msg ids BEFORE applying — the projection
                 // drops the records so ids are empty afterwards.
-                let mut bodies: Vec<i64> = if obj.starts_with('d') {
-                    self.namespace.subtree_body_msg_ids(&obj)
-                } else {
-                    self.namespace
-                        .files
-                        .get(&obj)
-                        .map(|f| self.namespace.body_msg_ids(f))
-                        .unwrap_or_default()
-                };
-                if let Some(kinds) = self.namespace.renditions.get(&obj) {
-                    bodies.extend(kinds.values().map(|(id, _)| *id));
-                }
+                let bodies = self.namespace.delete_body_msg_ids(&obj);
                 let op = ops::hard_delete(&obj, d.revision);
                 self.send_and_project(&op).await?;
-                for body in bodies {
-                    let _ = self
-                        .client()?
-                        .delete_messages(self.channel()?, &[body as i32])
-                        .await;
-                }
+                self.remote()?.delete_bodies(&bodies).await?;
                 Ok(())
             }
             VfsOp::Move {
@@ -2772,14 +2701,7 @@ impl Worker {
                     .client()?
                     .send_message(self.channel()?, InputMessage::new().document(uploaded))
                     .await?;
-                let op = ops::file_commit(
-                    parent,
-                    name,
-                    stored,
-                    encrypted,
-                    pt_len,
-                    msg.id() as i64,
-                );
+                let op = ops::file_commit(parent, name, stored, encrypted, pt_len, msg.id() as i64);
                 self.send_and_project(&op).await
             }
             VfsOp::Replace { obj, bytes } => {
@@ -2813,14 +2735,7 @@ impl Worker {
                     .client()?
                     .send_message(self.channel()?, InputMessage::new().document(uploaded))
                     .await?;
-                let op = ops::file_replace(
-                    obj,
-                    stored,
-                    encrypted,
-                    pt_len,
-                    msg.id() as i64,
-                    rev,
-                );
+                let op = ops::file_replace(obj, stored, encrypted, pt_len, msg.id() as i64, rev);
                 self.send_and_project(&op).await
             }
         }
@@ -2832,7 +2747,7 @@ impl Worker {
             .store(false, std::sync::atomic::Ordering::Relaxed);
         // A zero watermark just means empty-or-unsynced — full scan is the
         // correct response, not a permanent wedge.
-        if self.channel.is_none() {
+        if self.peer_cell.lock().unwrap().is_none() {
             return Ok(());
         }
         let now = std::time::Instant::now();
@@ -2849,7 +2764,7 @@ impl Worker {
         }
         // Keep the client — grammers supports re-login on the same pool;
         // dropping it strands the worker with no path back.
-        self.channel = None;
+        *self.peer_cell.lock().unwrap() = None;
         self.channel_id = 0;
         self.login_token = None;
         self.password_token = None;
@@ -2859,7 +2774,6 @@ impl Worker {
         Ok(())
     }
 }
-
 
 fn media_size(media: &Media) -> usize {
     match media {
@@ -2971,23 +2885,6 @@ async fn extract_video_frame(source: &PathBuf) -> Option<PathBuf> {
 /// Recover the real message id after `send_message` reports `Empty{id:0}` —
 /// the op reached the channel, so the newest message carrying our exact
 /// header is the one just sent. Returns 0 when recovery fails.
-async fn recover_msg_id(client: &Client, peer: PeerRef, sent_id: i64, header: &str) -> i64 {
-    if sent_id > 0 {
-        return sent_id;
-    }
-    let mut iter = client.iter_messages(peer);
-    for _ in 0..20 {
-        let m = match iter.next().await {
-            Ok(Some(m)) => m,
-            _ => break,
-        };
-        if m.text() == header {
-            return m.id() as i64;
-        }
-    }
-    0
-}
-
 pub(crate) fn is_video_name(name: &str) -> bool {
     matches!(
         name.rsplit('.')

@@ -867,17 +867,6 @@ impl Namespace {
         self.trash.retain(|id, _| id != "f:0" && id != "d:0");
     }
 
-    /// Part message ids for a multipart file, ordered by part index.
-    /// Returns None when the group is incomplete.
-    pub fn part_msg_ids(&self, uuid: &str, count: i32) -> Option<Vec<i64>> {
-        let group = self.parts.get(uuid)?;
-        let mut ids = Vec::with_capacity(count as usize);
-        for i in 0..count {
-            ids.push(group.parts.get(&i)?.0);
-        }
-        Some(ids)
-    }
-
     /// Multipart parts in index order: (body msg_id, stored size).
     pub fn part_sizes(&self, upload_uuid: &str) -> Vec<(i64, i64)> {
         let Some(g) = self.parts.get(upload_uuid) else {
@@ -905,6 +894,35 @@ impl Namespace {
             return vec![(file.content_msg_id, file.size)];
         }
         vec![(file.msg_id, file.size)]
+    }
+
+    /// Every body message a permanent delete must remove for `obj`:
+    /// subtree bodies (or the file's own) plus each rendition bound to
+    /// any of those files. Shared by purge and mount deletes.
+    pub fn delete_body_msg_ids(&self, obj: &str) -> Vec<i64> {
+        let mut bodies = if obj.starts_with('d') {
+            self.subtree_body_msg_ids(obj)
+        } else {
+            self.files
+                .get(obj)
+                .map(|f| self.body_msg_ids(f))
+                .unwrap_or_default()
+        };
+        let file_ids: Vec<&String> = if obj.starts_with('d') {
+            self.files
+                .values()
+                .filter(|f| self.subtree_contains(obj, &f.id))
+                .map(|f| &f.id)
+                .collect()
+        } else {
+            self.files.get(obj).map(|f| &f.id).into_iter().collect()
+        };
+        for fid in file_ids {
+            if let Some(kinds) = self.renditions.get(fid) {
+                bodies.extend(kinds.values().map(|(id, _)| *id));
+            }
+        }
+        bodies
     }
 
     /// Message ids carrying a file's bytes, in read order.
