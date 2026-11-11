@@ -74,12 +74,16 @@ impl Root {
             cx.notify();
         });
 
+        // Action bar — file ops on the left, drive tools + view
+        // controls on the right. One row, grouped by intent.
         let mut toolbar = div()
             .flex()
             .items_center()
             .gap_2()
+            .w_full()
             .child(tool_button("Upload", Tone::Primary, upload))
             .child(tool_button("New folder", Tone::Ghost, new_folder))
+            .child(div().w(px(12.)))
             .child(tool_button("Backup", Tone::Ghost, backup))
             .child(tool_button("Watch", Tone::Ghost, watch))
             .child(tool_button(
@@ -91,6 +95,7 @@ impl Root {
                 Tone::Ghost,
                 mount,
             ))
+            .child(div().flex_1())
             .child(tool_button("Sync", Tone::Ghost, refresh))
             .child(tool_button("Limit", Tone::Ghost, uplim))
             .child(tool_button(
@@ -124,7 +129,6 @@ impl Root {
             };
             toolbar = toolbar.child(tool_button(lock_label, Tone::Ghost, lock_btn));
         }
-        toolbar = toolbar.child(div().w(px(150.)).child(self.f_search.clone()));
         if !self.namespace.unadopted.is_empty() && !self.trash {
             let n = self.namespace.unadopted.len();
             let ad = cx.listener(|this, _: &MouseDownEvent, _, cx| {
@@ -141,10 +145,6 @@ impl Root {
             });
             toolbar = toolbar.child(tool_button(label, Tone::Ghost, gt));
         }
-        toolbar = toolbar
-            .child(div().flex_1())
-            .child(tool_button("Drives", Tone::Ghost, back))
-            .child(tool_button("Sign out", Tone::Ghost, sign_out));
 
         // Breadcrumb
         let mut crumbs = div().flex().items_center().gap_1().text_sm().child(
@@ -250,7 +250,7 @@ impl Root {
             .flex()
             .items_center()
             .gap_2()
-            .h(px(36.))
+            .h(px(44.))
             .px_3()
             .border_b_1()
             .border_color(rgb(BORDER))
@@ -554,6 +554,8 @@ impl Root {
                 }
                 cx.notify();
             }))
+            // Titlebar — drive identity + breadcrumb nav on the left,
+            // search and session actions on the right.
             .child(
                 div()
                     .flex()
@@ -578,20 +580,27 @@ impl Root {
                             .text_color(rgb(TEXT))
                             .child(channel_name),
                     )
+                    .child(div().text_color(rgb(DIM)).child("·"))
+                    .child(crumbs)
                     .child(div().flex_1())
-                    .child(toolbar),
+                    .child(div().w(px(200.)).child(self.f_search.clone()))
+                    .child(tool_button("Drives", Tone::Ghost, back))
+                    .child(tool_button("Sign out", Tone::Ghost, sign_out)),
             )
+            // Action bar — one grouped row of controls.
             .child(
                 div()
-                    .flex()
-                    .items_center()
                     .px_4()
                     .py_2()
                     .border_b_1()
                     .border_color(rgb(BORDER))
-                    .child(crumbs),
+                    .child(toolbar),
             )
-            .child(actions)
+            .child(if self.selected.is_some() {
+                actions.into_any_element()
+            } else {
+                div().into_any_element()
+            })
             .child(body)
             .child(
                 div()
@@ -816,7 +825,7 @@ impl Root {
             .gap_3()
             .w_full()
             .px_4()
-            .py_1()
+            .py_2()
             .bg(if selected {
                 rgb(0x3e4452)
             } else {
