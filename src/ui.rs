@@ -9,14 +9,16 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-const BG: u32 = 0x101014;
-const PANEL: u32 = 0x16161c;
-const PANEL2: u32 = 0x1c1c24;
-const BORDER: u32 = 0x2a2a35;
-const TEXT: u32 = 0xe8e8f0;
-const DIM: u32 = 0x8a8a9e;
-const ACCENT: u32 = 0x3b82f6;
-const DANGER: u32 = 0xef4444;
+const BG: u32 = 0x0c0e12;
+const PANEL: u32 = 0x12151b;
+const PANEL2: u32 = 0x1a1f28;
+const BORDER: u32 = 0x222835;
+const TEXT: u32 = 0xeceef4;
+const DIM: u32 = 0x7c8294;
+const ACCENT: u32 = 0xd9a441;
+const ACCENT_DARK: u32 = 0x141109;
+const DANGER: u32 = 0xe06262;
+const OK: u32 = 0x4db88a;
 
 #[derive(Debug, Clone, PartialEq)]
 enum Screen {
@@ -629,15 +631,16 @@ impl Root {
             .size_full()
             .child(
                 div()
-                    .w(px(380.))
+                    .w(px(400.))
                     .flex()
                     .flex_col()
-                    .gap_3()
-                    .p_6()
-                    .rounded_lg()
+                    .gap_4()
+                    .p_8()
+                    .rounded_xl()
                     .bg(rgb(PANEL))
                     .border_1()
                     .border_color(rgb(BORDER))
+                    .shadow_lg()
                     .child(content),
             )
     }
@@ -654,7 +657,7 @@ impl Root {
                 .flex()
                 .flex_col()
                 .gap_3()
-                .child(div().font_weight(FontWeight::BOLD).child("Connect to Telegram"))
+                .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("Connect to Telegram"))
                 .child(
                     div()
                         .text_sm()
@@ -680,7 +683,7 @@ impl Root {
                     .flex()
                     .flex_col()
                     .gap_3()
-                    .child(div().font_weight(FontWeight::BOLD).child("Sign in"))
+                    .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("Sign in"))
                     .child(div().text_sm().text_color(rgb(DIM)).child(
                         "Enter your phone number with country code.",
                     ))
@@ -699,7 +702,7 @@ impl Root {
                     .flex()
                     .flex_col()
                     .gap_3()
-                    .child(div().font_weight(FontWeight::BOLD).child("Login code"))
+                    .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("Login code"))
                     .child(
                         div()
                             .text_sm()
@@ -722,7 +725,7 @@ impl Root {
                     .flex()
                     .flex_col()
                     .gap_3()
-                    .child(div().font_weight(FontWeight::BOLD).child("Password"))
+                    .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("Password"))
                     .child(
                         div()
                             .text_sm()
@@ -753,8 +756,7 @@ impl Root {
                     .px_3()
                     .py_2()
                     .rounded_md()
-                    .bg(rgb(PANEL2))
-                    .hover(|s| s.bg(rgb(0x23232e)))
+                    .hover(|s| s.bg(rgb(PANEL2)))
                     .cursor_pointer()
                     .on_mouse_down(
                         MouseButton::Left,
@@ -786,7 +788,7 @@ impl Root {
                 .flex()
                 .flex_col()
                 .gap_3()
-                .child(div().font_weight(FontWeight::BOLD).child("Choose a drive"))
+                .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("Choose a drive"))
                 .child(
                     div()
                         .text_sm()
@@ -805,9 +807,8 @@ impl Root {
                 )
                 .child(self.f_channel.clone())
                 .child(button("Create new drive", ACCENT, create))
-                .child(button(
+                .child(button_secondary(
                     "New shared drive",
-                    ACCENT,
                     cx.listener(|this, _: &MouseDownEvent, _, cx| {
                         let title = this.f_channel.read(cx).text().trim().to_string();
                         if !title.is_empty() {
@@ -901,16 +902,16 @@ impl Root {
             .flex()
             .items_center()
             .gap_2()
-            .child(tool_button("↑ Upload", upload))
-            .child(tool_button("+ Folder", new_folder))
-            .child(tool_button("📷 Backup", backup))
-            .child(tool_button("👁 Watch", watch))
+            .child(tool_button_primary("Upload", upload))
+            .child(tool_button("New folder", new_folder))
+            .child(tool_button("Backup", backup))
+            .child(tool_button("Watch", watch))
             .child(tool_button(
-                if self.mount_dir.is_some() { "⏏ Unmount" } else { "⬇ Mount" },
+                if self.mount_dir.is_some() { "Unmount" } else { "Mount" },
                 mount,
             ))
-            .child(tool_button("⟳ Sync", refresh))
-            .child(tool_button("⇅ Limit", uplim))
+            .child(tool_button("Sync", refresh))
+            .child(tool_button("Limit", uplim))
             .child(tool_button(
                 if self.trash { "Files" } else { "Trash" },
                 trash_toggle,
@@ -925,12 +926,12 @@ impl Root {
         if self.channel_kind == "broadcast" {
             let lock_label = if self.vault_configured {
                 if self.vault_unlocked {
-                    "🔓 Unlocked"
+                    "Unlocked"
                 } else {
-                    "🔒 Unlock"
+                    "Unlock"
                 }
             } else {
-                "🔒 Encrypt"
+                "Encrypt"
             };
             toolbar = toolbar.child(tool_button(lock_label, lock_btn));
         }
@@ -970,7 +971,8 @@ impl Root {
                 div()
                     .id("crumb-root")
                     .cursor_pointer()
-                    .text_color(rgb(ACCENT))
+                    .text_color(rgb(DIM))
+                    .hover(|s| s.text_color(rgb(ACCENT)))
                     .child("root")
                     .on_mouse_down(
                         MouseButton::Left,
@@ -983,12 +985,13 @@ impl Root {
             );
         for (id, name) in self.namespace.folder_path(&self.cwd) {
             crumbs = crumbs
-                .child(div().text_color(rgb(DIM)).child(" / "))
+                .child(div().text_color(rgb(0x3a4152)).child(" / "))
                 .child(
                     div()
                         .id(SharedString::from(format!("crumb-{id}")))
                         .cursor_pointer()
-                        .text_color(rgb(ACCENT))
+                        .text_color(rgb(DIM))
+                        .hover(|s| s.text_color(rgb(ACCENT)))
                         .child(name)
                         .on_mouse_down(
                             MouseButton::Left,
@@ -1030,9 +1033,10 @@ impl Root {
         if self.entries_cache.is_empty() {
             rows = rows.child(
                 div()
-                    .py_8()
+                    .py_16()
                     .flex()
                     .justify_center()
+                    .text_sm()
                     .text_color(rgb(DIM))
                     .child(if self.trash {
                         "trash is empty"
@@ -1074,7 +1078,15 @@ impl Root {
         }
 
         // Selected actions
-        let mut actions = div().flex().items_center().gap_2().h(px(36.)).px_3();
+        let mut actions = div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .h(px(36.))
+            .px_3()
+            .border_b_1()
+            .border_color(rgb(BORDER))
+            .bg(rgb(PANEL));
         if let Some(sel) = &self.selected {
             let name = self
                 .namespace
@@ -1166,7 +1178,7 @@ impl Root {
             let (state_label, color) = match t.state {
                 TransferState::Active => ("", ACCENT),
                 TransferState::Paused => ("paused", DIM),
-                TransferState::Done => ("done", 0x22c55e),
+                TransferState::Done => ("done", OK),
                 TransferState::Failed => ("failed", DANGER),
             };
             let mut row = div()
@@ -1185,12 +1197,12 @@ impl Root {
                 .child(
                     div()
                         .flex_1()
-                        .h(px(6.))
+                        .h(px(4.))
                         .rounded_full()
-                        .bg(rgb(BORDER))
+                        .bg(rgb(PANEL2))
                         .child(
                             div()
-                                .h(px(6.))
+                                .h(px(4.))
                                 .w(relative(frac))
                                 .rounded_full()
                                 .bg(rgb(color)),
@@ -1369,9 +1381,15 @@ impl Root {
                         div()
                             .font_weight(FontWeight::BOLD)
                             .text_color(rgb(ACCENT))
-                            .child("TDrive"),
+                            .child("TDRIVE"),
                     )
-                    .child(div().text_color(rgb(DIM)).child(channel_name))
+                    .child(div().text_color(rgb(BORDER)).child("·"))
+                    .child(
+                        div()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(rgb(TEXT))
+                            .child(channel_name),
+                    )
                     .child(div().flex_1())
                     .child(toolbar),
             )
@@ -1595,10 +1613,11 @@ impl Root {
             .flex_col()
             .items_center()
             .gap_1()
-            .w(px(96.))
+            .w(px(100.))
             .p_2()
-            .bg(if selected { rgb(PANEL2) } else { rgb(BG) })
-            .hover(|s| s.bg(rgb(PANEL2)))
+            .rounded_lg()
+            .bg(if selected { rgba(0xd9a4411f) } else { rgba(0x00000000) })
+            .hover(|s| s.bg(rgb(PANEL)))
             .cursor_pointer()
             .on_mouse_down(
                 MouseButton::Left,
@@ -1615,15 +1634,33 @@ impl Root {
             .child(
                 div()
                     .w(px(80.))
-                    .h(px(80.))
+                    .h(px(64.))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .text_2xl()
                     .child(if let Some(p) = thumb {
-                        img(p).w(px(80.)).h(px(80.)).into_any_element()
+                        img(p).w(px(80.)).h(px(64.)).rounded_md().into_any_element()
                     } else {
-                        div().child(if is_folder { "📁" } else { "📄" }).into_any_element()
+                        div()
+                            .w(px(80.))
+                            .h(px(64.))
+                            .rounded_md()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .bg(if is_folder { rgba(0xd9a44114) } else { rgb(PANEL2) })
+                            .child(
+                                div()
+                                    .w(px(14.))
+                                    .h(px(14.))
+                                    .rounded_sm()
+                                    .bg(if is_folder {
+                                        rgb(ACCENT)
+                                    } else {
+                                        rgb(0x3a4152)
+                                    }),
+                            )
+                            .into_any_element()
                     }),
             )
             .child(
@@ -1637,23 +1674,16 @@ impl Root {
     }
 
     fn render_row(&mut self, entry: &Entry, cx: &mut Context<Self>) -> impl IntoElement {
-        let (id, name, meta, icon, is_folder) = match entry {
-            Entry::Folder(f) => (
-                f.id.clone(),
-                f.name.clone(),
-                "folder".to_string(),
-                "📁",
-                true,
-            ),
+        let (id, name, meta, is_folder) = match entry {
+            Entry::Folder(f) => (f.id.clone(), f.name.clone(), "folder".to_string(), true),
             Entry::File(f) => (
                 f.id.clone(),
                 f.name.clone(),
                 if f.encrypted {
-                    format!("{} 🔒", human_size(f.plaintext_size))
+                    format!("{} · encrypted", human_size(f.plaintext_size))
                 } else {
                     human_size(f.size)
                 },
-                "📄",
                 false,
             ),
         };
@@ -1669,8 +1699,18 @@ impl Root {
             .w_full()
             .px_4()
             .py_2()
-            .bg(if selected { rgb(PANEL2) } else { rgb(BG) })
-            .hover(|s| s.bg(rgb(PANEL2)))
+            .border_l_2()
+            .border_color(if selected {
+                rgb(ACCENT)
+            } else {
+                rgba(0x00000000)
+            })
+            .bg(if selected {
+                rgba(0xd9a4411f)
+            } else {
+                rgba(0x00000000)
+            })
+            .hover(|s| s.bg(rgb(PANEL)))
             .cursor_pointer()
             .on_mouse_down(
                 MouseButton::Left,
@@ -1685,16 +1725,40 @@ impl Root {
                     cx.notify();
                 }),
             )
-            .child(div().w(px(24.)).child(icon))
+            .child(
+                div()
+                    .w(px(22.))
+                    .flex()
+                    .items_center()
+                    .child(
+                        div()
+                            .w(px(9.))
+                            .h(px(9.))
+                            .rounded_sm()
+                            .bg(if is_folder {
+                                rgb(ACCENT)
+                            } else {
+                                rgb(0x3a4152)
+                            }),
+                    ),
+            )
             .child(
                 div()
                     .flex_1()
-                    .text_color(rgb(TEXT))
+                    .text_color(if selected { rgb(TEXT) } else { rgb(0xc9cdd8) })
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .child(name),
             )
-            .child(div().w(px(140.)).text_sm().text_color(rgb(DIM)).child(meta))
+            .child(
+                div()
+                    .w(px(140.))
+                    .text_xs()
+                    .text_color(rgb(DIM))
+                    .flex()
+                    .justify_end()
+                    .child(meta),
+            )
     }
 
     fn render_modal(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -2009,15 +2073,16 @@ impl Root {
             .on_mouse_down(MouseButton::Left, cancel)
             .child(
                 div()
-                    .w(px(360.))
+                    .w(px(400.))
                     .flex()
                     .flex_col()
-                    .gap_3()
-                    .p_5()
-                    .rounded_lg()
+                    .gap_4()
+                    .p_6()
+                    .rounded_xl()
                     .bg(rgb(PANEL))
                     .border_1()
                     .border_color(rgb(BORDER))
+                    .shadow_lg()
                     // stop clicks inside the card from closing the modal
                     .on_mouse_down(MouseButton::Left, |_, _, cx| {
                         cx.stop_propagation();
@@ -2032,7 +2097,13 @@ impl Root {
                             _ => {}
                         }
                     }))
-                    .child(div().font_weight(FontWeight::BOLD).child(title))
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(rgb(TEXT))
+                            .child(title),
+                    )
                     .child(body),
             )
             .into_any_element()
@@ -2050,7 +2121,7 @@ fn move_dest_row(
         .py_2()
         .rounded_md()
         .bg(rgb(PANEL2))
-        .hover(|s| s.bg(rgb(0x23232e)))
+        .hover(|s| s.bg(rgb(PANEL2)))
         .cursor_pointer()
         .on_mouse_down(MouseButton::Left, on_click)
         .child(div().text_sm().text_color(rgb(TEXT)).child(name.to_string()))
@@ -2061,21 +2132,74 @@ fn button(
     color: u32,
     on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
+    let dark_text = color == ACCENT;
     div()
         .id(SharedString::from(format!("btn-{label}")))
         .flex()
         .justify_center()
         .items_center()
-        .h(px(36.))
+        .h(px(38.))
         .rounded_md()
         .bg(rgb(color))
-        .hover(|s| s.opacity(0.85))
+        .hover(|s| s.opacity(0.9))
         .cursor_pointer()
         .on_mouse_down(MouseButton::Left, on_click)
         .child(
             div()
-                .text_color(rgb(0xffffff))
+                .text_sm()
+                .text_color(if dark_text {
+                    rgb(ACCENT_DARK)
+                } else {
+                    rgb(0xffffff)
+                })
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(label.to_string()),
+        )
+}
+
+fn button_secondary(
+    label: &str,
+    on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    div()
+        .id(SharedString::from(format!("btn-{label}")))
+        .flex()
+        .justify_center()
+        .items_center()
+        .h(px(38.))
+        .rounded_md()
+        .border_1()
+        .border_color(rgb(BORDER))
+        .hover(|s| s.bg(rgb(PANEL2)))
+        .cursor_pointer()
+        .on_mouse_down(MouseButton::Left, on_click)
+        .child(
+            div()
+                .text_sm()
+                .text_color(rgb(0xb8bdcc))
                 .font_weight(FontWeight::MEDIUM)
+                .child(label.to_string()),
+        )
+}
+
+fn tool_button_primary(
+    label: &str,
+    on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    div()
+        .id(SharedString::from(format!("tb-{label}")))
+        .px_3()
+        .py_1()
+        .rounded_md()
+        .bg(rgb(ACCENT))
+        .hover(|s| s.bg(rgb(0xe8b955)))
+        .cursor_pointer()
+        .on_mouse_down(MouseButton::Left, on_click)
+        .child(
+            div()
+                .text_sm()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(rgb(ACCENT_DARK))
                 .child(label.to_string()),
         )
 }
@@ -2097,13 +2221,15 @@ fn tool_button_id(
         .px_3()
         .py_1()
         .rounded_md()
-        .bg(rgb(PANEL2))
-        .border_1()
-        .border_color(rgb(BORDER))
-        .hover(|s| s.bg(rgb(0x23232e)))
+        .hover(|s| s.bg(rgb(PANEL2)))
         .cursor_pointer()
         .on_mouse_down(MouseButton::Left, on_click)
-        .child(div().text_sm().text_color(rgb(TEXT)).child(label.to_string()))
+        .child(
+            div()
+                .text_sm()
+                .text_color(rgb(0xb8bdcc))
+                .child(label.to_string()),
+        )
 }
 
 fn tool_button_danger(
@@ -2115,10 +2241,7 @@ fn tool_button_danger(
         .px_3()
         .py_1()
         .rounded_md()
-        .bg(rgb(PANEL2))
-        .border_1()
-        .border_color(rgb(DANGER))
-        .hover(|s| s.bg(rgb(0x23232e)))
+        .hover(|s| s.bg(rgba(0xe0626220)))
         .cursor_pointer()
         .on_mouse_down(MouseButton::Left, on_click)
         .child(div().text_sm().text_color(rgb(DANGER)).child(label.to_string()))

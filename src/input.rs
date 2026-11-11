@@ -169,32 +169,32 @@ impl Render for TextField {
             .h(px(34.))
             .px_3()
             .rounded_md()
-            .bg(rgb(0x16161c))
+            .bg(rgb(0x12151b))
             .border_1()
-            .border_color(if focused { rgb(0x3b82f6) } else { rgb(0x2a2a35) })
+            .border_color(if focused { rgb(0xd9a441) } else { rgb(0x222835) })
             .child(
                 div().flex().items_center().overflow_hidden().child(
                     if self.text.is_empty() && !focused {
                         div()
-                            .text_color(rgb(0x55556a))
+                            .text_color(rgb(0x4a5164))
                             .child(self.placeholder.clone())
                             .into_any_element()
                     } else {
                         div()
                             .flex()
                             .items_center()
-                            .child(div().text_color(rgb(0xe8e8f0)).child(before))
+                            .child(div().text_color(rgb(0xeceef4)).child(before))
                             .child(
                                 div()
                                     .w(px(1.))
                                     .h(px(16.))
                                     .bg(if focused {
-                                        rgb(0x3b82f6)
+                                        rgb(0xd9a441)
                                     } else {
-                                        rgb(0x55556a)
+                                        rgb(0x4a5164)
                                     }),
                             )
-                            .child(div().text_color(rgb(0xe8e8f0)).child(after))
+                            .child(div().text_color(rgb(0xeceef4)).child(after))
                             .into_any_element()
                     },
                 ),
