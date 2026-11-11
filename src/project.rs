@@ -1359,20 +1359,6 @@ mod tests {
 }
 
 #[cfg(test)]
-mod mkdir_list_test {
-    use super::*;
-
-    #[test]
-    fn mkdir_shows_in_list() {
-        let mut ns = Namespace::new();
-        assert!(ns.apply_message(1, "TDX1|t=mkdir|obj=d:x|p=|n=dir"));
-        let l = ns.list("");
-        assert_eq!(l.len(), 1);
-        assert!(matches!(l[0], Entry::Folder(_)));
-    }
-}
-
-#[cfg(test)]
 mod mkdir_pipeline_test {
     use super::*;
     use crate::wire::{Op, OpType, OpTypeOrUnknown, format as wfmt};

@@ -343,7 +343,6 @@ impl Root {
             .map(|c| c.upload_limit)
             .unwrap_or_else(crate::config::default_upload_limit)
             .max(1);
-        // Live work first, then failed, then done.
         let mut ordered: Vec<TransferUpdate> = self.transfers.values().cloned().collect();
         ordered.sort_by_key(|t| match t.state {
             TransferState::Active => 0,

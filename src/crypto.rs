@@ -310,7 +310,6 @@ pub struct Tde1Header {
 }
 
 /// Ciphertext size for a given plaintext length, including header and tags.
-#[allow(dead_code)]
 pub fn ciphertext_size(plaintext_size: u64) -> u64 {
     let chunks = plaintext_size / CHUNK_SIZE as u64 + 1;
     HEADER_LEN as u64 + plaintext_size + TAG_LEN as u64 * chunks

@@ -113,13 +113,13 @@ impl Root {
             ),
             Modal::Mount => {
                 (
-                    "Mount drive (read-only)".into(),
+                    "Mount drive".into(),
                     div()
                         .flex()
                         .flex_col()
                         .gap_3()
                         .child(div().text_sm().text_color(rgb(DIM)).child(
-                            "Mount point path — the drive appears as a read-only filesystem.",
+                            "Mount point path — the drive appears as a filesystem.",
                         ))
                         .child(self.f_name.clone())
                         .child({

@@ -799,7 +799,7 @@ fn time(ts: i64) -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(ts.max(0) as u64)
 }
 
-/// Mount the drive read-only at `dir` on the worker's runtime.
+/// Mount the drive read-write at `dir` on the worker's runtime.
 pub fn mount(fs: TdFs, dir: &std::path::Path) -> Result<fuser::BackgroundSession> {
     std::fs::create_dir_all(dir)?;
     let cfg = fuser::Config::default();

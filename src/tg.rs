@@ -830,7 +830,6 @@ impl Worker {
         if let Some(token) = self.cancels.get(id) {
             token.cancel();
         }
-        // Discard queued journal state for the transfer.
         if let Some(uuid) = id.strip_prefix("up:") {
             self.journal.uploads.retain(|j| j.upload_uuid != uuid);
             self.save_journal();
