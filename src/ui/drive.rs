@@ -357,13 +357,37 @@ impl Root {
             TransferState::Done => 3,
         });
 
-        let mut transfers = div().flex().flex_col().w_full().child(
+        let mut transfers = div().flex().flex_col().w_full();
+        if self.transfers_expanded {
+            // Top edge of the pane — the resize handle lives here, not
+            // between the header and the list.
+            transfers = transfers.child(
+                div()
+                    .id("transfers-drag")
+                    .h(px(8.))
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor(gpui::CursorStyle::ResizeUpDown)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, ev: &MouseDownEvent, _, cx| {
+                            this.transfers_drag =
+                                Some((f32::from(ev.position.y), this.transfers_height));
+                            cx.notify();
+                        }),
+                    )
+                    .child(div().w(px(36.)).h(px(3.)).rounded_full().bg(rgb(BORDER))),
+            );
+        }
+        transfers = transfers.child(
             div()
                 .flex()
                 .items_center()
                 .gap_2()
                 .px_3()
-                .pt_2()
+                .pt_1()
                 .pb_1()
                 .child(
                     div()
@@ -372,7 +396,6 @@ impl Root {
                         .text_color(rgb(DIM))
                         .child(format!("Transfers · {active_count} active · {total} total")),
                 )
-                .child(div().flex_1())
                 .child(if total > limit {
                     div()
                         .id("transfers-toggle")
@@ -400,42 +423,21 @@ impl Root {
                 }),
         );
         if self.transfers_expanded {
-            // Drag handle — mouse_move on the root tracks the resize.
-            transfers = transfers
-                .child(
-                    div()
-                        .id("transfers-drag")
-                        .h(px(8.))
-                        .w_full()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .cursor(gpui::CursorStyle::ResizeUpDown)
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, ev: &MouseDownEvent, _, cx| {
-                                this.transfers_drag =
-                                    Some((f32::from(ev.position.y), this.transfers_height));
-                                cx.notify();
-                            }),
-                        )
-                        .child(div().w(px(36.)).h(px(3.)).rounded_full().bg(rgb(BORDER))),
-                )
-                .child({
-                    let mut list = div()
-                        .id("transfers-scroll")
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .px_3()
-                        .pb_2()
-                        .h(px(self.transfers_height))
-                        .overflow_y_scroll();
-                    for t in &ordered {
-                        list = list.child(self.render_transfer(t, cx));
-                    }
-                    list
-                });
+            transfers = transfers.child({
+                let mut list = div()
+                    .id("transfers-scroll")
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .px_3()
+                    .pb_2()
+                    .h(px(self.transfers_height))
+                    .overflow_y_scroll();
+                for t in &ordered {
+                    list = list.child(self.render_transfer(t, cx));
+                }
+                list
+            });
         } else {
             // Pinned view: the in-flight transfers only.
             let mut pinned = div().flex().flex_col().gap_1().px_3().pb_2();
