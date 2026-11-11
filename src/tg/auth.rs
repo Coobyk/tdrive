@@ -116,8 +116,16 @@ impl Worker {
         }
         // Keep the client — grammers supports re-login on the same pool;
         // dropping it strands the worker with no path back.
+        for (_, token) in self.cancels.drain() {
+            token.cancel();
+        }
+        self.paused_downloads.clear();
+        self.fuse_session = None;
         *self.peer_cell.lock().unwrap() = None;
+        *self.ns_shared.lock().unwrap() = Arc::new(Namespace::new());
         self.channel_id = 0;
+        self.channel_title.clear();
+        self.channel_kind.clear();
         self.login_token = None;
         self.password_token = None;
         *self.master_key.lock().unwrap() = None;

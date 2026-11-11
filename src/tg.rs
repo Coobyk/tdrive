@@ -204,6 +204,13 @@ pub enum Command {
     TransferDone {
         id: String,
     },
+    /// A pending-join poll resolved — open the approved shared drive.
+    JoinApproved {
+        id: i64,
+        access_hash: i64,
+        title: String,
+        kind: String,
+    },
     TransferFailed {
         id: String,
         label: String,
@@ -653,6 +660,15 @@ impl Worker {
                 self.save_journal();
                 Ok(())
             }
+            Command::JoinApproved {
+                id,
+                access_hash,
+                title,
+                kind,
+            } => {
+                self.open_channel(id, access_hash, title, kind).await?;
+                self.list_channels().await
+            }
             Command::TransferDone { id } => {
                 self.cancels.remove(&id);
                 if let Some(uuid) = id.strip_prefix("up:") {
@@ -751,7 +767,11 @@ impl Worker {
         }
         if let Ok(path) = config::namespace_path(self.channel_id) {
             if let Ok(json) = serde_json::to_string(&self.namespace.snapshot()) {
-                let _ = std::fs::write(path, json);
+                // tmp+rename — a torn write must not corrupt the snapshot.
+                let tmp = path.with_extension("tmp");
+                if std::fs::write(&tmp, json).is_ok() {
+                    let _ = std::fs::rename(tmp, path);
+                }
             }
         }
     }

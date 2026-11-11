@@ -326,9 +326,9 @@ pub(super) async fn extract_video_frame(source: &PathBuf) -> Option<PathBuf> {
     let out2 = out.clone();
     let status = tokio::task::spawn_blocking(move || {
         std::process::Command::new("ffmpeg")
-            .args(["-ss", "10%", "-i"])
+            .args(["-i"])
             .arg(&src)
-            .args(["-frames:v", "1", "-q:v", "5", "-y"])
+            .args(["-vf", "thumbnail", "-frames:v", "1", "-q:v", "5", "-y"])
             .arg(&out2)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())

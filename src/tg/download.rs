@@ -32,12 +32,12 @@ impl Worker {
             confirmed_bytes: 0,
             encrypted: file.encrypted,
         };
-        self.cancels
-            .insert(format!("dl:{}", job.file_id), CancellationToken::new());
+        let id = format!("dl:{}", job.file_id);
+        let token = CancellationToken::new();
+        self.cancels.insert(id.clone(), token.clone());
         self.journal.downloads.push(job.clone());
         self.save_journal();
-        let id = format!("dl:{}", job.file_id);
-        let ctx = self.transfer_ctx(CancellationToken::new())?;
+        let ctx = self.transfer_ctx(token)?;
         let name = job.name.clone();
         self.spawn_transfer(&id, &name, async move {
             Self::run_download_task(&ctx, job).await

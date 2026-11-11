@@ -214,9 +214,48 @@ impl Worker {
         let ok = match result {
             Ok(ChatInviteJoinResult::Ok(ok)) => ok,
             Err(e) if format!("{e}").contains("INVITE_REQUEST_SENT") => {
-                // Join-request links: poll CheckChatInvite until approved,
-                // mirroring TDrive's CheckPendingJoin loop.
-                self.poll_pending_join(&hash).await?;
+                // Join-request links: poll CheckChatInvite off the command
+                // loop — a 120s inline wait would starve every other op.
+                // Approval comes back as Command::JoinApproved.
+                let client = self.client()?.clone();
+                let cmd = self.cmd_tx.clone();
+                let tx = self.tx.clone();
+                let hash = hash.clone();
+                let _ = tx.try_send(Event::Error {
+                    context: "join",
+                    message: "waiting for admin approval…".to_string(),
+                });
+                tokio::spawn(async move {
+                    use grammers_client::tl::enums::{Chat, ChatInvite};
+                    for _ in 0..24 {
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                        let inv = client
+                            .invoke(&grammers_client::tl::functions::messages::CheckChatInvite {
+                                hash: hash.clone(),
+                            })
+                            .await;
+                        if let Ok(ChatInvite::Already(already)) = inv {
+                            if let Chat::Channel(c) = already.chat {
+                                let _ = cmd.send(Command::JoinApproved {
+                                    id: c.id,
+                                    access_hash: c.access_hash.unwrap_or(0),
+                                    title: c.title,
+                                    kind: if c.megagroup {
+                                        "megagroup"
+                                    } else {
+                                        "broadcast"
+                                    }
+                                    .to_string(),
+                                });
+                                return;
+                            }
+                        }
+                    }
+                    let _ = tx.try_send(Event::Error {
+                        context: "join",
+                        message: "join request still pending".to_string(),
+                    });
+                });
                 return Ok(());
             }
             _ => return Err(anyhow!("invite requires an interactive join")),
@@ -245,42 +284,5 @@ impl Worker {
             }
         }
         Err(anyhow!("invite did not resolve to a channel"))
-    }
-
-    /// Poll `CheckChatInvite` until a join-request is approved (or give up).
-    pub(super) async fn poll_pending_join(&mut self, hash: &str) -> Result<()> {
-        use grammers_client::tl::enums::{Chat, ChatInvite};
-        self.emit(Event::Error {
-            context: "join",
-            message: "waiting for admin approval…".to_string(),
-        });
-        for _ in 0..24 {
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-            let inv = self
-                .client()?
-                .invoke(&grammers_client::tl::functions::messages::CheckChatInvite {
-                    hash: hash.to_string(),
-                })
-                .await;
-            if let Ok(ChatInvite::Already(already)) = inv {
-                if let Chat::Channel(c) = already.chat {
-                    self.open_channel(
-                        c.id,
-                        c.access_hash.unwrap_or(0),
-                        c.title,
-                        if c.megagroup {
-                            "megagroup"
-                        } else {
-                            "broadcast"
-                        }
-                        .to_string(),
-                    )
-                    .await?;
-                    self.list_channels().await?;
-                    return Ok(());
-                }
-            }
-        }
-        Err(anyhow!("join request still pending"))
     }
 }
