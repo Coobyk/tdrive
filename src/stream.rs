@@ -6,8 +6,8 @@
 
 use crate::crypto;
 use anyhow::{Context, Result};
-use grammers_client::session::types::PeerRef;
 use grammers_client::Client;
+use grammers_client::session::types::PeerRef;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -95,7 +95,10 @@ async fn serve_conn(
     let req_line = lines.next().unwrap_or("");
     let mut range = None;
     for l in lines {
-        if let Some(v) = l.strip_prefix("Range:").or_else(|| l.strip_prefix("range:")) {
+        if let Some(v) = l
+            .strip_prefix("Range:")
+            .or_else(|| l.strip_prefix("range:"))
+        {
             range = Some(v.trim().to_string());
         }
     }
@@ -123,11 +126,20 @@ async fn serve_conn(
         return respond(&mut sock, 416, "text/plain", b"range", None).await;
     }
     let end_incl = end_incl.min(pt_size as u64 - 1);
-    let bytes =
-        match read_range(&client, &peer, &parts, start, end_incl + 1, encrypted, &master).await {
-            Ok(b) => b,
-            Err(_) => return respond(&mut sock, 404, "text/plain", b"read failed", None).await,
-        };
+    let bytes = match read_range(
+        &client,
+        &peer,
+        &parts,
+        start,
+        end_incl + 1,
+        encrypted,
+        &master,
+    )
+    .await
+    {
+        Ok(b) => b,
+        Err(_) => return respond(&mut sock, 404, "text/plain", b"read failed", None).await,
+    };
     let mime = mime_for(&name);
     let crange = partial.then(|| format!("bytes {start}-{end_incl}/{pt_size}"));
     respond(
@@ -154,7 +166,13 @@ fn parse_range(h: Option<&str>, total: u64) -> (u64, u64, bool) {
 }
 
 fn mime_for(name: &str) -> &'static str {
-    match name.rsplit('.').next().unwrap_or("").to_lowercase().as_str() {
+    match name
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_lowercase()
+        .as_str()
+    {
         "mp4" | "m4v" | "mov" => "video/mp4",
         "webm" => "video/webm",
         "mkv" | "mk3d" => "video/x-matroska",
@@ -240,14 +258,7 @@ async fn stored_read(
         if start >= hi || end <= lo {
             continue;
         }
-        let seg = part_read(
-            client,
-            peer,
-            *msg_id,
-            start.max(lo) - lo,
-            end.min(hi) - lo,
-        )
-        .await?;
+        let seg = part_read(client, peer, *msg_id, start.max(lo) - lo, end.min(hi) - lo).await?;
         out.extend_from_slice(&seg);
     }
     Ok(out)

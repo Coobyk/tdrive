@@ -120,9 +120,7 @@ impl Namespace {
         // Projection-owned messages aren't adoptable: the op itself, body
         // messages bound by fcommit/freplace, and meta targets.
         self.unadopted.retain(|(id, _, _, _, _)| {
-            *id != msg_id
-                && *id != op.content_msg_id
-                && file_msg_id(&op.obj) != Some(*id)
+            *id != msg_id && *id != op.content_msg_id && file_msg_id(&op.obj) != Some(*id)
         });
         true
     }
@@ -267,13 +265,15 @@ impl Namespace {
                     return;
                 }
                 // First-mkdir-wins.
-                self.folders.entry(op.obj.clone()).or_insert_with(|| FolderEntry {
-                    id: op.obj.clone(),
-                    name: op.name.clone(),
-                    parent: op.parent.clone(),
-                    tombstoned: false,
-                    revision: 1,
-                });
+                self.folders
+                    .entry(op.obj.clone())
+                    .or_insert_with(|| FolderEntry {
+                        id: op.obj.clone(),
+                        name: op.name.clone(),
+                        parent: op.parent.clone(),
+                        tombstoned: false,
+                        revision: 1,
+                    });
             }
             OpType::Rename => {
                 if op.name.trim().is_empty() {
@@ -384,8 +384,7 @@ impl Namespace {
                     return;
                 }
                 // Source CAS first — Go rejects before touching the dst.
-                let Some((src_is_folder, live_rev)) = self.dirent(&op.obj)
-                else {
+                let Some((src_is_folder, live_rev)) = self.dirent(&op.obj) else {
                     return;
                 };
                 if live_rev != op.expected_revision {
@@ -815,7 +814,11 @@ impl Namespace {
     /// Tombstoned trash entries, most recently deleted first.
     pub fn list_trash(&self) -> Vec<TrashEntry> {
         let mut v: Vec<_> = self.trash.values().cloned().collect();
-        v.sort_by(|a, b| b.deleted_at.cmp(&a.deleted_at).then(a.object_id.cmp(&b.object_id)));
+        v.sort_by(|a, b| {
+            b.deleted_at
+                .cmp(&a.deleted_at)
+                .then(a.object_id.cmp(&b.object_id))
+        });
         v
     }
 
@@ -893,11 +896,23 @@ impl Namespace {
     /// Live dirent (object id, kind flag, revision, tombstoned, parent, name).
     pub fn dirent_info(&self, obj: &str) -> Option<(bool, i64, bool, String, String)> {
         if let Some(f) = self.files.get(obj) {
-            return Some((false, f.revision, f.tombstoned, f.parent.clone(), f.name.clone()));
+            return Some((
+                false,
+                f.revision,
+                f.tombstoned,
+                f.parent.clone(),
+                f.name.clone(),
+            ));
         }
-        self.folders
-            .get(obj)
-            .map(|d| (true, d.revision, d.tombstoned, d.parent.clone(), d.name.clone()))
+        self.folders.get(obj).map(|d| {
+            (
+                true,
+                d.revision,
+                d.tombstoned,
+                d.parent.clone(),
+                d.name.clone(),
+            )
+        })
     }
 
     /// Body message ids for every file under a folder subtree.
@@ -928,13 +943,10 @@ impl Namespace {
                 format!("{stem} ({attempt}){ext}")
             };
             let key = candidate.to_lowercase();
-            let taken = self
-                .list(parent)
-                .iter()
-                .any(|e| match e {
-                    Entry::Folder(d) => d.name.to_lowercase() == key,
-                    Entry::File(f) => f.name.to_lowercase() == key,
-                });
+            let taken = self.list(parent).iter().any(|e| match e {
+                Entry::Folder(d) => d.name.to_lowercase() == key,
+                Entry::File(f) => f.name.to_lowercase() == key,
+            });
             if !taken {
                 return candidate;
             }
@@ -1099,15 +1111,24 @@ mod tests {
         ns.apply(1, &op("TDX1|t=mkdir|obj=d:a|p=|n=dir"));
         ns.apply(2, &op("TDX1|t=f|p=d:a|n=x.txt|sz=5"));
         // Wrong revision → refused.
-        ns.apply(3, &op("TDX1|t=trash|v=1|oid=bad|obj=d:a|rev=9|del=100|purge=200"));
+        ns.apply(
+            3,
+            &op("TDX1|t=trash|v=1|oid=bad|obj=d:a|rev=9|del=100|purge=200"),
+        );
         assert_eq!(ns.list("").len(), 1);
         // Correct revision: folder at rev 1 → CAS trashes whole subtree.
-        ns.apply(4, &op("TDX1|t=trash|v=1|oid=t1|obj=d:a|rev=1|del=100|purge=200"));
+        ns.apply(
+            4,
+            &op("TDX1|t=trash|v=1|oid=t1|obj=d:a|rev=1|del=100|purge=200"),
+        );
         assert!(ns.files.get("f:2").unwrap().tombstoned);
         assert_eq!(ns.trash.get("d:a").unwrap().original_name, "dir");
         assert_eq!(ns.list_trash().len(), 1);
         // Replay of the same op_id is a no-op.
-        ns.apply(5, &op("TDX1|t=trash|v=1|oid=t1|obj=d:a|rev=1|del=100|purge=200"));
+        ns.apply(
+            5,
+            &op("TDX1|t=trash|v=1|oid=t1|obj=d:a|rev=1|del=100|purge=200"),
+        );
         // Restore: folder is at revision 2 after trash.
         ns.apply(6, &op("TDX1|t=untrash|v=1|oid=r1|obj=d:a|p=|n=dir|rev=2"));
         assert!(!ns.folders.get("d:a").unwrap().tombstoned);
@@ -1119,7 +1140,10 @@ mod tests {
     fn hard_delete_removes() {
         let mut ns = Namespace::new();
         ns.apply(1, &op("TDX1|t=f|p=|n=x|sz=1"));
-        ns.apply(2, &op("TDX1|t=trash|v=1|oid=t|obj=f:1|rev=1|del=10|purge=40"));
+        ns.apply(
+            2,
+            &op("TDX1|t=trash|v=1|oid=t|obj=f:1|rev=1|del=10|purge=40"),
+        );
         ns.apply(3, &op("TDX1|t=harddel|v=1|oid=p|obj=f:1|rev=2"));
         assert!(ns.files.get("f:1").is_none());
         assert!(ns.trash.is_empty());
@@ -1154,7 +1178,10 @@ mod tests {
     fn free_sibling_name() {
         let mut ns = Namespace::new();
         ns.apply(1, &op("TDX1|t=f|p=|n=photo.jpg|sz=1"));
-        assert_eq!(ns.next_free_sibling_name("", "photo.jpg", false), "photo (2).jpg");
+        assert_eq!(
+            ns.next_free_sibling_name("", "photo.jpg", false),
+            "photo (2).jpg"
+        );
         assert_eq!(ns.next_free_sibling_name("", "other", false), "other");
     }
 }
@@ -1176,7 +1203,7 @@ mod mkdir_list_test {
 #[cfg(test)]
 mod mkdir_pipeline_test {
     use super::*;
-    use crate::wire::{format as wfmt, Op, OpType, OpTypeOrUnknown};
+    use crate::wire::{Op, OpType, OpTypeOrUnknown, format as wfmt};
 
     #[test]
     fn mkdir_format_apply_list() {

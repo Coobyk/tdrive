@@ -34,16 +34,27 @@ enum Screen {
 
 enum Modal {
     NewFolder,
-    Rename { obj: String },
-    Move { obj: String },
-    Delete { obj: String, name: String },
-    Unlock { hint: String },
+    Rename {
+        obj: String,
+    },
+    Move {
+        obj: String,
+    },
+    Delete {
+        obj: String,
+        name: String,
+    },
+    Unlock {
+        hint: String,
+    },
     Encrypt,
     Adopt,
     WatchBackup,
     Mount,
     /// Folders picked for upload — choose structure vs archive.
-    UploadDirs { dirs: Vec<PathBuf> },
+    UploadDirs {
+        dirs: Vec<PathBuf>,
+    },
     /// Max concurrent uploads.
     UploadLimit,
 }
@@ -137,8 +148,7 @@ impl Root {
         let f_api_hash = cx.new(|cx| TextField::new(cx, "f-api-hash", "api_hash"));
         let f_phone = cx.new(|cx| TextField::new(cx, "f-phone", "+1 555 000 0000"));
         let f_code = cx.new(|cx| TextField::new(cx, "f-code", "login code"));
-        let f_password =
-            cx.new(|cx| TextField::new(cx, "f-password", "2FA password").masked());
+        let f_password = cx.new(|cx| TextField::new(cx, "f-password", "2FA password").masked());
         let f_channel = cx.new(|cx| TextField::new(cx, "f-channel", "drive name"));
         let f_name = cx.new(|cx| TextField::new(cx, "f-name", "name"));
         let f_search = cx.new(|cx| TextField::new(cx, "f-search", "search files…"));
@@ -267,7 +277,14 @@ impl Root {
                 self.screen = Screen::AuthCode;
             }
             Event::NeedPassword { hint } => {
-                self.status = format!("2FA required{}", if hint.is_empty() { "".into() } else { format!(" (hint: {hint})") });
+                self.status = format!(
+                    "2FA required{}",
+                    if hint.is_empty() {
+                        "".into()
+                    } else {
+                        format!(" (hint: {hint})")
+                    }
+                );
                 self.screen = Screen::AuthPassword;
             }
             Event::SignedIn { name } => {
@@ -391,6 +408,9 @@ impl Root {
             Event::JournalChanged => {}
             Event::Error { context, message } => {
                 self.status = format!("{context}: {message}");
+            }
+            Event::Status { message } => {
+                self.status = message;
             }
             Event::SignedOut => {
                 self.channel = None;
@@ -645,9 +665,7 @@ impl Root {
                 }
             }
             Some(Modal::Mount) => {
-                let dir = std::path::PathBuf::from(
-                    self.f_name.read(cx).text().trim().to_string(),
-                );
+                let dir = std::path::PathBuf::from(self.f_name.read(cx).text().trim().to_string());
                 self.send(Command::Mount { dir });
                 self.modal = None;
             }
@@ -667,9 +685,7 @@ impl Root {
                 self.modal = None;
             }
             Some(Modal::WatchBackup) => {
-                let dir = std::path::PathBuf::from(
-                    self.f_name.read(cx).text().trim().to_string(),
-                );
+                let dir = std::path::PathBuf::from(self.f_name.read(cx).text().trim().to_string());
                 self.send(Command::WatchBackup { dir });
                 self.modal = None;
             }
@@ -722,7 +738,12 @@ impl Root {
                 .flex()
                 .flex_col()
                 .gap_3()
-                .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("Connect to Telegram"))
+                .child(
+                    div()
+                        .text_lg()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child("Connect to Telegram"),
+                )
                 .child(
                     div()
                         .text_sm()
@@ -748,10 +769,18 @@ impl Root {
                     .flex()
                     .flex_col()
                     .gap_3()
-                    .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("Sign in"))
-                    .child(div().text_sm().text_color(rgb(DIM)).child(
-                        "Enter your phone number with country code.",
-                    ))
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Sign in"),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(rgb(DIM))
+                            .child("Enter your phone number with country code."),
+                    )
                     .child(self.f_phone.clone())
                     .child(button("Send code", ACCENT, submit))
                     .into_any_element()
@@ -767,7 +796,12 @@ impl Root {
                     .flex()
                     .flex_col()
                     .gap_3()
-                    .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("Login code"))
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Login code"),
+                    )
                     .child(
                         div()
                             .text_sm()
@@ -790,7 +824,12 @@ impl Root {
                     .flex()
                     .flex_col()
                     .gap_3()
-                    .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("Password"))
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Password"),
+                    )
                     .child(
                         div()
                             .text_sm()
@@ -831,12 +870,7 @@ impl Root {
                         }),
                     )
                     .child(div().text_color(rgb(TEXT)).child(ch.title.clone()))
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(rgb(DIM))
-                            .child(ch.kind),
-                    ),
+                    .child(div().text_sm().text_color(rgb(DIM)).child(ch.kind)),
             );
         }
         if self.channels.is_empty() {
@@ -853,7 +887,12 @@ impl Root {
                 .flex()
                 .flex_col()
                 .gap_3()
-                .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("Choose a drive"))
+                .child(
+                    div()
+                        .text_lg()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child("Choose a drive"),
+                )
                 .child(
                     div()
                         .text_sm()
@@ -956,7 +995,9 @@ impl Root {
             if v_configured && v_unlocked {
                 this.send(Command::Lock);
             } else if v_configured {
-                this.modal = Some(Modal::Unlock { hint: v_hint.clone() });
+                this.modal = Some(Modal::Unlock {
+                    hint: v_hint.clone(),
+                });
             } else {
                 this.modal = Some(Modal::Encrypt);
             }
@@ -972,7 +1013,11 @@ impl Root {
             .child(tool_button("Backup", backup))
             .child(tool_button("Watch", watch))
             .child(tool_button(
-                if self.mount_dir.is_some() { "Unmount" } else { "Mount" },
+                if self.mount_dir.is_some() {
+                    "Unmount"
+                } else {
+                    "Mount"
+                },
                 mount,
             ))
             .child(tool_button("Sync", refresh))
@@ -1000,18 +1045,14 @@ impl Root {
             };
             toolbar = toolbar.child(tool_button(lock_label, lock_btn));
         }
-        toolbar = toolbar
-            .child(div().w(px(150.)).child(self.f_search.clone()));
+        toolbar = toolbar.child(div().w(px(150.)).child(self.f_search.clone()));
         if !self.namespace.unadopted.is_empty() && !self.trash {
             let n = self.namespace.unadopted.len();
             let ad = cx.listener(|this, _: &MouseDownEvent, _, cx| {
                 this.modal = Some(Modal::Adopt);
                 cx.notify();
             });
-            toolbar = toolbar.child(tool_button(
-                &format!("Unadopted ({n})"),
-                ad,
-            ));
+            toolbar = toolbar.child(tool_button(&format!("Unadopted ({n})"), ad));
         }
         if !self.trash {
             let label = if self.grid { "List" } else { "Grid" };
@@ -1027,27 +1068,22 @@ impl Root {
             .child(tool_button("Sign out", sign_out));
 
         // Breadcrumb
-        let mut crumbs = div()
-            .flex()
-            .items_center()
-            .gap_1()
-            .text_sm()
-            .child(
-                div()
-                    .id("crumb-root")
-                    .cursor_pointer()
-                    .text_color(rgb(DIM))
-                    .hover(|s| s.text_color(rgb(ACCENT)))
-                    .child("root")
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _, _, cx| {
-                            this.cwd = String::new();
-                            this.selected = None;
-                            cx.notify();
-                        }),
-                    ),
-            );
+        let mut crumbs = div().flex().items_center().gap_1().text_sm().child(
+            div()
+                .id("crumb-root")
+                .cursor_pointer()
+                .text_color(rgb(DIM))
+                .hover(|s| s.text_color(rgb(ACCENT)))
+                .child("root")
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _, cx| {
+                        this.cwd = String::new();
+                        this.selected = None;
+                        cx.notify();
+                    }),
+                ),
+        );
         for (id, name) in self.namespace.folder_path(&self.cwd) {
             crumbs = crumbs
                 .child(div().text_color(rgb(0x4d5666)).child(" / "))
@@ -1117,9 +1153,7 @@ impl Root {
                     }),
             );
         } else if self.grid && !self.trash {
-            self.grid_cols = ((f32::from(window.viewport_size().width)
-                / 110.) as usize)
-                .max(1);
+            self.grid_cols = ((f32::from(window.viewport_size().width) / 110.) as usize).max(1);
             for chunk in self.entries_cache.clone().chunks(self.grid_cols) {
                 let mut r = div().flex().gap_2().p_1();
                 for e in chunk {
@@ -1157,12 +1191,7 @@ impl Root {
                 actions = actions.child(img(path.clone()).w(px(28.)).h(px(28.)));
             }
             actions = actions
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(rgb(TEXT))
-                        .child(name.clone()),
-                )
+                .child(div().text_sm().text_color(rgb(TEXT)).child(name.clone()))
                 .child(div().flex_1());
             if self.trash {
                 let obj = sel_c.clone();
@@ -1251,54 +1280,48 @@ impl Root {
             TransferState::Done => 3,
         });
 
-        let mut transfers = div()
-            .flex()
-            .flex_col()
-            .w_full()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .px_3()
-                    .pt_2()
-                    .pb_1()
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(rgb(DIM))
-                            .child(format!(
-                                "Transfers · {active_count} active · {total} total"
-                            )),
-                    )
-                    .child(div().flex_1())
-                    .child(if total > limit {
-                        div()
-                            .id("transfers-toggle")
-                            .px_2()
-                            .rounded_md()
-                            .text_xs()
-                            .text_color(rgb(DIM))
-                            .hover(|s| s.bg(rgb(PANEL2)).text_color(rgb(TEXT)))
-                            .cursor_pointer()
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _: &MouseDownEvent, _, cx| {
-                                    this.transfers_expanded = !this.transfers_expanded;
-                                    cx.notify();
-                                }),
-                            )
-                            .child(if self.transfers_expanded {
-                                "▾ collapse"
-                            } else {
-                                "▸ show all"
-                            })
-                            .into_any_element()
-                    } else {
-                        div().into_any_element()
-                    }),
-            );
+        let mut transfers = div().flex().flex_col().w_full().child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .px_3()
+                .pt_2()
+                .pb_1()
+                .child(
+                    div()
+                        .text_xs()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(rgb(DIM))
+                        .child(format!("Transfers · {active_count} active · {total} total")),
+                )
+                .child(div().flex_1())
+                .child(if total > limit {
+                    div()
+                        .id("transfers-toggle")
+                        .px_2()
+                        .rounded_md()
+                        .text_xs()
+                        .text_color(rgb(DIM))
+                        .hover(|s| s.bg(rgb(PANEL2)).text_color(rgb(TEXT)))
+                        .cursor_pointer()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                                this.transfers_expanded = !this.transfers_expanded;
+                                cx.notify();
+                            }),
+                        )
+                        .child(if self.transfers_expanded {
+                            "▾ collapse"
+                        } else {
+                            "▸ show all"
+                        })
+                        .into_any_element()
+                } else {
+                    div().into_any_element()
+                }),
+        );
         if self.transfers_expanded {
             // Drag handle — mouse_move on the root tracks the resize.
             transfers = transfers
@@ -1319,13 +1342,7 @@ impl Root {
                                 cx.notify();
                             }),
                         )
-                        .child(
-                            div()
-                                .w(px(36.))
-                                .h(px(3.))
-                                .rounded_full()
-                                .bg(rgb(BORDER)),
-                        ),
+                        .child(div().w(px(36.)).h(px(3.)).rounded_full().bg(rgb(BORDER))),
                 )
                 .child({
                     let mut list = div()
@@ -1419,7 +1436,9 @@ impl Root {
                         this.scroll_handle.scroll_to_top_of_item(row);
                     }
                     "enter" => {
-                        let Some(sel) = this.selected.clone() else { return };
+                        let Some(sel) = this.selected.clone() else {
+                            return;
+                        };
                         if sel.starts_with('d') {
                             this.set_cwd(sel);
                         } else if let Some(f) = this.namespace.files.get(&sel).cloned() {
@@ -1439,7 +1458,9 @@ impl Root {
                         this.selected = None;
                     }
                     "delete" => {
-                        let Some(sel) = this.selected.clone() else { return };
+                        let Some(sel) = this.selected.clone() else {
+                            return;
+                        };
                         let name = this
                             .namespace
                             .files
@@ -1543,16 +1564,8 @@ impl Root {
                                         .text_color(rgb(ACCENT))
                                         .child(FRAMES[(self.activity_frame % 10) as usize]),
                                 )
-                                .child(
-                                    div()
-                                        .w(px(90.))
-                                        .h(px(3.))
-                                        .rounded_sm()
-                                        .bg(rgb(ACCENT)),
-                                )
-                                .child(
-                                    div().text_xs().text_color(rgb(DIM)).child(label),
-                                )
+                                .child(div().w(px(90.)).h(px(3.)).rounded_sm().bg(rgb(ACCENT)))
+                                .child(div().text_xs().text_color(rgb(DIM)).child(label))
                                 .into_any_element()
                         }
                     })
@@ -1642,16 +1655,13 @@ impl Root {
                     .object_fit(gpui::ObjectFit::Contain),
             );
         } else if failed || kind == ViewKind::Other {
-            body = body.child(
-                div()
-                    .text_sm()
-                    .text_color(rgb(DIM))
-                    .child(if kind == ViewKind::Other {
-                        "No preview for this file type"
-                    } else {
-                        "Preview unavailable"
-                    }),
-            );
+            body = body.child(div().text_sm().text_color(rgb(DIM)).child(
+                if kind == ViewKind::Other {
+                    "No preview for this file type"
+                } else {
+                    "Preview unavailable"
+                },
+            ));
         } else {
             body = body.child(
                 div()
@@ -1738,11 +1748,7 @@ impl Root {
     }
 
     /// One transfers-pane row: name, progress bar, size/state, controls.
-    fn render_transfer(
-        &mut self,
-        t: &TransferUpdate,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    fn render_transfer(&mut self, t: &TransferUpdate, cx: &mut Context<Self>) -> impl IntoElement {
         let frac = if t.total > 0 {
             (t.sent as f32 / t.total as f32).clamp(0., 1.)
         } else {
@@ -1854,7 +1860,12 @@ impl Root {
     fn visible_ids(&self, cx: &App) -> Vec<String> {
         let search = self.f_search.read(cx).text().trim().to_lowercase();
         if self.trash {
-            return self.namespace.list_trash().iter().map(|t| t.object_id.clone()).collect();
+            return self
+                .namespace
+                .list_trash()
+                .iter()
+                .map(|t| t.object_id.clone())
+                .collect();
         }
         if !search.is_empty() {
             let mut ids: Vec<String> = self
@@ -1976,7 +1987,9 @@ impl Root {
             && !self.thumb_requested.contains(&id)
         {
             self.thumb_requested.insert(id.clone());
-            self.send(Command::FetchThumbnail { file_id: id.clone() });
+            self.send(Command::FetchThumbnail {
+                file_id: id.clone(),
+            });
         }
         let selected = self.selected.as_deref() == Some(id.as_str());
         let click_id = id.clone();
@@ -1989,7 +2002,11 @@ impl Root {
             .w(px(100.))
             .p_2()
             .rounded_lg()
-            .bg(if selected { rgba(0x61afef21) } else { rgba(0x00000000) })
+            .bg(if selected {
+                rgba(0x61afef21)
+            } else {
+                rgba(0x00000000)
+            })
             .hover(|s| s.bg(rgb(PANEL)))
             .cursor_pointer()
             .on_mouse_down(
@@ -2021,18 +2038,16 @@ impl Root {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .bg(if is_folder { rgba(0x61afef1a) } else { rgb(PANEL2) })
-                            .child(
-                                div()
-                                    .w(px(14.))
-                                    .h(px(14.))
-                                    .rounded_sm()
-                                    .bg(if is_folder {
-                                        rgb(ACCENT)
-                                    } else {
-                                        rgb(0x4d5666)
-                                    }),
-                            )
+                            .bg(if is_folder {
+                                rgba(0x61afef1a)
+                            } else {
+                                rgb(PANEL2)
+                            })
+                            .child(div().w(px(14.)).h(px(14.)).rounded_sm().bg(if is_folder {
+                                rgb(ACCENT)
+                            } else {
+                                rgb(0x4d5666)
+                            }))
                             .into_any_element()
                     }),
             )
@@ -2089,28 +2104,20 @@ impl Root {
                         this.open_viewer(&id_click, cx);
                     } else {
                         this.selected = Some(id_click.clone());
-                        this.send(Command::FetchThumbnail { file_id: id_click.clone() });
+                        this.send(Command::FetchThumbnail {
+                            file_id: id_click.clone(),
+                        });
                     }
                     cx.notify();
                 }),
             )
-            .child(
-                div()
-                    .w(px(22.))
-                    .flex()
-                    .items_center()
-                    .child(
-                        div()
-                            .w(px(9.))
-                            .h(px(9.))
-                            .rounded_sm()
-                            .bg(if is_folder {
-                                rgb(ACCENT)
-                            } else {
-                                rgb(0x4d5666)
-                            }),
-                    ),
-            )
+            .child(div().w(px(22.)).flex().items_center().child(
+                div().w(px(9.)).h(px(9.)).rounded_sm().bg(if is_folder {
+                    rgb(ACCENT)
+                } else {
+                    rgb(0x4d5666)
+                }),
+            ))
             .child(
                 div()
                     .flex_1()
@@ -2489,7 +2496,10 @@ fn move_dest_row(
     on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
     div()
-        .id(SharedString::from(format!("dest-{}", if id.is_empty() { "root" } else { id })))
+        .id(SharedString::from(format!(
+            "dest-{}",
+            if id.is_empty() { "root" } else { id }
+        )))
         .px_3()
         .py_2()
         .rounded_md()
@@ -2497,7 +2507,12 @@ fn move_dest_row(
         .hover(|s| s.bg(rgb(PANEL2)))
         .cursor_pointer()
         .on_mouse_down(MouseButton::Left, on_click)
-        .child(div().text_sm().text_color(rgb(TEXT)).child(name.to_string()))
+        .child(
+            div()
+                .text_sm()
+                .text_color(rgb(TEXT))
+                .child(name.to_string()),
+        )
 }
 
 fn button(
@@ -2617,7 +2632,12 @@ fn tool_button_danger(
         .hover(|s| s.bg(rgba(0xe06c751f)))
         .cursor_pointer()
         .on_mouse_down(MouseButton::Left, on_click)
-        .child(div().text_sm().text_color(rgb(DANGER)).child(label.to_string()))
+        .child(
+            div()
+                .text_sm()
+                .text_color(rgb(DANGER))
+                .child(label.to_string()),
+        )
 }
 
 pub fn human_size(n: i64) -> String {
@@ -2631,7 +2651,11 @@ pub fn human_size(n: i64) -> String {
         div *= UNIT as f64;
         exp += 1;
     }
-    format!("{:.1} {}B", n as f64 / div, "KMGTPE".chars().nth(exp.min(5)).unwrap_or('E'))
+    format!(
+        "{:.1} {}B",
+        n as f64 / div,
+        "KMGTPE".chars().nth(exp.min(5)).unwrap_or('E')
+    )
 }
 
 impl Render for Root {
@@ -2639,11 +2663,7 @@ impl Render for Root {
         let content: AnyElement = match self.screen {
             Screen::Setup => self.render_setup(window, cx).into_any_element(),
             Screen::Connecting => self
-                .centered_card(
-                    div()
-                        .text_color(rgb(DIM))
-                        .child("connecting to Telegram…"),
-                )
+                .centered_card(div().text_color(rgb(DIM)).child("connecting to Telegram…"))
                 .into_any_element(),
             Screen::AuthPhone | Screen::AuthCode | Screen::AuthPassword => {
                 self.render_auth(window, cx).into_any_element()

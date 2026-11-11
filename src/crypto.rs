@@ -186,8 +186,7 @@ impl VaultConfig {
         if self.wrapped_master_key.len() != WRAPPED_MASTER_KEY_LEN {
             bail!("crypto: corrupt encryption key data");
         }
-        let aead =
-            XChaCha20Poly1305::new_from_slice(&kek).context("crypto: KEK length")?;
+        let aead = XChaCha20Poly1305::new_from_slice(&kek).context("crypto: KEK length")?;
         let nonce = <&XNonce>::try_from(&self.wrapped_master_key[..24]).expect("nonce");
         let master = aead
             .decrypt(nonce, &self.wrapped_master_key[24..])
@@ -202,8 +201,7 @@ impl VaultConfig {
         if self.key_check.len() != KEY_CHECK_ENVELOPE_LEN {
             bail!("crypto: corrupt encryption key data");
         }
-        let aead =
-            XChaCha20Poly1305::new_from_slice(master).context("crypto: key length")?;
+        let aead = XChaCha20Poly1305::new_from_slice(master).context("crypto: key length")?;
         let nonce = <&XNonce>::try_from(&self.key_check[..24]).expect("nonce");
         let pt = aead
             .decrypt(nonce, &self.key_check[24..])
@@ -216,10 +214,7 @@ impl VaultConfig {
 }
 
 /// Create a fresh vault (new random master key) wrapped under `password`.
-pub fn create_vault(
-    password: &[u8],
-    hint: &str,
-) -> Result<(VaultConfig, [u8; MASTER_KEY_LEN])> {
+pub fn create_vault(password: &[u8], hint: &str) -> Result<(VaultConfig, [u8; MASTER_KEY_LEN])> {
     let params = VaultParams::default();
     let mut salt = vec![0u8; params.salt_len as usize];
     rand::fill(&mut salt[..]);
@@ -229,8 +224,13 @@ pub fn create_vault(
     let argon = Argon2::new(
         Algorithm::Argon2id,
         Version::V0x13,
-        ArgonParams::new(params.memory, params.time, params.parallelism as u32, Some(MASTER_KEY_LEN))
-            .map_err(|e| anyhow!("crypto: argon2 params: {e}"))?,
+        ArgonParams::new(
+            params.memory,
+            params.time,
+            params.parallelism as u32,
+            Some(MASTER_KEY_LEN),
+        )
+        .map_err(|e| anyhow!("crypto: argon2 params: {e}"))?,
     );
     let mut kek = [0u8; MASTER_KEY_LEN];
     argon
@@ -241,7 +241,10 @@ pub fn create_vault(
     let mut nonce_bytes = [0u8; 24];
     rand::fill(&mut nonce_bytes);
     let wrapped_ct = aead
-        .encrypt(<&XNonce>::try_from(&nonce_bytes[..]).expect("nonce"), master.as_ref())
+        .encrypt(
+            <&XNonce>::try_from(&nonce_bytes[..]).expect("nonce"),
+            master.as_ref(),
+        )
         .map_err(|_| anyhow!("crypto: wrap failed"))?;
     let mut wrapped = Vec::with_capacity(WRAPPED_MASTER_KEY_LEN);
     wrapped.extend_from_slice(&nonce_bytes);
@@ -251,7 +254,10 @@ pub fn create_vault(
     let mut check_nonce = [0u8; 24];
     rand::fill(&mut check_nonce);
     let check_ct = maead
-        .encrypt(<&XNonce>::try_from(&check_nonce[..]).expect("nonce"), KEY_CHECK_PLAINTEXT)
+        .encrypt(
+            <&XNonce>::try_from(&check_nonce[..]).expect("nonce"),
+            KEY_CHECK_PLAINTEXT,
+        )
         .map_err(|_| anyhow!("crypto: key check failed"))?;
     let mut check = Vec::with_capacity(KEY_CHECK_ENVELOPE_LEN);
     check.extend_from_slice(&check_nonce);
@@ -384,7 +390,10 @@ pub fn decrypt_stream<R: Read, W: Write>(
         let counter = (i as u32) | if is_final { FINAL_BIT } else { 0 };
         let nonce = chunk_nonce(&h.nonce_prefix, counter);
         let pt = aead
-            .decrypt(<&XNonce>::try_from(&nonce[..]).expect("nonce"), buf.as_ref())
+            .decrypt(
+                <&XNonce>::try_from(&nonce[..]).expect("nonce"),
+                buf.as_ref(),
+            )
             .map_err(|_| anyhow!("crypto: chunk {i} authentication failed"))?;
         dst.write_all(&pt)?;
         written += pt.len() as u64;
@@ -398,14 +407,14 @@ pub fn decrypt_stream<R: Read, W: Write>(
 }
 
 /// Decrypt a staged ciphertext file to a plaintext destination.
-pub fn decrypt_file(
-    master: &[u8; MASTER_KEY_LEN],
-    ct_path: &Path,
-    pt_path: &Path,
-) -> Result<u64> {
+pub fn decrypt_file(master: &[u8; MASTER_KEY_LEN], ct_path: &Path, pt_path: &Path) -> Result<u64> {
     let src = std::fs::File::open(ct_path)?;
     let mut dst = std::fs::File::create(pt_path)?;
-    let n = decrypt_stream(master, std::io::BufReader::with_capacity(1 << 20, src), &mut dst)?;
+    let n = decrypt_stream(
+        master,
+        std::io::BufReader::with_capacity(1 << 20, src),
+        &mut dst,
+    )?;
     dst.sync_all()?;
     Ok(n)
 }
@@ -541,11 +550,7 @@ pub fn encrypt_bytes(master: &[u8; MASTER_KEY_LEN], plaintext: &[u8]) -> Result<
 
 /// Encrypt a plaintext file to a TDE1 ciphertext file. Returns the stored
 /// (ciphertext) size.
-pub fn encrypt_file(
-    master: &[u8; MASTER_KEY_LEN],
-    pt_path: &Path,
-    ct_path: &Path,
-) -> Result<u64> {
+pub fn encrypt_file(master: &[u8; MASTER_KEY_LEN], pt_path: &Path, ct_path: &Path) -> Result<u64> {
     let plaintext_size = std::fs::metadata(pt_path)?.len();
     if plaintext_size > MAX_PLAINTEXT {
         bail!("crypto: plaintext size out of range");
@@ -581,7 +586,10 @@ pub fn encrypt_file(
         let counter = (i as u32) | if is_final { FINAL_BIT } else { 0 };
         let nonce = chunk_nonce(&nonce_prefix, counter);
         let ct = aead
-            .encrypt(<&XNonce>::try_from(&nonce[..]).expect("nonce"), buf.as_ref())
+            .encrypt(
+                <&XNonce>::try_from(&nonce[..]).expect("nonce"),
+                buf.as_ref(),
+            )
             .map_err(|_| anyhow!("crypto: encryption failed"))?;
         dst.write_all(&ct)?;
     }
@@ -647,9 +655,16 @@ mod tests {
 
         let dec = RangeDecryptor::new(&master, &ct_bytes[..HEADER_LEN]).unwrap();
         assert_eq!(dec.plaintext_size, size as u64);
-        for (s, e) in [(0u64, 1000u64), (65536, 70000), (199000, 200000), (10, 66000)] {
+        for (s, e) in [
+            (0u64, 1000u64),
+            (65536, 70000),
+            (199000, 200000),
+            (10, 66000),
+        ] {
             let (cs, ce) = dec.ct_range(s, e);
-            let out = dec.decrypt_range(s, e, &ct_bytes[cs as usize..ce as usize]).unwrap();
+            let out = dec
+                .decrypt_range(s, e, &ct_bytes[cs as usize..ce as usize])
+                .unwrap();
             assert_eq!(&out[..], &plain[s as usize..e as usize], "range {s}..{e}");
         }
     }
@@ -658,8 +673,7 @@ mod tests {
     fn vault_roundtrip_and_wrong_password() {
         let (vault, master) = create_vault(b"correct horse", "hint").unwrap();
         let (salt, kdf, wrap, check, _, _) = vault.to_op_fields();
-        let parsed =
-            VaultConfig::from_op(&salt, &kdf, &wrap, &check, "hint", 1).unwrap();
+        let parsed = VaultConfig::from_op(&salt, &kdf, &wrap, &check, "hint", 1).unwrap();
         let unlocked = parsed.unlock(b"correct horse").unwrap();
         assert_eq!(unlocked, master);
         assert!(parsed.unlock(b"wrong").is_err());
@@ -683,8 +697,7 @@ mod tests {
 
     #[test]
     fn parse_go_params() {
-        let json =
-            r#"{"kdf":"argon2id","memory":65536,"time":3,"parallelism":4,"key_len":32,"salt_len":16}"#;
+        let json = r#"{"kdf":"argon2id","memory":65536,"time":3,"parallelism":4,"key_len":32,"salt_len":16}"#;
         let p = parse_params(json).unwrap();
         assert_eq!(p.memory, 65536);
         assert_eq!(p.key_len, 32);

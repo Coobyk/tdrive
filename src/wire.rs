@@ -229,8 +229,8 @@ fn query_unescape(s: &str) -> Result<String, WireError> {
                 if i + 2 >= bytes.len() {
                     return Err(WireError::Malformed);
                 }
-                let hex = std::str::from_utf8(&bytes[i + 1..i + 3])
-                    .map_err(|_| WireError::Malformed)?;
+                let hex =
+                    std::str::from_utf8(&bytes[i + 1..i + 3]).map_err(|_| WireError::Malformed)?;
                 let v = u8::from_str_radix(hex, 16).map_err(|_| WireError::Malformed)?;
                 out.push(v);
                 i += 2;
@@ -273,9 +273,7 @@ fn set_obj_any(op: &mut Op, raw: &str) -> Result<(), WireError> {
 }
 
 fn set_obj_any_raw(dst: &mut String, raw: &str) -> Result<(), WireError> {
-    if raw.is_empty()
-        || (!raw.starts_with(FOLDER_ID_PREFIX) && !raw.starts_with(FILE_ID_PREFIX))
-    {
+    if raw.is_empty() || (!raw.starts_with(FOLDER_ID_PREFIX) && !raw.starts_with(FILE_ID_PREFIX)) {
         return Err(WireError::BadObject);
     }
     *dst = raw.to_string();
@@ -461,10 +459,7 @@ pub fn parse(raw: &str) -> Result<Op, WireError> {
             if let Some(hint) = kv.get("hint") {
                 op.hint = query_unescape(hint)?;
             }
-            op.config_version = kv
-                .get("cv")
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(1);
+            op.config_version = kv.get("cv").and_then(|s| s.parse().ok()).unwrap_or(1);
         }
         OpType::FileCommit => {
             set_writable_envelope(&mut op, &kv)?;
@@ -623,7 +618,12 @@ pub fn format(op: &Op) -> String {
         }
         OpType::Mkdir | OpType::FolderCommit => {
             if op_type == OpType::FolderCommit {
-                let _ = write!(b, "|v={}|oid={}", op.protocol_version, query_escape(&op.op_id));
+                let _ = write!(
+                    b,
+                    "|v={}|oid={}",
+                    op.protocol_version,
+                    query_escape(&op.op_id)
+                );
             }
             let _ = write!(
                 b,
@@ -676,7 +676,12 @@ pub fn format(op: &Op) -> String {
             }
         }
         OpType::FileCommit => {
-            let _ = write!(b, "|v={}|oid={}", op.protocol_version, query_escape(&op.op_id));
+            let _ = write!(
+                b,
+                "|v={}|oid={}",
+                op.protocol_version,
+                query_escape(&op.op_id)
+            );
             let _ = write!(b, "|p={}|n={}", op.parent, query_escape(&op.name));
             if op.content_msg_id > 0 {
                 let _ = write!(b, "|cmid={}", op.content_msg_id);
@@ -689,7 +694,12 @@ pub fn format(op: &Op) -> String {
             append_file_attrs(&mut b, op);
         }
         OpType::FileReplace => {
-            let _ = write!(b, "|v={}|oid={}", op.protocol_version, query_escape(&op.op_id));
+            let _ = write!(
+                b,
+                "|v={}|oid={}",
+                op.protocol_version,
+                query_escape(&op.op_id)
+            );
             let _ = write!(b, "|obj={}|rev={}", op.obj, op.expected_revision);
             if op.content_msg_id > 0 {
                 let _ = write!(b, "|cmid={}", op.content_msg_id);
@@ -703,7 +713,12 @@ pub fn format(op: &Op) -> String {
             append_file_attrs(&mut b, op);
         }
         OpType::Relocate => {
-            let _ = write!(b, "|v={}|oid={}", op.protocol_version, query_escape(&op.op_id));
+            let _ = write!(
+                b,
+                "|v={}|oid={}",
+                op.protocol_version,
+                query_escape(&op.op_id)
+            );
             let _ = write!(
                 b,
                 "|obj={}|p={}|n={}|rev={}",
@@ -729,7 +744,12 @@ pub fn format(op: &Op) -> String {
             }
         }
         OpType::TrashTree => {
-            let _ = write!(b, "|v={}|oid={}", op.protocol_version, query_escape(&op.op_id));
+            let _ = write!(
+                b,
+                "|v={}|oid={}",
+                op.protocol_version,
+                query_escape(&op.op_id)
+            );
             let _ = write!(
                 b,
                 "|obj={}|rev={}|del={}|purge={}",
@@ -737,11 +757,21 @@ pub fn format(op: &Op) -> String {
             );
         }
         OpType::HardDeleteTree => {
-            let _ = write!(b, "|v={}|oid={}", op.protocol_version, query_escape(&op.op_id));
+            let _ = write!(
+                b,
+                "|v={}|oid={}",
+                op.protocol_version,
+                query_escape(&op.op_id)
+            );
             let _ = write!(b, "|obj={}|rev={}", op.obj, op.expected_revision);
         }
         OpType::RestoreTree => {
-            let _ = write!(b, "|v={}|oid={}", op.protocol_version, query_escape(&op.op_id));
+            let _ = write!(
+                b,
+                "|v={}|oid={}",
+                op.protocol_version,
+                query_escape(&op.op_id)
+            );
             let _ = write!(
                 b,
                 "|obj={}|p={}|n={}|rev={}",
@@ -930,9 +960,18 @@ mod tests {
     #[test]
     fn deterministic_op_ids() {
         // Generated by Go's projection.DeterministicOpID.
-        assert_eq!(deterministic_op_id("trash", "f:5", 1), "trash-f6ca09149f0f7da37cf6c8f1601ad5ba");
-        assert_eq!(deterministic_op_id("restore", "d:a", 2), "restore-d3424abed2791d0939d3f8b3a9b170fa");
-        assert_eq!(deterministic_op_id("purge", "f:9", 7), "purge-1c0352db1ac93301faf95c25e8db3f3d");
+        assert_eq!(
+            deterministic_op_id("trash", "f:5", 1),
+            "trash-f6ca09149f0f7da37cf6c8f1601ad5ba"
+        );
+        assert_eq!(
+            deterministic_op_id("restore", "d:a", 2),
+            "restore-d3424abed2791d0939d3f8b3a9b170fa"
+        );
+        assert_eq!(
+            deterministic_op_id("purge", "f:9", 7),
+            "purge-1c0352db1ac93301faf95c25e8db3f3d"
+        );
     }
 
     #[test]

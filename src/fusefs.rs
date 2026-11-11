@@ -10,12 +10,11 @@ use crate::stream;
 use crate::tg::{Command, DavOp};
 use anyhow::Result;
 use fuser::{
-    Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo,
-    OpenFlags, ReplyAttr, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen,
-    ReplyWrite, Request,
+    Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo, OpenFlags,
+    ReplyAttr, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request,
 };
-use grammers_client::session::types::PeerRef;
 use grammers_client::Client;
+use grammers_client::session::types::PeerRef;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::sync::{Arc, Mutex};
@@ -138,10 +137,7 @@ impl TdFs {
             _ => return Ok(()),
         };
         let res = self.write_op(match p.obj {
-            Some(obj) => DavOp::Replace {
-                obj,
-                bytes: p.data,
-            },
+            Some(obj) => DavOp::Replace { obj, bytes: p.data },
             None => DavOp::Put {
                 parent: p.parent,
                 name: p.name,
@@ -197,7 +193,11 @@ impl TdFs {
     }
 
     fn file_attr(&self, ino: u64, f: &FileEntry) -> FileAttr {
-        let size = if f.encrypted { f.plaintext_size } else { f.size };
+        let size = if f.encrypted {
+            f.plaintext_size
+        } else {
+            f.size
+        };
         FileAttr {
             ino: INodeNo(ino),
             size: size.max(0) as u64,
@@ -309,13 +309,26 @@ impl Filesystem for TdFs {
                 // Pending mknod/create inos aren't committed to the
                 // namespace yet — report them as fresh empty files.
                 if self.inos.lock().unwrap().pending.contains_key(&ino.0) {
-                    reply.attr(&TTL, &FileAttr {
-                        ino, size: 0, blocks: 0, atime: SystemTime::now(),
-                        mtime: SystemTime::now(), ctime: SystemTime::now(),
-                        crtime: SystemTime::now(), kind: FileType::RegularFile,
-                        perm: 0o644, nlink: 1, uid: 0, gid: 0, rdev: 0,
-                        blksize: 4096, flags: 0,
-                    });
+                    reply.attr(
+                        &TTL,
+                        &FileAttr {
+                            ino,
+                            size: 0,
+                            blocks: 0,
+                            atime: SystemTime::now(),
+                            mtime: SystemTime::now(),
+                            ctime: SystemTime::now(),
+                            crtime: SystemTime::now(),
+                            kind: FileType::RegularFile,
+                            perm: 0o644,
+                            nlink: 1,
+                            uid: 0,
+                            gid: 0,
+                            rdev: 0,
+                            blksize: 4096,
+                            flags: 0,
+                        },
+                    );
                 } else {
                     reply.error(Errno::ENOENT);
                 }
@@ -387,23 +400,27 @@ impl Filesystem for TdFs {
             return;
         }
         let ino = self.inos.lock().unwrap().pending_create(dir, name);
-        reply.entry(&TTL, &FileAttr {
-            ino: INodeNo(ino),
-            size: 0,
-            blocks: 0,
-            atime: SystemTime::now(),
-            mtime: SystemTime::now(),
-            ctime: SystemTime::now(),
-            crtime: SystemTime::now(),
-            kind: FileType::RegularFile,
-            perm: 0o644,
-            nlink: 1,
-            uid: self.uid,
-            gid: self.gid,
-            rdev: 0,
-            blksize: 4096,
-            flags: 0,
-        }, Generation(0));
+        reply.entry(
+            &TTL,
+            &FileAttr {
+                ino: INodeNo(ino),
+                size: 0,
+                blocks: 0,
+                atime: SystemTime::now(),
+                mtime: SystemTime::now(),
+                ctime: SystemTime::now(),
+                crtime: SystemTime::now(),
+                kind: FileType::RegularFile,
+                perm: 0o644,
+                nlink: 1,
+                uid: self.uid,
+                gid: self.gid,
+                rdev: 0,
+                blksize: 4096,
+                flags: 0,
+            },
+            Generation(0),
+        );
     }
 
     fn create(
@@ -457,7 +474,13 @@ impl Filesystem for TdFs {
             blksize: 4096,
             flags: 0,
         };
-        reply.created(&TTL, &attr, Generation(0), FileHandle(fh), FopenFlags::empty());
+        reply.created(
+            &TTL,
+            &attr,
+            Generation(0),
+            FileHandle(fh),
+            FopenFlags::empty(),
+        );
     }
 
     fn write(
@@ -634,23 +657,26 @@ impl Filesystem for TdFs {
                         return;
                     }
                     p.data.resize(sz as usize, 0);
-                    reply.attr(&TTL, &FileAttr {
-                        ino,
-                        size: sz,
-                        blocks: 0,
-                        atime: SystemTime::now(),
-                        mtime: SystemTime::now(),
-                        ctime: SystemTime::now(),
-                        crtime: SystemTime::now(),
-                        kind: FileType::RegularFile,
-                        perm: 0o644,
-                        nlink: 1,
-                        uid: self.uid,
-                        gid: self.gid,
-                        rdev: 0,
-                        blksize: 4096,
-                        flags: 0,
-                    });
+                    reply.attr(
+                        &TTL,
+                        &FileAttr {
+                            ino,
+                            size: sz,
+                            blocks: 0,
+                            atime: SystemTime::now(),
+                            mtime: SystemTime::now(),
+                            ctime: SystemTime::now(),
+                            crtime: SystemTime::now(),
+                            kind: FileType::RegularFile,
+                            perm: 0o644,
+                            nlink: 1,
+                            uid: self.uid,
+                            gid: self.gid,
+                            rdev: 0,
+                            blksize: 4096,
+                            flags: 0,
+                        },
+                    );
                     return;
                 }
             }
@@ -783,7 +809,14 @@ impl Filesystem for TdFs {
         reply.ok();
     }
 
-    fn releasedir(&self, _req: &Request, _ino: INodeNo, _fh: FileHandle, _flags: OpenFlags, reply: fuser::ReplyEmpty) {
+    fn releasedir(
+        &self,
+        _req: &Request,
+        _ino: INodeNo,
+        _fh: FileHandle,
+        _flags: OpenFlags,
+        reply: fuser::ReplyEmpty,
+    ) {
         reply.ok();
     }
 
@@ -806,10 +839,7 @@ fn time(ts: i64) -> SystemTime {
 }
 
 /// Mount the drive read-only at `dir` on the worker's runtime.
-pub fn mount(
-    fs: TdFs,
-    dir: &std::path::Path,
-) -> Result<fuser::BackgroundSession> {
+pub fn mount(fs: TdFs, dir: &std::path::Path) -> Result<fuser::BackgroundSession> {
     std::fs::create_dir_all(dir)?;
     let cfg = fuser::Config::default();
     let session = fuser::Session::new(fs, dir, &cfg)?;

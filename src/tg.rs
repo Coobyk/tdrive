@@ -9,21 +9,21 @@ use crate::journal::{DownloadJob, Journal, PartReceipt, UploadJob};
 use crate::project::Namespace;
 use crate::stream;
 use crate::wire::{self, Op, OpType, OpTypeOrUnknown};
-use std::collections::HashMap;
-use futures_util::FutureExt;
-use tokio_util::sync::CancellationToken;
 use anyhow::{Context, Result, anyhow};
+use futures_util::FutureExt;
 use grammers_client::client::{LoginToken, PasswordToken};
 use grammers_client::media::Media;
 use grammers_client::message::InputMessage;
 use grammers_client::peer::Peer;
 use grammers_client::session::storages::SqliteSession;
-use grammers_client::{Client, SignInError, sender::SenderPool};
 use grammers_client::session::types::{ChannelKind, PeerAuth, PeerId, PeerRef};
+use grammers_client::{Client, SignInError, sender::SenderPool};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncRead, ReadBuf};
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 pub const MAX_PART_BYTES: i64 = 1900 * 1024 * 1024;
 pub const LARGE_FILE_MAX_BYTES: i64 = 40 * 1024 * 1024 * 1024;
@@ -40,13 +40,26 @@ pub struct ChannelInfo {
 
 #[derive(Debug)]
 pub enum Command {
-    Connect { api_id: i32, api_hash: String },
-    RequestCode { phone: String },
-    SubmitCode { code: String },
-    SubmitPassword { password: String },
+    Connect {
+        api_id: i32,
+        api_hash: String,
+    },
+    RequestCode {
+        phone: String,
+    },
+    SubmitCode {
+        code: String,
+    },
+    SubmitPassword {
+        password: String,
+    },
     ListChannels,
-    CreateChannel { title: String },
-    CreateSharedChannel { title: String },
+    CreateChannel {
+        title: String,
+    },
+    CreateSharedChannel {
+        title: String,
+    },
     EmptyTrash,
     OpenChannel {
         id: i64,
@@ -55,55 +68,131 @@ pub enum Command {
         kind: String,
     },
     Sync,
-    Upload { path: PathBuf, parent: String },
+    Upload {
+        path: PathBuf,
+        parent: String,
+    },
     /// Upload a local folder — preserves structure via mkdir ops.
-    UploadDir { dir: PathBuf, parent: String },
+    UploadDir {
+        dir: PathBuf,
+        parent: String,
+    },
     /// 7z-archive a local folder, then upload the archive.
-    UploadArchive { dir: PathBuf, parent: String },
-    SetUploadLimit { n: usize },
+    UploadArchive {
+        dir: PathBuf,
+        parent: String,
+    },
+    SetUploadLimit {
+        n: usize,
+    },
     ResumeUploads,
-    Download { file_id: String, dest: PathBuf },
-    Mkdir { parent: String, name: String },
-    Rename { obj: String, name: String },
-    Move { obj: String, parent: String },
-    Delete { obj: String },
-    Restore { obj: String },
-    Purge { obj: String },
-    Cancel { id: String },
-    Unlock { password: String },
+    Download {
+        file_id: String,
+        dest: PathBuf,
+    },
+    Mkdir {
+        parent: String,
+        name: String,
+    },
+    Rename {
+        obj: String,
+        name: String,
+    },
+    Move {
+        obj: String,
+        parent: String,
+    },
+    Delete {
+        obj: String,
+    },
+    Restore {
+        obj: String,
+    },
+    Purge {
+        obj: String,
+    },
+    Cancel {
+        id: String,
+    },
+    Unlock {
+        password: String,
+    },
     Lock,
-    EnableEncryption { password: String, hint: String },
-    JoinInvite { link: String },
-    FetchThumbnail { file_id: String },
+    EnableEncryption {
+        password: String,
+        hint: String,
+    },
+    JoinInvite {
+        link: String,
+    },
+    FetchThumbnail {
+        file_id: String,
+    },
     /// Fetch a viewable rendition (1600px preview preferred) for the
     /// in-app file viewer, falling back to the raw body for images.
-    FetchPreview { file_id: String },
-    Adopt { msg_id: i64, parent: String },
-    Stream { obj: String },
+    FetchPreview {
+        file_id: String,
+    },
+    Adopt {
+        msg_id: i64,
+        parent: String,
+    },
+    Stream {
+        obj: String,
+    },
     /// Write op issued by the WebDAV server; reply carries the result.
     DavWrite {
         op: DavOp,
         reply: tokio::sync::oneshot::Sender<Result<(), String>>,
     },
-    Pause { id: String },
-    Resume { id: String },
-    BackupPhotos { paths: Vec<PathBuf> },
-    Mount { dir: PathBuf },
+    Pause {
+        id: String,
+    },
+    Resume {
+        id: String,
+    },
+    BackupPhotos {
+        paths: Vec<PathBuf>,
+    },
+    Mount {
+        dir: PathBuf,
+    },
     Unmount,
     /// Continuous photo backup — watch a folder for new images.
-    WatchBackup { dir: PathBuf },
+    WatchBackup {
+        dir: PathBuf,
+    },
     BackupTick,
     LiveSync,
     SignOut,
     // Internal task→worker messages — spawned transfers report journal
     // and namespace mutations through the loop so state stays owned here.
     /// A locally-emitted op that must be folded into the namespace.
-    OpApplied { header: String, msg_id: i64 },
-    UploadPartConfirmed { uuid: String, pix: i32, msg_id: i64 },
-    UploadJobPatch { uuid: String, local_path: PathBuf },
-    DlConfirmed { file_id: String, written: i64 },
-    TransferDone { id: String },
-    TransferFailed { id: String, label: String, err: String },
+    OpApplied {
+        header: String,
+        msg_id: i64,
+    },
+    UploadPartConfirmed {
+        uuid: String,
+        pix: i32,
+        msg_id: i64,
+    },
+    UploadJobPatch {
+        uuid: String,
+        local_path: PathBuf,
+    },
+    DlConfirmed {
+        file_id: String,
+        written: i64,
+    },
+    TransferDone {
+        id: String,
+    },
+    TransferFailed {
+        id: String,
+        label: String,
+        err: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -125,28 +214,101 @@ pub enum TransferState {
 
 #[derive(Debug)]
 pub enum Event {
-    Connected { authorized: bool },
+    Connected {
+        authorized: bool,
+    },
     CodeSent,
-    NeedPassword { hint: String },
-    SignedIn { name: String },
+    NeedPassword {
+        hint: String,
+    },
+    SignedIn {
+        name: String,
+    },
     Channels(Vec<ChannelInfo>),
-    ChannelOpened { info: ChannelInfo, pending_uploads: usize },
+    ChannelOpened {
+        info: ChannelInfo,
+        pending_uploads: usize,
+    },
     Namespace(Arc<Namespace>),
     Transfer(TransferUpdate),
     JournalChanged,
-    Error { context: &'static str, message: String },
-    VaultState { configured: bool, unlocked: bool, hint: String },
-    InviteLink { link: String },
-    ThumbnailReady { file_id: String, path: PathBuf },
-    ThumbnailFailed { file_id: String },
-    PreviewReady { file_id: String, path: PathBuf },
-    PreviewFailed { file_id: String },
+    Error {
+        context: &'static str,
+        message: String,
+    },
+    VaultState {
+        configured: bool,
+        unlocked: bool,
+        hint: String,
+    },
+    InviteLink {
+        link: String,
+    },
+    ThumbnailReady {
+        file_id: String,
+        path: PathBuf,
+    },
+    ThumbnailFailed {
+        file_id: String,
+    },
+    PreviewReady {
+        file_id: String,
+        path: PathBuf,
+    },
+    PreviewFailed {
+        file_id: String,
+    },
     /// Sync started/finished — drives the UI's fetch indicator.
-    SyncState { active: bool },
-    StreamUrl { url: String },
-    DavUrl { url: String },
-    MountState { dir: Option<PathBuf> },
+    SyncState {
+        active: bool,
+    },
+    /// Transient status line (e.g. flood-wait notices).
+    Status {
+        message: String,
+    },
+    StreamUrl {
+        url: String,
+    },
+    DavUrl {
+        url: String,
+    },
+    MountState {
+        dir: Option<PathBuf>,
+    },
     SignedOut,
+}
+
+/// FLOOD_WAIT is a scheduling signal, not a failure — a storage client
+/// must always sleep it out rather than kill the transfer. We sleep the
+/// exact requested duration with no try cap (Telegram's waits escalate
+/// for hours; giving up means lost uploads), retry I/O blips briefly,
+/// and propagate everything else. Each wait is surfaced as a Status so
+/// the UI can show "rate-limited — resuming in Ns" instead of looking
+/// frozen.
+struct FloodSleep {
+    tx: async_channel::Sender<Event>,
+}
+
+impl grammers_client::sender::RetryPolicy for FloodSleep {
+    fn should_retry(
+        &self,
+        ctx: &grammers_client::sender::RetryContext,
+    ) -> std::ops::ControlFlow<(), std::time::Duration> {
+        use grammers_client::sender::InvocationError;
+        match &ctx.error {
+            InvocationError::Rpc(e) if e.code == 420 => {
+                let secs = (e.value.unwrap_or(60) as u64).clamp(1, 86_400);
+                let _ = self.tx.try_send(Event::Status {
+                    message: format!("rate-limited — resuming in {secs}s"),
+                });
+                std::ops::ControlFlow::Continue(std::time::Duration::from_secs(secs))
+            }
+            InvocationError::Io(_) if ctx.fail_count.get() < 120 => {
+                std::ops::ControlFlow::Continue(std::time::Duration::from_secs(1))
+            }
+            _ => std::ops::ControlFlow::Break(()),
+        }
+    }
 }
 
 /// Write operations arriving over the WebDAV surface.
@@ -233,8 +395,7 @@ pub fn spawn() -> Handle {
                         .max(1),
                 )),
                 cancels: HashMap::new(),
-                last_live_sync: std::time::Instant::now()
-                    - std::time::Duration::from_secs(10),
+                last_live_sync: std::time::Instant::now() - std::time::Duration::from_secs(10),
                 journal_path: config::journal_path()
                     .unwrap_or_else(|_| std::env::temp_dir().join("tdrive-rs-journal.json")),
                 journal: Journal::default(),
@@ -251,7 +412,6 @@ pub fn spawn() -> Handle {
         rx: ev_rx,
     }
 }
-
 
 /// Clones handed to a spawned transfer task — everything it needs to do
 /// IO off the command loop. Journal/namespace mutations are reported
@@ -384,9 +544,7 @@ impl Worker {
             Command::Sync => self.sync().await,
             Command::Upload { path, parent } => self.upload(path, parent).await,
             Command::UploadDir { dir, parent } => self.upload_dir(dir, parent).await,
-            Command::UploadArchive { dir, parent } => {
-                self.upload_archive(dir, parent).await
-            }
+            Command::UploadArchive { dir, parent } => self.upload_archive(dir, parent).await,
             Command::SetUploadLimit { n } => {
                 let n = n.clamp(1, 16);
                 self.upload_sem = Arc::new(tokio::sync::Semaphore::new(n));
@@ -429,9 +587,11 @@ impl Worker {
             Command::WatchBackup { dir } => {
                 self.journal.backup_dir = Some(dir.clone());
                 self.save_journal();
-                self.backup_photos(std::fs::read_dir(dir)
-                    .map(|rd| rd.flatten().map(|e| e.path()).collect())
-                    .unwrap_or_default())
+                self.backup_photos(
+                    std::fs::read_dir(dir)
+                        .map(|rd| rd.flatten().map(|e| e.path()).collect())
+                        .unwrap_or_default(),
+                )
                 .await
             }
             Command::BackupTick => self.backup_tick().await,
@@ -576,13 +736,8 @@ impl Worker {
             Arc::new(session),
             api_id,
             grammers_client::sender::ConnectionParams {
-                // Default is 1 retry with a 60s cap — batch uploads hit
-                // escalating FLOOD_WAITs far past that. Absorb them: up
-                // to 8 retries, sleeping through waits up to 10 minutes.
-                retry_policy: Box::new(grammers_client::sender::AutoSleep {
-                    tries: std::num::NonZeroU32::new(8).unwrap(),
-                    threshold: std::time::Duration::from_secs(600),
-                    io_errors_as_flood_of: Some(std::time::Duration::from_secs(1)),
+                retry_policy: Box::new(FloodSleep {
+                    tx: self.tx.clone(),
                 }),
                 ..Default::default()
             },
@@ -645,9 +800,7 @@ impl Worker {
                 return Err(anyhow!("invalid 2FA password"));
             }
             Err(SignInError::SignUpRequired) => {
-                return Err(anyhow!(
-                    "this phone number has no Telegram account"
-                ));
+                return Err(anyhow!("this phone number has no Telegram account"));
             }
             Err(SignInError::Other(e)) => return Err(anyhow!("sign in: {e}")),
         }
@@ -697,9 +850,7 @@ impl Worker {
                         continue;
                     }
                     match ch.kind() {
-                        Some(ChannelKind::Broadcast) => {
-                            ("broadcast", ch.title().to_string())
-                        }
+                        Some(ChannelKind::Broadcast) => ("broadcast", ch.title().to_string()),
                         _ => continue,
                     }
                 }
@@ -772,15 +923,17 @@ impl Worker {
         use grammers_client::tl::enums::ExportedChatInvite;
         let invite = self
             .client()?
-            .invoke(&grammers_client::tl::functions::messages::ExportChatInvite {
-                peer: self.channel()?.into(),
-                legacy_revoke_permanent: false,
-                request_needed: false,
-                expire_date: None,
-                usage_limit: None,
-                title: None,
-                subscription_pricing: None,
-            })
+            .invoke(
+                &grammers_client::tl::functions::messages::ExportChatInvite {
+                    peer: self.channel()?.into(),
+                    legacy_revoke_permanent: false,
+                    request_needed: false,
+                    expire_date: None,
+                    usage_limit: None,
+                    title: None,
+                    subscription_pricing: None,
+                },
+            )
             .await?;
         if let ExportedChatInvite::ChatInviteExported(i) = invite {
             self.emit(Event::InviteLink { link: i.link });
@@ -1040,8 +1193,7 @@ impl Worker {
     /// Move a live object to the trash — same `trash` op TDrive emits, with
     /// the deterministic op id and 30-day retention window.
     async fn delete(&mut self, obj: String) -> Result<()> {
-        let Some((_, revision, tombstoned, _, _)) = self.namespace.dirent_info(&obj)
-        else {
+        let Some((_, revision, tombstoned, _, _)) = self.namespace.dirent_info(&obj) else {
             return Err(anyhow!("item not found"));
         };
         if tombstoned {
@@ -1064,9 +1216,7 @@ impl Worker {
     /// Permanently purge a trashed object: `harddel` marker plus physical
     /// deletion of the file's Telegram body messages.
     async fn purge(&mut self, obj: String) -> Result<()> {
-        let Some((is_folder, revision, tombstoned, _, _)) =
-            self.namespace.dirent_info(&obj)
-        else {
+        let Some((is_folder, revision, tombstoned, _, _)) = self.namespace.dirent_info(&obj) else {
             return Err(anyhow!("item not found"));
         };
         if !tombstoned {
@@ -1127,11 +1277,7 @@ impl Worker {
         // failures instead of silently leaving bodies behind.
         for chunk in bodies.chunks(100) {
             let ids: Vec<i32> = chunk.iter().map(|&m| m as i32).collect();
-            if let Err(e) = self
-                .client()?
-                .delete_messages(self.channel()?, &ids)
-                .await
-            {
+            if let Err(e) = self.client()?.delete_messages(self.channel()?, &ids).await {
                 self.emit(Event::Error {
                     context: "purge",
                     message: format!("body delete: {e:#}"),
@@ -1200,7 +1346,11 @@ impl Worker {
         // Encryption is staged inside the task — even multi-GB encrypts
         // never block the command loop.
         let encrypted = self.master_key.lock().unwrap().is_some();
-        let size = if encrypted { plaintext_size } else { plaintext_size };
+        let size = if encrypted {
+            plaintext_size
+        } else {
+            plaintext_size
+        };
 
         if size > LARGE_FILE_MAX_BYTES {
             return Err(anyhow!("file exceeds the maximum upload size"));
@@ -1213,7 +1363,17 @@ impl Worker {
             let ctx = self.transfer_ctx(token)?;
             let name2 = name.clone();
             self.spawn_transfer(&id, &name, async move {
-                Self::upload_single_task(&ctx, path.clone(), path, name2, parent, size, encrypted, plaintext_size).await
+                Self::upload_single_task(
+                    &ctx,
+                    path.clone(),
+                    path,
+                    name2,
+                    parent,
+                    size,
+                    encrypted,
+                    plaintext_size,
+                )
+                .await
             });
             Ok(())
         } else {
@@ -1258,9 +1418,11 @@ impl Worker {
             }
             let ctx = self.transfer_ctx(token)?;
             let name = job.name.clone();
-            self.spawn_transfer(&id, &name, async move {
-                Self::run_upload_task(&ctx, job).await
-            });
+            self.spawn_transfer(
+                &id,
+                &name,
+                async move { Self::run_upload_task(&ctx, job).await },
+            );
             Ok(())
         };
         res
@@ -1298,8 +1460,7 @@ impl Worker {
         // A dedicated sender drains mkdir ops off a channel — files never
         // wait on them since parents are uuids the projection resolves in
         // any order.
-        let (mkdir_tx, mut mkdir_rx) =
-            mpsc::unbounded_channel::<String>();
+        let (mkdir_tx, mut mkdir_rx) = mpsc::unbounded_channel::<String>();
         let ctx2 = ctx.clone();
         let sender = tokio::spawn(async move {
             while let Some(header) = mkdir_rx.recv().await {
@@ -1330,9 +1491,7 @@ impl Worker {
 
         let mut queue = vec![(dir, root_obj)];
         while let Some((d, pid)) = queue.pop() {
-            let mut entries: Vec<_> = std::fs::read_dir(&d)?
-                .filter_map(|e| e.ok())
-                .collect();
+            let mut entries: Vec<_> = std::fs::read_dir(&d)?.filter_map(|e| e.ok()).collect();
             entries.sort_by_key(|e| e.file_name());
             for e in entries {
                 let p = e.path();
@@ -1406,16 +1565,24 @@ impl Worker {
                 .join(format!("tdrive-enc-{}.bin", uuid::Uuid::new_v4()));
             let pt = path.clone();
             let ct = ct_path.clone();
-            let stored_len = tokio::task::spawn_blocking(move || {
-                crypto::encrypt_file(&master, &pt, &ct)
-            })
-            .await??;
+            let stored_len =
+                tokio::task::spawn_blocking(move || crypto::encrypt_file(&master, &pt, &ct))
+                    .await??;
             Some((ct_path, stored_len as i64))
         } else {
             None
         };
         let (send_path, send_size) = stored.clone().unwrap_or((path.clone(), size));
-        let res = Self::upload_single_inner(ctx, &send_path, &name, &parent, send_size, encrypted, plaintext_size).await;
+        let res = Self::upload_single_inner(
+            ctx,
+            &send_path,
+            &name,
+            &parent,
+            send_size,
+            encrypted,
+            plaintext_size,
+        )
+        .await;
         if let Some((ct, _)) = stored {
             let _ = std::fs::remove_file(ct);
         }
@@ -1445,7 +1612,15 @@ impl Worker {
         }
     }
 
-    async fn upload_single_inner(ctx: &TransferCtx, path: &PathBuf, name: &str, parent: &str, size: i64, encrypted: bool, plaintext_size: i64) -> Result<i64> {
+    async fn upload_single_inner(
+        ctx: &TransferCtx,
+        path: &PathBuf,
+        name: &str,
+        parent: &str,
+        size: i64,
+        encrypted: bool,
+        plaintext_size: i64,
+    ) -> Result<i64> {
         let file = tokio::fs::File::open(path).await?;
         let progress = ProgressReader::new(file, {
             let tx = ctx.tx.clone();
@@ -1498,19 +1673,15 @@ impl Worker {
         let permit = ctx.upload_sem.acquire().await;
         // Encrypt to staged ciphertext when the vault is unlocked — done
         // inside the task so even a multi-GB encrypt never blocks the loop.
-        if job.encrypted
-            && (!job.local_path.exists() || job.local_path == job.source_path)
-        {
+        if job.encrypted && (!job.local_path.exists() || job.local_path == job.source_path) {
             let master = (*ctx.master.lock().unwrap())
                 .context("drive locked — cannot resume encrypted upload")?;
-            let ct_path = config::staging_dir().unwrap_or_else(|_| std::env::temp_dir()).join(format!(
-                "tdrive-enc-{}.bin",
-                uuid::Uuid::new_v4()
-            ));
+            let ct_path = config::staging_dir()
+                .unwrap_or_else(|_| std::env::temp_dir())
+                .join(format!("tdrive-enc-{}.bin", uuid::Uuid::new_v4()));
             let pt = job.source_path.clone();
             let ct = ct_path.clone();
-            tokio::task::spawn_blocking(move || crypto::encrypt_file(&master, &pt, &ct))
-                .await??;
+            tokio::task::spawn_blocking(move || crypto::encrypt_file(&master, &pt, &ct)).await??;
             job.local_path = ct_path.clone();
             job.stored_size = std::fs::metadata(&ct_path)
                 .map(|m| m.len() as i64)
@@ -1535,7 +1706,13 @@ impl Worker {
             .filter(|p| p.msg_id.is_some())
             .map(|p| p.size)
             .sum();
-        ctx.update(&transfer_id, &job.name, already, job.stored_size, TransferState::Active);
+        ctx.update(
+            &transfer_id,
+            &job.name,
+            already,
+            job.stored_size,
+            TransferState::Active,
+        );
 
         let pending: Vec<i32> = job.pending_parts();
         for idx in pending {
@@ -1557,7 +1734,13 @@ impl Worker {
                 .filter(|p| p.msg_id.is_some())
                 .map(|p| p.size)
                 .sum();
-            ctx.update(&transfer_id, &job.name, done, job.stored_size, TransferState::Active);
+            ctx.update(
+                &transfer_id,
+                &job.name,
+                done,
+                job.stored_size,
+                TransferState::Active,
+            );
         }
 
         // Manifest — the file's visibility boundary.
@@ -1576,13 +1759,29 @@ impl Worker {
         let header = wire::format(&manifest);
         let msg_id = ctx.send_op(&header).await?;
         ctx.op_applied(header, msg_id);
-        ctx.journal(Command::TransferDone { id: transfer_id.clone() });
-        ctx.update(&transfer_id, &job.name, job.stored_size, job.stored_size, TransferState::Done);
+        ctx.journal(Command::TransferDone {
+            id: transfer_id.clone(),
+        });
+        ctx.update(
+            &transfer_id,
+            &job.name,
+            job.stored_size,
+            job.stored_size,
+            TransferState::Done,
+        );
         // Free the queue slot — renditions are best-effort background
         // sends, not part of the upload's critical path.
         drop(permit);
-        Self::publish_renditions(ctx, &job.source_path, &job.name, msg_id, 0, &job.upload_uuid, job.encrypted)
-            .await;
+        Self::publish_renditions(
+            ctx,
+            &job.source_path,
+            &job.name,
+            msg_id,
+            0,
+            &job.upload_uuid,
+            job.encrypted,
+        )
+        .await;
         Ok(())
     }
 
@@ -1616,16 +1815,16 @@ impl Worker {
         };
         for (kind, edge) in [("thumbnail", 512u32), ("preview", 1600u32)] {
             if let Err(e) = Self::publish_rendition(
-                    ctx,
-                    source,
-                    file_msg_id,
-                    content_msg_id,
-                    upload_uuid,
-                    encrypted,
-                    kind,
-                    edge,
-                )
-                .await
+                ctx,
+                source,
+                file_msg_id,
+                content_msg_id,
+                upload_uuid,
+                encrypted,
+                kind,
+                edge,
+            )
+            .await
             {
                 ctx.emit(Event::Error {
                     context: "rendition",
@@ -1666,8 +1865,7 @@ impl Worker {
                 "p": pt_len, "w": w, "h": h, "e": true,
             });
             let desc_bytes = serde_json::to_vec(&desc)?;
-            let mut plain =
-                Vec::with_capacity(8 + desc_bytes.len() + jpeg.len());
+            let mut plain = Vec::with_capacity(8 + desc_bytes.len() + jpeg.len());
             plain.extend_from_slice(b"TDR1");
             plain.extend_from_slice(&(desc_bytes.len() as u32).to_be_bytes());
             plain.extend_from_slice(&desc_bytes);
@@ -1714,11 +1912,19 @@ impl Worker {
         Ok(())
     }
 
-    async fn send_part(ctx: &TransferCtx, job: &UploadJob, index: i32, offset: i64, size: i64) -> Result<i64> {
+    async fn send_part(
+        ctx: &TransferCtx,
+        job: &UploadJob,
+        index: i32,
+        offset: i64,
+        size: i64,
+    ) -> Result<i64> {
         let file = tokio::fs::File::open(&job.local_path).await?;
         let mut limited = file;
         use tokio::io::{AsyncReadExt, AsyncSeekExt};
-        limited.seek(std::io::SeekFrom::Start(offset as u64)).await?;
+        limited
+            .seek(std::io::SeekFrom::Start(offset as u64))
+            .await?;
         let take = limited.take(size as u64);
         let progress = ProgressReader::new(take, {
             let tx = ctx.tx.clone();
@@ -1801,10 +2007,8 @@ impl Worker {
             done: false,
             encrypted: file.encrypted,
         };
-        self.cancels.insert(
-            format!("dl:{}", job.file_id),
-            CancellationToken::new(),
-        );
+        self.cancels
+            .insert(format!("dl:{}", job.file_id), CancellationToken::new());
         self.journal.downloads.push(job.clone());
         self.save_journal();
         let id = format!("dl:{}", job.file_id);
@@ -1822,7 +2026,13 @@ impl Worker {
         let client = ctx.client.clone();
         let peer = ctx.peer;
         let transfer_id = format!("dl:{}", job.file_id);
-        ctx.update(&transfer_id, &job.name, job.confirmed_bytes, job.total_size, TransferState::Active);
+        ctx.update(
+            &transfer_id,
+            &job.name,
+            job.confirmed_bytes,
+            job.total_size,
+            TransferState::Active,
+        );
 
         let staging = job.dest.with_extension(format!(
             "{}.tdrive-part",
@@ -1901,7 +2111,13 @@ impl Worker {
                         file_id: job.file_id.clone(),
                         written,
                     });
-                    ctx.update(&transfer_id, &job.name, written, job.total_size, TransferState::Active);
+                    ctx.update(
+                        &transfer_id,
+                        &job.name,
+                        written,
+                        job.total_size,
+                        TransferState::Active,
+                    );
                 }
             }
             out.sync_data().await?;
@@ -1911,10 +2127,8 @@ impl Worker {
             let master = (*ctx.master.lock().unwrap()).context("drive locked mid-download")?;
             let staging2 = staging.clone();
             let dest2 = job.dest.clone();
-            tokio::task::spawn_blocking(move || {
-                crypto::decrypt_file(&master, &staging2, &dest2)
-            })
-            .await??;
+            tokio::task::spawn_blocking(move || crypto::decrypt_file(&master, &staging2, &dest2))
+                .await??;
             let _ = std::fs::remove_file(&staging);
         } else {
             std::fs::rename(&staging, &job.dest)?;
@@ -1922,7 +2136,13 @@ impl Worker {
         ctx.journal(Command::TransferDone {
             id: transfer_id.clone(),
         });
-        ctx.update(&transfer_id, &job.name, written, job.total_size, TransferState::Done);
+        ctx.update(
+            &transfer_id,
+            &job.name,
+            written,
+            job.total_size,
+            TransferState::Done,
+        );
         Ok(())
     }
 
@@ -1977,10 +2197,9 @@ impl Worker {
         }
         let password = password.to_string();
         let hint = hint.to_string();
-        let (vault, master) = tokio::task::spawn_blocking(move || {
-            crypto::create_vault(password.as_bytes(), &hint)
-        })
-        .await??;
+        let (vault, master) =
+            tokio::task::spawn_blocking(move || crypto::create_vault(password.as_bytes(), &hint))
+                .await??;
         let (salt, kdf, wrap, check, _, cv) = vault.to_op_fields();
         let op = Op {
             op_type: OpTypeOrUnknown::Known(OpType::EncConfig),
@@ -2022,8 +2241,7 @@ impl Worker {
             .get(&obj)
             .cloned()
             .context("item is not in the trash")?;
-        let Some((_, revision, tombstoned, _, _)) = self.namespace.dirent_info(&obj)
-        else {
+        let Some((_, revision, tombstoned, _, _)) = self.namespace.dirent_info(&obj) else {
             return Err(anyhow!("item not found"));
         };
         if !tombstoned {
@@ -2041,11 +2259,9 @@ impl Worker {
         } else {
             String::new()
         };
-        let name = self.namespace.next_free_sibling_name(
-            &parent,
-            &entry.original_name,
-            entry.is_folder,
-        );
+        let name =
+            self.namespace
+                .next_free_sibling_name(&parent, &entry.original_name, entry.is_folder);
         let op = Op {
             op_type: OpTypeOrUnknown::Known(OpType::RestoreTree),
             protocol_version: 1,
@@ -2069,11 +2285,7 @@ impl Worker {
         }
         if let Some(fid) = id.strip_prefix("dl:") {
             if let Some(j) = self.journal.downloads.iter().find(|j| j.file_id == fid) {
-                let dir = j
-                    .dest
-                    .parent()
-                    .map(|p| p.to_path_buf())
-                    .unwrap_or_default();
+                let dir = j.dest.parent().map(|p| p.to_path_buf()).unwrap_or_default();
                 self.paused_downloads
                     .insert(id.to_string(), (j.file_id.clone(), dir));
             }
@@ -2169,9 +2381,9 @@ impl Worker {
         }
         let client = self.client()?.clone();
         let result = client
-            .invoke(&grammers_client::tl::functions::messages::ImportChatInvite {
-                hash: hash.clone(),
-            })
+            .invoke(
+                &grammers_client::tl::functions::messages::ImportChatInvite { hash: hash.clone() },
+            )
             .await;
         use grammers_client::tl::enums::{Updates, messages::ChatInviteJoinResult};
         let ok = match result {
@@ -2195,7 +2407,12 @@ impl Worker {
                     c.id,
                     c.access_hash.unwrap_or(0),
                     c.title,
-                    if c.megagroup { "megagroup" } else { "broadcast" }.to_string(),
+                    if c.megagroup {
+                        "megagroup"
+                    } else {
+                        "broadcast"
+                    }
+                    .to_string(),
                 )
                 .await?;
                 self.list_channels().await?;
@@ -2226,7 +2443,12 @@ impl Worker {
                         c.id,
                         c.access_hash.unwrap_or(0),
                         c.title,
-                        if c.megagroup { "megagroup" } else { "broadcast" }.to_string(),
+                        if c.megagroup {
+                            "megagroup"
+                        } else {
+                            "broadcast"
+                        }
+                        .to_string(),
                     )
                     .await?;
                     self.list_channels().await?;
@@ -2287,12 +2509,10 @@ impl Worker {
                                         // Encrypted renditions are TDR1-
                                         // enveloped — strip to the JPEG.
                                         let data = std::fs::read(&out2)?;
-                                        if data.len() > 8
-                                            && &data[..4] == b"TDR1"
-                                        {
-                                            let n = u32::from_be_bytes(
-                                                data[4..8].try_into().unwrap(),
-                                            ) as usize;
+                                        if data.len() > 8 && &data[..4] == b"TDR1" {
+                                            let n =
+                                                u32::from_be_bytes(data[4..8].try_into().unwrap())
+                                                    as usize;
                                             if 8 + n <= data.len() {
                                                 std::fs::write(&out2, &data[8 + n..])?;
                                             }
@@ -2313,10 +2533,7 @@ impl Worker {
                     };
                     let _ = tx
                         .send(if ok {
-                            Event::ThumbnailReady {
-                                file_id,
-                                path: out,
-                            }
+                            Event::ThumbnailReady { file_id, path: out }
                         } else {
                             Event::ThumbnailFailed { file_id }
                         })
@@ -2405,8 +2622,7 @@ impl Worker {
                             // TDR1-wrapped rendition — strip to the JPEG.
                             let data = std::fs::read(&o)?;
                             if data.len() > 8 && &data[..4] == b"TDR1" {
-                                let n =
-                                    u32::from_be_bytes(data[4..8].try_into().unwrap()) as usize;
+                                let n = u32::from_be_bytes(data[4..8].try_into().unwrap()) as usize;
                                 if 8 + n <= data.len() {
                                     std::fs::write(&o, &data[8 + n..])?;
                                 }
@@ -2427,10 +2643,7 @@ impl Worker {
             .is_some();
             let _ = tx
                 .send(if ok {
-                    Event::PreviewReady {
-                        file_id,
-                        path: out,
-                    }
+                    Event::PreviewReady { file_id, path: out }
                 } else {
                     Event::PreviewFailed { file_id }
                 })
@@ -2647,8 +2860,7 @@ impl Worker {
                 dst_parent,
                 name,
             } => {
-                let Some((_f, rev, tomb, _n, _p)) = self.namespace.dirent_info(&obj)
-                else {
+                let Some((_f, rev, tomb, _n, _p)) = self.namespace.dirent_info(&obj) else {
                     return Err(anyhow!("no such object"));
                 };
                 if tomb {
@@ -2677,10 +2889,9 @@ impl Worker {
                 let encrypted = self.master_key.lock().unwrap().is_some();
                 let (body, stored) = if encrypted {
                     let key = (*self.master_key.lock().unwrap()).unwrap();
-                    let ct = tokio::task::spawn_blocking(move || {
-                        crypto::encrypt_bytes(&key, &bytes)
-                    })
-                    .await??;
+                    let ct =
+                        tokio::task::spawn_blocking(move || crypto::encrypt_bytes(&key, &bytes))
+                            .await??;
                     let len = ct.len() as i64;
                     (ct, len)
                 } else {
@@ -2693,10 +2904,7 @@ impl Worker {
                     .await?;
                 let msg = self
                     .client()?
-                    .send_message(
-                        self.channel()?,
-                        InputMessage::new().document(uploaded),
-                    )
+                    .send_message(self.channel()?, InputMessage::new().document(uploaded))
                     .await?;
                 let op = Op {
                     op_type: OpTypeOrUnknown::Known(OpType::FileCommit),
@@ -2716,8 +2924,7 @@ impl Worker {
             DavOp::Replace { obj, bytes } => {
                 // freplace rebinds an existing file to fresh content —
                 // TDrive's mount overwrite path.
-                let Some((_f, rev, tomb, _n, _p)) = self.namespace.dirent_info(&obj)
-                else {
+                let Some((_f, rev, tomb, _n, _p)) = self.namespace.dirent_info(&obj) else {
                     return Err(anyhow!("no such object"));
                 };
                 if tomb {
@@ -2727,10 +2934,9 @@ impl Worker {
                 let encrypted = self.master_key.lock().unwrap().is_some();
                 let (body, stored) = if encrypted {
                     let key = (*self.master_key.lock().unwrap()).unwrap();
-                    let ct = tokio::task::spawn_blocking(move || {
-                        crypto::encrypt_bytes(&key, &bytes)
-                    })
-                    .await??;
+                    let ct =
+                        tokio::task::spawn_blocking(move || crypto::encrypt_bytes(&key, &bytes))
+                            .await??;
                     let len = ct.len() as i64;
                     (ct, len)
                 } else {
@@ -2743,10 +2949,7 @@ impl Worker {
                     .await?;
                 let msg = self
                     .client()?
-                    .send_message(
-                        self.channel()?,
-                        InputMessage::new().document(uploaded),
-                    )
+                    .send_message(self.channel()?, InputMessage::new().document(uploaded))
                     .await?;
                 let op = Op {
                     op_type: OpTypeOrUnknown::Known(OpType::FileReplace),
@@ -2937,14 +3140,22 @@ async fn recover_msg_id(client: &Client, peer: PeerRef, sent_id: i64, header: &s
 
 pub(crate) fn is_video_name(name: &str) -> bool {
     matches!(
-        name.rsplit('.').next().unwrap_or("").to_lowercase().as_str(),
+        name.rsplit('.')
+            .next()
+            .unwrap_or("")
+            .to_lowercase()
+            .as_str(),
         "mp4" | "mkv" | "webm" | "mov" | "m4v" | "avi" | "ts"
     )
 }
 
 pub(crate) fn is_image_name(name: &str) -> bool {
     matches!(
-        name.rsplit('.').next().unwrap_or("").to_lowercase().as_str(),
+        name.rsplit('.')
+            .next()
+            .unwrap_or("")
+            .to_lowercase()
+            .as_str(),
         "jpg" | "jpeg" | "png" | "webp" | "gif"
     )
 }

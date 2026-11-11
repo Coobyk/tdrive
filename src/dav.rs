@@ -8,14 +8,13 @@
 use crate::project::{Entry, Namespace};
 use crate::stream;
 use anyhow::{Context, Result};
-use grammers_client::session::types::PeerRef;
 use grammers_client::Client;
+use grammers_client::session::types::PeerRef;
 use std::sync::{Arc, Mutex, OnceLock};
 
 static PORT: OnceLock<u16> = OnceLock::new();
 static STARTED: OnceLock<()> = OnceLock::new();
-static CMD: OnceLock<tokio::sync::mpsc::UnboundedSender<crate::tg::Command>> =
-    OnceLock::new();
+static CMD: OnceLock<tokio::sync::mpsc::UnboundedSender<crate::tg::Command>> = OnceLock::new();
 // The mounted drive's peer is swappable — switching drives must repoint
 // the server, not keep streaming the first drive forever.
 static PEER: OnceLock<std::sync::Mutex<PeerRef>> = OnceLock::new();
@@ -59,8 +58,7 @@ pub async fn ensure_server(
 }
 
 pub fn url() -> Option<String> {
-    PORT.get()
-        .map(|p| format!("webdav://127.0.0.1:{p}/dav/"))
+    PORT.get().map(|p| format!("webdav://127.0.0.1:{p}/dav/"))
 }
 
 fn escape(s: &str) -> String {
@@ -74,9 +72,11 @@ fn resolve_dir(ns: &Namespace, path: &str) -> Result<String> {
     let mut cur = String::new();
     for seg in path.trim_matches('/').split('/').filter(|s| !s.is_empty()) {
         let seg = urlencoding::decode(seg).unwrap_or_default().to_string();
-        let Some(next) = ns.folders.values().find(|d| {
-            !d.tombstoned && d.parent == cur && d.name == seg
-        }) else {
+        let Some(next) = ns
+            .folders
+            .values()
+            .find(|d| !d.tombstoned && d.parent == cur && d.name == seg)
+        else {
             anyhow::bail!("no such folder");
         };
         cur = next.id.clone();
@@ -95,9 +95,8 @@ fn resolve_file<'a>(ns: &'a Namespace, path: &str) -> Result<&'a crate::project:
 }
 
 fn propfind(ns: &Namespace, path: &str, depth: &str) -> String {
-    let mut xml = String::from(
-        r#"<?xml version="1.0" encoding="utf-8"?><D:multistatus xmlns:D="DAV:">"#,
-    );
+    let mut xml =
+        String::from(r#"<?xml version="1.0" encoding="utf-8"?><D:multistatus xmlns:D="DAV:">"#);
     let mut emit = |href: &str, is_dir: bool, size: i64| {
         let ct = if is_dir {
             "<D:getcontenttype>application/x-directory</D:getcontenttype>"
@@ -114,7 +113,15 @@ fn propfind(ns: &Namespace, path: &str, depth: &str) -> String {
     };
     let base = format!("/dav{path}");
     if let Ok(file) = resolve_file(ns, path) {
-        emit(&escape(&base), false, if file.encrypted { file.plaintext_size } else { file.size });
+        emit(
+            &escape(&base),
+            false,
+            if file.encrypted {
+                file.plaintext_size
+            } else {
+                file.size
+            },
+        );
         return format!("{xml}</D:multistatus>");
     }
     let Ok(dir) = resolve_dir(ns, path) else {
@@ -124,15 +131,15 @@ fn propfind(ns: &Namespace, path: &str, depth: &str) -> String {
     if depth == "1" {
         for e in ns.list(&dir) {
             match e {
-                Entry::Folder(d) => emit(
-                    &escape(&format!("{base}/{}/", d.name)),
-                    true,
-                    0,
-                ),
+                Entry::Folder(d) => emit(&escape(&format!("{base}/{}/", d.name)), true, 0),
                 Entry::File(f) => emit(
                     &escape(&format!("{base}/{}", f.name)),
                     false,
-                    if f.encrypted { f.plaintext_size } else { f.size },
+                    if f.encrypted {
+                        f.plaintext_size
+                    } else {
+                        f.size
+                    },
                 ),
             }
         }
@@ -167,12 +174,10 @@ async fn write_method(
                 Err(_) => return (409, b"bad parent".to_vec()),
             }
         }
-        "DELETE" => {
-            match resolve_obj(snapshot, path) {
-                Ok(obj) => crate::tg::DavOp::Delete { obj },
-                Err(_) => return (404, b"not found".to_vec()),
-            }
-        }
+        "DELETE" => match resolve_obj(snapshot, path) {
+            Ok(obj) => crate::tg::DavOp::Delete { obj },
+            Err(_) => return (404, b"not found".to_vec()),
+        },
         "MOVE" => {
             let src = match resolve_obj(snapshot, path) {
                 Ok(o) => o,
@@ -219,10 +224,9 @@ async fn write_method(
                 Ok(parent) => {
                     // Overwrite → freplace (TDrive's mount PUT), else fcommit.
                     match resolve_obj(snapshot, path) {
-                        Ok(obj) if obj.starts_with('f') => crate::tg::DavOp::Replace {
-                            obj,
-                            bytes: body,
-                        },
+                        Ok(obj) if obj.starts_with('f') => {
+                            crate::tg::DavOp::Replace { obj, bytes: body }
+                        }
                         Ok(_) => return (405, b"can't overwrite dir".to_vec()),
                         Err(_) => crate::tg::DavOp::Put {
                             parent,
@@ -289,8 +293,10 @@ async fn handle(
             break pos;
         }
         if raw.len() > 65536 {
-            sock.write_all(b"HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Length: 0\r\n\r\n")
-                .await?;
+            sock.write_all(
+                b"HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Length: 0\r\n\r\n",
+            )
+            .await?;
             return Ok(());
         }
         let n = sock.read(&mut chunk).await?;
@@ -312,7 +318,10 @@ async fn handle(
         if let Some(v) = l.strip_prefix("Depth:") {
             depth = v.trim().to_string();
         }
-        if let Some(v) = l.strip_prefix("Range:").or_else(|| l.strip_prefix("range:")) {
+        if let Some(v) = l
+            .strip_prefix("Range:")
+            .or_else(|| l.strip_prefix("range:"))
+        {
             range = Some(v.trim().to_string());
         }
     }
@@ -345,7 +354,10 @@ async fn handle(
             } else {
                 file.size
             } as u64;
-            let (start, end_excl, partial) = match range.as_deref().and_then(|r| r.strip_prefix("bytes=")) {
+            let (start, end_excl, partial) = match range
+                .as_deref()
+                .and_then(|r| r.strip_prefix("bytes="))
+            {
                 Some(r) => {
                     let mut it = r.split('-');
                     let s: u64 = it.next().and_then(|v| v.parse().ok()).unwrap_or(0);
@@ -374,15 +386,23 @@ async fn handle(
             };
             let bytes = if method == "GET" {
                 match stream::read_range(
-                    &client, &peer, &parts, start, end_excl, file.encrypted, &master,
+                    &client,
+                    &peer,
+                    &parts,
+                    start,
+                    end_excl,
+                    file.encrypted,
+                    &master,
                 )
                 .await
                 {
                     Ok(b) => b,
                     Err(_) => {
                         // Read failures must not look like an empty file.
-                        sock.write_all(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n")
-                            .await?;
+                        sock.write_all(
+                            b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n",
+                        )
+                        .await?;
                         return Ok(());
                     }
                 }
@@ -392,7 +412,11 @@ async fn handle(
             let code = if partial { 206 } else { 200 };
             let mut h = format!(
                 "HTTP/1.1 {code} OK\r\nContent-Length: {}\r\nAccept-Ranges: bytes\r\n",
-                if method == "GET" { bytes.len() } else { (end_excl - start) as usize }
+                if method == "GET" {
+                    bytes.len()
+                } else {
+                    (end_excl - start) as usize
+                }
             );
             if partial {
                 h.push_str(&format!(
@@ -411,7 +435,13 @@ async fn handle(
             // any bytes already read past it belong to the body.
             let body_start = header_end + 4;
             let (code, body) = write_method(
-                method, &path, &req, &snapshot, &mut sock, &raw, body_start.min(raw.len()),
+                method,
+                &path,
+                &req,
+                &snapshot,
+                &mut sock,
+                &raw,
+                body_start.min(raw.len()),
             )
             .await;
             let h = format!(
