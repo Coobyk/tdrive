@@ -75,6 +75,9 @@ pub enum Command {
     EnableEncryption { password: String, hint: String },
     JoinInvite { link: String },
     FetchThumbnail { file_id: String },
+    /// Fetch a viewable rendition (1600px preview preferred) for the
+    /// in-app file viewer, falling back to the raw body for images.
+    FetchPreview { file_id: String },
     Adopt { msg_id: i64, parent: String },
     Stream { obj: String },
     /// Write op issued by the WebDAV server; reply carries the result.
@@ -136,6 +139,8 @@ pub enum Event {
     InviteLink { link: String },
     ThumbnailReady { file_id: String, path: PathBuf },
     ThumbnailFailed { file_id: String },
+    PreviewReady { file_id: String, path: PathBuf },
+    PreviewFailed { file_id: String },
     /// Sync started/finished — drives the UI's fetch indicator.
     SyncState { active: bool },
     StreamUrl { url: String },
@@ -286,11 +291,7 @@ impl TransferCtx {
             .client
             .send_message(self.peer, InputMessage::new().text(header))
             .await?;
-        let id = msg.id() as i64;
-        if id <= 0 {
-            anyhow::bail!("send outcome unknown (msg id 0)");
-        }
-        Ok(id)
+        Ok(recover_msg_id(&self.client, self.peer, msg.id() as i64, header).await)
     }
 }
 
@@ -415,6 +416,7 @@ impl Worker {
             }
             Command::JoinInvite { link } => self.join_invite(&link).await,
             Command::FetchThumbnail { file_id } => self.spawn_thumbnail_fetch(&file_id),
+            Command::FetchPreview { file_id } => self.spawn_preview_fetch(&file_id),
             Command::Adopt { msg_id, parent } => self.adopt(msg_id, parent).await,
             Command::Stream { obj } => self.stream(&obj).await,
             Command::DavWrite { op, reply } => {
@@ -818,14 +820,16 @@ impl Worker {
         self.channel_title = title.clone();
         self.channel_kind = kind;
         // Load the persisted projection so the first sync is incremental.
-        self.namespace = Arc::new(
-            config::namespace_path(id)
+        self.namespace = Arc::new({
+            let mut ns = config::namespace_path(id)
                 .ok()
                 .and_then(|p| std::fs::read_to_string(p).ok())
                 .and_then(|s| serde_json::from_str::<crate::project::NamespaceSnapshot>(&s).ok())
                 .map(crate::project::Namespace::restore_snapshot)
-                .unwrap_or_default(),
-        );
+                .unwrap_or_default();
+            ns.drop_zero_ids();
+            ns
+        });
         let pending = self
             .journal
             .uploads
@@ -979,11 +983,9 @@ impl Worker {
             .send_message(self.channel()?, InputMessage::new().text(header))
             .await?;
         // grammers may return Empty{id:0} when the send outcome isn't in
-        // the response updates — the op IS on the channel, so id 0 is
-        // only "uncertain", never fatal. Control ops still apply locally
-        // (the next sync dedupes), while f:-id consumers treat 0 as
-        // "wait for sync".
-        Ok(msg.id() as i64)
+        // the response updates — the op IS on the channel, so recover
+        // the real id by scanning the newest messages for our header.
+        Ok(recover_msg_id(self.client()?, self.channel()?, msg.id() as i64, header).await)
     }
 
     /// Send a control op and fold it into the local namespace.
@@ -2284,6 +2286,118 @@ impl Worker {
         Ok(())
     }
 
+    /// Download a viewable rendition for the in-app viewer: prefer the
+    /// 1600px "preview" rendition, fall back to "thumbnail", then to the
+    /// raw body when the file is itself an image. Emits PreviewReady or
+    /// PreviewFailed once the cache file is readable.
+    fn spawn_preview_fetch(&mut self, file_id: &str) -> Result<()> {
+        let Some(file) = self.namespace.files.get(file_id).cloned() else {
+            return Ok(());
+        };
+        // (body msg id, is_rendition, encrypted)
+        let source = self
+            .namespace
+            .renditions
+            .get(file_id)
+            .and_then(|m| {
+                m.get("preview")
+                    .or_else(|| m.get("thumbnail"))
+                    .map(|(id, r)| (*id, true, r.encrypted))
+            })
+            .or_else(|| {
+                if is_image_name(&file.name) {
+                    Some((
+                        if file.content_msg_id > 0 {
+                            file.content_msg_id
+                        } else {
+                            file.msg_id
+                        },
+                        false,
+                        file.encrypted,
+                    ))
+                } else {
+                    None
+                }
+            });
+        let Some((body_id, is_rendition, encrypted)) = source else {
+            return Err(anyhow!("no previewable body for {}", file.name));
+        };
+        let dir = dirs::cache_dir()
+            .unwrap_or_else(std::env::temp_dir)
+            .join("tdrive-rs/previews");
+        std::fs::create_dir_all(&dir)?;
+        let out = dir.join(format!("{body_id}.img"));
+        if out.exists() {
+            self.emit(Event::PreviewReady {
+                file_id: file_id.to_string(),
+                path: out,
+            });
+            return Ok(());
+        }
+        if encrypted && self.master_key.lock().unwrap().is_none() {
+            return Err(anyhow!("unlock the drive to view encrypted files"));
+        }
+        let client = self.client()?.clone();
+        let peer = self.channel()?;
+        let master = self.master_key.clone();
+        let sem = self.thumb_sem.clone();
+        let tx = self.tx.clone();
+        let file_id = file_id.to_string();
+        tokio::spawn(async move {
+            let _permit = sem.acquire().await;
+            let key = *master.lock().unwrap();
+            let ok = (async {
+                let msgs = client
+                    .get_messages_by_id(peer, &[body_id as i32])
+                    .await
+                    .ok()?;
+                let media = msgs.into_iter().flatten().next()?.media()?;
+                let staging = dir.join(format!("{body_id}.part"));
+                if encrypted {
+                    let key = key?;
+                    client.download_media(&media, &staging).await.ok()?;
+                    let st = staging.clone();
+                    let o = out.clone();
+                    tokio::task::spawn_blocking(move || -> Result<()> {
+                        crypto::decrypt_file(&key, &st, &o)?;
+                        if is_rendition {
+                            // TDR1-wrapped rendition — strip to the JPEG.
+                            let data = std::fs::read(&o)?;
+                            if data.len() > 8 && &data[..4] == b"TDR1" {
+                                let n =
+                                    u32::from_be_bytes(data[4..8].try_into().unwrap()) as usize;
+                                if 8 + n <= data.len() {
+                                    std::fs::write(&o, &data[8 + n..])?;
+                                }
+                            }
+                        }
+                        Ok(())
+                    })
+                    .await
+                    .ok()?
+                    .ok()?;
+                    let _ = std::fs::remove_file(&staging);
+                } else {
+                    client.download_media(&media, &out).await.ok()?;
+                }
+                Some(())
+            })
+            .await
+            .is_some();
+            let _ = tx
+                .send(if ok {
+                    Event::PreviewReady {
+                        file_id,
+                        path: out,
+                    }
+                } else {
+                    Event::PreviewFailed { file_id }
+                })
+                .await;
+        });
+        Ok(())
+    }
+
     /// Adopt a raw channel attachment into the namespace with a `meta` op —
     /// the same op TDrive emits when claiming an unop'd document.
     async fn adopt(&mut self, msg_id: i64, parent: String) -> Result<()> {
@@ -2760,14 +2874,34 @@ async fn extract_video_frame(source: &PathBuf) -> Option<PathBuf> {
     (status.success() && out.exists()).then_some(out)
 }
 
-fn is_video_name(name: &str) -> bool {
+/// Recover the real message id after `send_message` reports `Empty{id:0}` —
+/// the op reached the channel, so the newest message carrying our exact
+/// header is the one just sent. Returns 0 when recovery fails.
+async fn recover_msg_id(client: &Client, peer: PeerRef, sent_id: i64, header: &str) -> i64 {
+    if sent_id > 0 {
+        return sent_id;
+    }
+    let mut iter = client.iter_messages(peer);
+    for _ in 0..20 {
+        let m = match iter.next().await {
+            Ok(Some(m)) => m,
+            _ => break,
+        };
+        if m.text() == header {
+            return m.id() as i64;
+        }
+    }
+    0
+}
+
+pub(crate) fn is_video_name(name: &str) -> bool {
     matches!(
         name.rsplit('.').next().unwrap_or("").to_lowercase().as_str(),
         "mp4" | "mkv" | "webm" | "mov" | "m4v" | "avi" | "ts"
     )
 }
 
-fn is_image_name(name: &str) -> bool {
+pub(crate) fn is_image_name(name: &str) -> bool {
     matches!(
         name.rsplit('.').next().unwrap_or("").to_lowercase().as_str(),
         "jpg" | "jpeg" | "png" | "webp" | "gif"

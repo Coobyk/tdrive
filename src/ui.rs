@@ -47,6 +47,22 @@ enum Modal {
     UploadLimit,
 }
 
+/// In-app file viewer state.
+struct Viewer {
+    file_id: String,
+    name: String,
+    kind: ViewKind,
+    path: Option<PathBuf>,
+    failed: bool,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum ViewKind {
+    Image,
+    Video,
+    Other,
+}
+
 pub struct Root {
     tg: tokio::sync::mpsc::UnboundedSender<Command>,
     screen: Screen,
@@ -94,6 +110,8 @@ pub struct Root {
     /// Last rendered entry count — a count change snaps the scroll to the
     /// top so a new folder at index 0 can't hide above a stale offset.
     last_items_len: usize,
+    viewer: Option<Viewer>,
+    activity_frame: u8,
     /// Auto-open the last drive only on the first channel list — a relist
     /// after "Drives" must not reopen it and bounce back.
     auto_open_done: bool,
@@ -159,6 +177,8 @@ impl Root {
             grid_cols: 4,
             scroll_handle: ScrollHandle::new(),
             last_view_key: String::new(),
+            viewer: None,
+            activity_frame: 0u8,
             auto_open_done: false,
             syncing: false,
             nav_back: Vec::new(),
@@ -184,6 +204,28 @@ impl Root {
             while let Ok(ev) = rx.recv().await {
                 if this
                     .update(cx, |this: &mut Self, cx| this.on_event(ev, cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+
+        // Activity ticker — advances the bottom-left spinner while any
+        // sync, transfer or thumbnail fetch is in flight.
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(120))
+                    .await;
+                if this
+                    .update(cx, |this, cx| {
+                        if this.activity_active() {
+                            this.activity_frame = this.activity_frame.wrapping_add(1);
+                            cx.notify();
+                        }
+                    })
                     .is_err()
                 {
                     break;
@@ -304,6 +346,20 @@ impl Root {
             }
             Event::ThumbnailFailed { file_id } => {
                 self.thumb_requested.remove(&file_id);
+            }
+            Event::PreviewReady { file_id, path } => {
+                if let Some(v) = &mut self.viewer {
+                    if v.file_id == file_id {
+                        v.path = Some(path);
+                    }
+                }
+            }
+            Event::PreviewFailed { file_id } => {
+                if let Some(v) = &mut self.viewer {
+                    if v.file_id == file_id {
+                        v.failed = true;
+                    }
+                }
             }
             Event::SyncState { active } => {
                 self.syncing = active;
@@ -1023,15 +1079,20 @@ impl Root {
             self.last_items_len = self.entries_cache.len();
             self.scroll_handle.scroll_to_top_of_item(0);
         }
-        let mut rows = div()
-            .id("rows")
+        // ONE scrollable container — nesting a second overflow_y_scroll
+        // inside it gave the inner pane a full-height scroll range, so it
+        // swallowed wheel events and entries below the fold (files, which
+        // sort after folders) were unreachable.
+        let mut body = div()
+            .id("file-scroll")
             .flex()
             .flex_col()
             .w_full()
             .flex_1()
-            .overflow_hidden();
+            .overflow_y_scroll()
+            .track_scroll(&self.scroll_handle);
         if self.entries_cache.is_empty() {
-            rows = rows.child(
+            body = body.child(
                 div()
                     .py_16()
                     .flex()
@@ -1046,35 +1107,21 @@ impl Root {
                         "empty folder"
                     }),
             );
-        } else {
-            // Plain scrollable list — no virtualization machinery that can
-            // silently drop items. For each entry render its row/cell; in
-            // grid mode entries are chunked into flex rows.
-            let mut body = div()
-                .id("entries-scroll")
-                .flex()
-                .flex_col()
-                .w_full()
-                .overflow_y_scroll()
-                .track_scroll(&self.scroll_handle)
-                .flex_1();
-            if self.grid && !self.trash {
-                self.grid_cols = ((f32::from(window.viewport_size().width)
-                    / 110.) as usize)
-                    .max(1);
-                for chunk in self.entries_cache.clone().chunks(self.grid_cols) {
-                    let mut r = div().flex().gap_2().p_1();
-                    for e in chunk {
-                        r = r.child(self.render_cell(e, cx));
-                    }
-                    body = body.child(r);
+        } else if self.grid && !self.trash {
+            self.grid_cols = ((f32::from(window.viewport_size().width)
+                / 110.) as usize)
+                .max(1);
+            for chunk in self.entries_cache.clone().chunks(self.grid_cols) {
+                let mut r = div().flex().gap_2().p_1();
+                for e in chunk {
+                    r = r.child(self.render_cell(e, cx));
                 }
-            } else {
-                for e in self.entries_cache.clone() {
-                    body = body.child(self.render_row(&e, cx));
-                }
+                body = body.child(r);
             }
-            rows = rows.child(body);
+        } else {
+            for e in self.entries_cache.clone() {
+                body = body.child(self.render_row(&e, cx));
+            }
         }
 
         // Selected actions
@@ -1138,6 +1185,11 @@ impl Root {
                         cx.notify();
                     });
                     actions = actions.child(tool_button("Open", st));
+                    let id2 = sel_c.clone();
+                    let vw = cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                        this.open_viewer(&id2, cx);
+                    });
+                    actions = actions.child(tool_button("View", vw));
                 }
             }
             if !self.trash {
@@ -1306,6 +1358,13 @@ impl Root {
                 if this.modal.is_some() || this.f_search.read(cx).is_focused(window) {
                     return;
                 }
+                if this.viewer.is_some() {
+                    if matches!(e.keystroke.key.as_str(), "escape" | "backspace") {
+                        this.viewer = None;
+                        cx.notify();
+                    }
+                    return;
+                }
                 let ids = this.visible_ids(cx);
                 match e.keystroke.key.as_str() {
                     "up" | "down" => {
@@ -1404,13 +1463,7 @@ impl Root {
                     .child(crumbs),
             )
             .child(actions)
-            .child(
-                div()
-                    .id("file-scroll")
-                    .flex_1()
-                    .overflow_y_scroll()
-                    .child(rows),
-            )
+            .child(body)
             .child(
                 div()
                     .border_t_1()
@@ -1418,16 +1471,28 @@ impl Root {
                     .bg(rgb(PANEL))
                     .child(transfers)
                     .child({
+                        const FRAMES: [&str; 10] =
+                            ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
                         let pending = self
                             .thumb_requested
                             .len()
                             .saturating_sub(self.thumbnails.len());
+                        let active_transfers = self
+                            .transfers
+                            .values()
+                            .filter(|t| t.state == TransferState::Active)
+                            .count();
                         let label = if self.syncing && pending > 0 {
                             format!("Fetching files… · {pending} thumbnails in flight")
                         } else if self.syncing {
                             "Fetching files…".to_string()
                         } else if pending > 0 {
                             format!("Fetching thumbnails · {pending} in flight")
+                        } else if active_transfers > 0 {
+                            format!(
+                                "{active_transfers} transfer{} running",
+                                if active_transfers == 1 { "" } else { "s" }
+                            )
                         } else {
                             String::new()
                         };
@@ -1443,6 +1508,13 @@ impl Root {
                                 .gap_3()
                                 .border_t_1()
                                 .border_color(rgb(BORDER))
+                                .child(
+                                    div()
+                                        .w(px(16.))
+                                        .text_sm()
+                                        .text_color(rgb(ACCENT))
+                                        .child(FRAMES[(self.activity_frame % 10) as usize]),
+                                )
                                 .child(
                                     div()
                                         .w(px(90.))
@@ -1474,6 +1546,167 @@ impl Root {
                     ),
             )
             .child(self.render_modal(window, cx))
+            .child(self.render_viewer(cx))
+    }
+
+    /// Whether background work is in flight — drives the bottom-left
+    /// activity spinner.
+    fn activity_active(&self) -> bool {
+        self.syncing
+            || self
+                .transfers
+                .values()
+                .any(|t| t.state == TransferState::Active)
+            || self.thumb_requested.len() > self.thumbnails.len()
+    }
+
+    /// Open the in-app viewer for a file: images get a fetched preview
+    /// rendition, videos get a preview frame + open-in-player, everything
+    /// else gets a details card with download/open-externally actions.
+    fn open_viewer(&mut self, file_id: &str, cx: &mut Context<Self>) {
+        let Some(f) = self.namespace.files.get(file_id).cloned() else {
+            return;
+        };
+        let kind = if crate::tg::is_image_name(&f.name) {
+            ViewKind::Image
+        } else if crate::tg::is_video_name(&f.name) {
+            ViewKind::Video
+        } else {
+            ViewKind::Other
+        };
+        self.viewer = Some(Viewer {
+            file_id: f.id.clone(),
+            name: f.name.clone(),
+            kind,
+            path: None,
+            failed: false,
+        });
+        if kind != ViewKind::Other {
+            self.send(Command::FetchPreview {
+                file_id: f.id.clone(),
+            });
+        }
+        cx.notify();
+    }
+
+    /// Fullscreen viewer overlay — closes on backdrop click, Escape or ✕.
+    fn render_viewer(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(v) = &self.viewer else {
+            return div().into_any_element();
+        };
+        let file_id = v.file_id.clone();
+        let name = v.name.clone();
+        let kind = v.kind;
+        let path = v.path.clone();
+        let failed = v.failed;
+
+        let mut body = div()
+            .flex_1()
+            .flex()
+            .items_center()
+            .justify_center()
+            .overflow_hidden();
+        if let Some(p) = path {
+            body = body.child(
+                img(p)
+                    .max_w_full()
+                    .max_h_full()
+                    .object_fit(gpui::ObjectFit::Contain),
+            );
+        } else if failed || kind == ViewKind::Other {
+            body = body.child(
+                div()
+                    .text_sm()
+                    .text_color(rgb(DIM))
+                    .child(if kind == ViewKind::Other {
+                        "No preview for this file type"
+                    } else {
+                        "Preview unavailable"
+                    }),
+            );
+        } else {
+            body = body.child(
+                div()
+                    .text_sm()
+                    .text_color(rgb(DIM))
+                    .child("Loading preview…"),
+            );
+        }
+
+        // Controls: keep clicks inside from closing the overlay.
+        let stop = |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
+            cx.stop_propagation();
+        };
+        let mut controls = div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .on_mouse_down(MouseButton::Left, stop);
+        if kind == ViewKind::Video {
+            let obj = file_id.clone();
+            controls = controls.child(tool_button(
+                "Play in player",
+                cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                    this.send(Command::Stream { obj: obj.clone() });
+                    this.status = "opening stream…".into();
+                    cx.notify();
+                }),
+            ));
+        }
+        if kind == ViewKind::Other {
+            let obj = file_id.clone();
+            let nm = name.clone();
+            controls = controls.child(tool_button(
+                "Download",
+                cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                    this.pick_download_dest(obj.clone(), nm.clone(), cx);
+                }),
+            ));
+        }
+        controls = controls.child(tool_button(
+            "Close",
+            cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                this.viewer = None;
+                cx.notify();
+            }),
+        ));
+
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(rgba(0x000000e6))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                    this.viewer = None;
+                    cx.notify();
+                }),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .px_4()
+                    .py_3()
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_sm()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(rgb(TEXT))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .child(name),
+                    )
+                    .child(controls),
+            )
+            .child(body)
+            .into_any_element()
     }
 
     /// Ordered object ids matching the visible listing (folders first),
@@ -1718,6 +1951,8 @@ impl Root {
                     this.drive_focus.focus(window);
                     if ev.click_count == 2 && is_folder {
                         this.set_cwd(id_click.clone());
+                    } else if ev.click_count == 2 {
+                        this.open_viewer(&id_click, cx);
                     } else {
                         this.selected = Some(id_click.clone());
                         this.send(Command::FetchThumbnail { file_id: id_click.clone() });

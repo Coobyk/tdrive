@@ -171,6 +171,21 @@ impl Namespace {
                 return;
             }
         }
+        // Ops that derive object ids (or body references) from the message
+        // id must never apply with an uncertain id — otherwise every file
+        // collapses into `f:0`. They arrive properly on the next sync.
+        if msg_id <= 0
+            && matches!(
+                t,
+                OpType::FileUpload
+                    | OpType::FileManifest
+                    | OpType::FileCommit
+                    | OpType::FileReplace
+                    | OpType::FilePart
+            )
+        {
+            return;
+        }
         match t {
             OpType::FileUpload => self.apply_file_meta(msg_id, op, msg_id),
             OpType::Meta => {
@@ -826,6 +841,16 @@ impl Namespace {
             .map(Entry::Folder)
             .chain(files.into_iter().map(Entry::File))
             .collect()
+    }
+
+    /// Remove entries created under an uncertain message id (`f:0`,
+    /// `d:0`) — legacy ghosts from pre-recovery sends. The real objects
+    /// come back via sync.
+    pub fn drop_zero_ids(&mut self) {
+        self.files.retain(|id, _| id != "f:0");
+        self.folders.retain(|id, _| id != "d:0");
+        self.renditions.retain(|fid, _| fid != "f:0");
+        self.trash.retain(|id, _| id != "f:0" && id != "d:0");
     }
 
     /// Part message ids for a multipart file, ordered by part index.
