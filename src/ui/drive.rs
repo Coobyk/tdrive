@@ -105,6 +105,13 @@ impl Root {
             });
             toolbar = toolbar.child(tool_button("Empty trash", Tone::Danger, et));
         }
+        if !self.trash {
+            let opt = cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                this.send(Command::OptimizeDrive);
+                cx.notify();
+            });
+            toolbar = toolbar.child(tool_button("Optimize", Tone::Ghost, opt));
+        }
         if self.channel_kind.is_personal() {
             let lock_label = if self.vault_configured {
                 if self.vault_unlocked {

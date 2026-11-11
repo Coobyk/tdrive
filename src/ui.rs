@@ -66,6 +66,11 @@ enum Modal {
     },
     /// Max concurrent uploads.
     UploadLimit,
+    /// Confirm deleting `dead` obsolete channel messages (scanned by
+    /// OptimizeDrive).
+    Optimize {
+        dead: usize,
+    },
 }
 
 /// In-app file viewer state.
@@ -421,6 +426,14 @@ impl Root {
             Event::Status { message } => {
                 self.status = message;
             }
+            Event::OptimizePlan { dead, scanned } => {
+                if dead > 0 {
+                    self.modal = Some(Modal::Optimize { dead });
+                    self.status = format!("{dead} obsolete messages found in {scanned} scanned");
+                } else {
+                    self.status = "drive is already optimized".into();
+                }
+            }
             Event::SignedOut => {
                 self.channel = None;
                 self.namespace = Arc::new(Namespace::new());
@@ -715,6 +728,10 @@ impl Root {
             Some(Modal::WatchBackup) => {
                 let dir = std::path::PathBuf::from(self.f_name.read(cx).text().trim().to_string());
                 self.send(Command::WatchBackup { dir });
+                self.modal = None;
+            }
+            Some(Modal::Optimize { .. }) => {
+                self.send(Command::OptimizeApply);
                 self.modal = None;
             }
             _ => {}

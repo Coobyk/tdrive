@@ -98,6 +98,11 @@ pub enum Command {
         title: String,
     },
     EmptyTrash,
+    /// Scan the op log and physically delete messages whose objects were
+    /// created and later hard-deleted — dead weight in the channel.
+    OptimizeDrive,
+    /// Execute the plan staged by OptimizeDrive.
+    OptimizeApply,
     OpenChannel {
         id: i64,
         access_hash: i64,
@@ -310,6 +315,12 @@ pub enum Event {
     Status {
         message: String,
     },
+    /// OptimizeDrive finished scanning — how many channel messages are
+    /// dead ops/orphaned bodies eligible for deletion.
+    OptimizePlan {
+        dead: usize,
+        scanned: usize,
+    },
     StreamUrl {
         url: String,
     },
@@ -403,6 +414,7 @@ pub fn spawn() -> Handle {
                 channel_kind: DriveKind::Personal,
                 paused_downloads: std::collections::HashSet::new(),
                 cancelled: std::collections::HashSet::new(),
+                pending_optimize: Vec::new(),
                 live_sync_queued: Default::default(),
                 ns_shared: Arc::new(Mutex::new(Arc::new(Namespace::new()))),
                 fuse_session: None,
@@ -494,6 +506,9 @@ struct Worker {
     /// User-cancelled ids — suppress the unwind's failure report the
     /// same way paused ids do.
     cancelled: std::collections::HashSet<String>,
+    /// Message ids the optimize scan marked for deletion — apply only
+    /// runs after the UI confirms this plan.
+    pending_optimize: Vec<i64>,
     live_sync_queued: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Latest namespace snapshot shared with the WebDAV server.
     ns_shared: Arc<Mutex<Arc<Namespace>>>,
@@ -557,6 +572,8 @@ impl Worker {
             Command::CreateChannel { title } => self.create_channel(title).await,
             Command::CreateSharedChannel { title } => self.create_channel_inner(title, true).await,
             Command::EmptyTrash => self.empty_trash().await,
+            Command::OptimizeDrive => self.optimize_scan().await,
+            Command::OptimizeApply => self.optimize_apply().await,
             Command::OpenChannel {
                 id,
                 access_hash,

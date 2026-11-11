@@ -231,6 +231,23 @@ impl Root {
                     })
                     .into_any_element(),
             ),
+            Modal::Optimize { dead } => (
+                "Optimize drive".into(),
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .child(
+                        div().text_sm().text_color(rgb(DIM)).child(format!(
+                            "{dead} obsolete messages — ops and bodies of files and                              folders that were created and later deleted — can be                              removed from the channel. Live files and unadopted                              uploads are untouched.",
+                        )),
+                    )
+                    .child({
+                        let ok = cx.listener(|this, _: &MouseDownEvent, _, cx| this.modal_confirm(cx));
+                        button("Delete messages", ACCENT, ok)
+                    })
+                    .into_any_element(),
+            ),
             Modal::Delete { obj, name } => {
                 let obj = obj.clone();
                 (
