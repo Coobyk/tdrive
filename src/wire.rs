@@ -149,6 +149,10 @@ pub struct Op {
 
 /// TDrive `FileRendition` — a thumbnail/preview stored as a hidden `part`
 /// document carrying a `rend=` envelope.
+
+/// TDrive rendition kinds — the `k` field of a FileRendition.
+pub const RENDITION_THUMB: &str = "thumbnail";
+pub const RENDITION_PREVIEW: &str = "preview";
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Rendition {
     /// `c`: channel id
@@ -163,7 +167,7 @@ pub struct Rendition {
     /// `u`: upload uuid (multipart files)
     #[serde(default, rename = "u")]
     pub upload_uuid: String,
-    /// `k`: "thumb" | "preview"
+    /// `k`: "thumbnail" | "preview" (TDrive's rendition kinds)
     #[serde(rename = "k")]
     pub kind: String,
     /// `v`: format version (1)

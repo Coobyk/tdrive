@@ -671,7 +671,6 @@ impl Root {
             || self.thumb_requested.len() > self.thumbnails.len()
     }
 
-    /// Ordered object ids matching the visible listing (folders first),
     /// Ids in display order — derived from `current_entries` so
     /// keyboard selection can never index a different order.
     pub(super) fn visible_ids(&self, cx: &App) -> Vec<String> {
@@ -789,9 +788,9 @@ impl Root {
                 f.id.clone(),
                 f.name.clone(),
                 if f.encrypted {
-                    format!("{} · encrypted", human_size(f.plaintext_size))
+                    format!("{} · encrypted", human_size(f.logical_size()))
                 } else {
-                    human_size(f.size)
+                    human_size(f.logical_size())
                 },
                 false,
             ),

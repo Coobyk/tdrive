@@ -59,8 +59,21 @@ impl Worker {
             return Ok(());
         };
         let paths: Vec<PathBuf> = std::fs::read_dir(&dir)
-            .map(|rd| rd.flatten().map(|e| e.path()).collect())
-            .unwrap_or_default();
+            .map(|rd| rd.flatten().map(|e| e.path()).collect::<Vec<_>>())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|p| {
+                !self
+                    .journal
+                    .backup_seen
+                    .contains(&p.to_string_lossy().to_string())
+            })
+            .collect();
+        // An empty or fully-uploaded watch dir is the steady state, not
+        // an error — don't spam the status bar every tick.
+        if paths.is_empty() {
+            return Ok(());
+        }
         self.backup_photos(paths).await
     }
 }

@@ -124,7 +124,6 @@ impl Worker {
         *self.peer_cell.lock().unwrap() = None;
         *self.ns_shared.lock().unwrap() = Arc::new(Namespace::new());
         self.channel_id = 0;
-        self.channel_title.clear();
         self.channel_kind = DriveKind::Personal;
         self.login_token = None;
         self.password_token = None;

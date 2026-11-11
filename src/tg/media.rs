@@ -43,7 +43,10 @@ impl Worker {
         } else {
             return;
         };
-        for (kind, edge) in [("thumbnail", 512u32), ("preview", 1600u32)] {
+        for (kind, edge) in [
+            (wire::RENDITION_THUMB, 512u32),
+            (wire::RENDITION_PREVIEW, 1600u32),
+        ] {
             if let Err(e) = Self::publish_rendition(
                 ctx,
                 source,
@@ -159,7 +162,7 @@ impl Worker {
                 .namespace
                 .renditions
                 .get(file_id)
-                .and_then(|m| m.get("thumbnail"))
+                .and_then(|m| m.get(wire::RENDITION_THUMB))
                 .map(|(id, r)| (*id, true, r.encrypted)),
             FetchKind::Preview => {
                 let file = self.namespace.files.get(file_id).cloned();
@@ -167,8 +170,8 @@ impl Worker {
                     .renditions
                     .get(file_id)
                     .and_then(|m| {
-                        m.get("preview")
-                            .or_else(|| m.get("thumbnail"))
+                        m.get(wire::RENDITION_PREVIEW)
+                            .or_else(|| m.get(wire::RENDITION_THUMB))
                             .map(|(id, r)| (*id, true, r.encrypted))
                     })
                     .or_else(|| {
@@ -187,7 +190,10 @@ impl Worker {
         };
         let Some((body_id, is_rendition, encrypted)) = source else {
             return match kind {
-                FetchKind::Thumb => Ok(()),
+                FetchKind::Thumb => {
+                    self.emit(kind.failed(file_id));
+                    Ok(())
+                }
                 FetchKind::Preview => Err(anyhow!("no previewable body")),
             };
         };
@@ -315,9 +321,6 @@ pub(super) async fn extract_video_frame(source: &PathBuf) -> Option<PathBuf> {
     (status.success() && out.exists()).then_some(out)
 }
 
-/// Recover the real message id after `send_message` reports `Empty{id:0}` —
-/// the op reached the channel, so the newest message carrying our exact
-/// header is the one just sent. Returns 0 when recovery fails.
 pub(crate) fn is_video_name(name: &str) -> bool {
     matches!(
         name.rsplit('.')

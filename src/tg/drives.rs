@@ -128,7 +128,6 @@ impl Worker {
             *self.master_key.lock().unwrap() = None;
         }
         self.channel_id = id;
-        self.channel_title = title.clone();
         self.channel_kind = kind;
         // Load the persisted projection so the first sync is incremental.
         self.namespace = Arc::new({

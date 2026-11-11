@@ -64,7 +64,9 @@ impl Root {
                     })
                 }));
                 for d in self.namespace.folders.values() {
-                    if d.tombstoned || d.id == obj {
+                    // A folder can't move into itself or its own subtree —
+                    // the projection would reject it after the send.
+                    if d.tombstoned || self.namespace.subtree_contains(&obj, &d.id) {
                         continue;
                     }
                     let dest = d.id.clone();

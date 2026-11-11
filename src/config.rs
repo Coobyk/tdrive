@@ -19,9 +19,12 @@ pub struct AppConfig {
     pub upload_limit: usize,
 }
 
+/// TDrive's upload concurrency bounds — 3 concurrent, 16 max.
 pub fn default_upload_limit() -> usize {
     3
 }
+
+pub const MAX_UPLOAD_LIMIT: usize = 16;
 
 fn data_dir() -> Result<PathBuf> {
     let dir = dirs::data_dir()
@@ -65,7 +68,6 @@ pub fn session_path() -> Result<PathBuf> {
     Ok(data_dir()?.join("session.db"))
 }
 
-/// Resumable-transfer journal file.
 /// Per-channel projected namespace snapshot (durable projection).
 pub fn namespace_path(channel_id: i64) -> Result<PathBuf> {
     let dir = data_dir()?.join("namespaces");
@@ -73,6 +75,7 @@ pub fn namespace_path(channel_id: i64) -> Result<PathBuf> {
     Ok(dir.join(format!("{channel_id}.json")))
 }
 
+/// Resumable-transfer journal file.
 pub fn journal_path() -> Result<PathBuf> {
     Ok(data_dir()?.join("journal.json"))
 }

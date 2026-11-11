@@ -43,7 +43,6 @@ pub(crate) use media::{is_image_name, is_video_name};
 pub const MAX_PART_BYTES: i64 = 1900 * 1024 * 1024;
 pub const LARGE_FILE_MAX_BYTES: i64 = 40 * 1024 * 1024 * 1024;
 pub const MAX_PARTS: usize = 32;
-use crate::remote::BODY_CHUNK as DOWNLOAD_CHUNK;
 
 /// The two drive channel shapes TDrive distinguishes — a personal
 /// broadcast channel (encryption-eligible) vs a shared megagroup.
@@ -277,7 +276,6 @@ pub enum Event {
     },
     Namespace(Arc<Namespace>),
     Transfer(TransferUpdate),
-    JournalChanged,
     Error {
         context: &'static str,
         message: String,
@@ -399,12 +397,12 @@ pub fn spawn() -> Handle {
                 password_token: None,
                 peer_cell: Arc::new(Mutex::new(None)),
                 channel_id: 0,
-                channel_title: String::new(),
                 namespace: Arc::new(Namespace::new()),
                 master_key: Arc::new(Mutex::new(None)),
                 actor_id: 0,
                 channel_kind: DriveKind::Personal,
                 paused_downloads: std::collections::HashSet::new(),
+                cancelled: std::collections::HashSet::new(),
                 live_sync_queued: Default::default(),
                 ns_shared: Arc::new(Mutex::new(Arc::new(Namespace::new()))),
                 fuse_session: None,
@@ -414,7 +412,7 @@ pub fn spawn() -> Handle {
                         .ok()
                         .flatten()
                         .map(|c| c.upload_limit)
-                        .unwrap_or(3)
+                        .unwrap_or_else(crate::config::default_upload_limit)
                         .max(1),
                 )),
                 cancels: HashMap::new(),
@@ -484,7 +482,6 @@ struct Worker {
     /// channel switch repoints mounted surfaces live.
     peer_cell: Arc<Mutex<Option<PeerRef>>>,
     channel_id: i64,
-    channel_title: String,
     namespace: Arc<Namespace>,
     master_key: Arc<Mutex<Option<[u8; crypto::MASTER_KEY_LEN]>>>,
     /// Our own user id — adoption ownership checks.
@@ -494,6 +491,9 @@ struct Worker {
     /// Paused downloads (transfer ids) — resume looks the job up
     /// in the journal, which still holds the destination.
     paused_downloads: std::collections::HashSet<String>,
+    /// User-cancelled ids — suppress the unwind's failure report the
+    /// same way paused ids do.
+    cancelled: std::collections::HashSet<String>,
     live_sync_queued: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Latest namespace snapshot shared with the WebDAV server.
     ns_shared: Arc<Mutex<Arc<Namespace>>>,
@@ -524,7 +524,6 @@ impl Worker {
                 message: e.to_string(),
             });
         }
-        self.emit(Event::JournalChanged);
     }
 
     async fn run(&mut self) {
@@ -569,7 +568,7 @@ impl Worker {
             Command::UploadDir { dir, parent } => self.upload_dir(dir, parent).await,
             Command::UploadArchive { dir, parent } => self.upload_archive(dir, parent).await,
             Command::SetUploadLimit { n } => {
-                let n = n.clamp(1, 16);
+                let n = n.clamp(1, crate::config::MAX_UPLOAD_LIMIT);
                 self.upload_sem = Arc::new(tokio::sync::Semaphore::new(n));
                 if let Ok(Some(mut cfg)) = config::AppConfig::load() {
                     cfg.upload_limit = n;
@@ -711,7 +710,7 @@ impl Worker {
                 self.cancels.remove(&id);
                 // A pause also unwinds as an error — don't overwrite the
                 // Paused state the pause() handler already set.
-                if !self.paused_downloads.contains(&id) {
+                if !self.paused_downloads.contains(&id) && !self.cancelled.remove(&id) {
                     self.emit(Event::Error {
                         context: "transfer",
                         message: format!("{label}: {err}"),
@@ -837,6 +836,13 @@ impl Worker {
     /// Pause suspends the transfer but keeps journal state, unlike cancel
     /// which discards it — the same distinction TDrive makes.
     async fn pause(&mut self, id: &str) -> Result<()> {
+        // Single uploads aren't journaled — they can't resume, so pause
+        // degrades to cancel rather than offering a dead button.
+        if let Some(TransferTarget::Upload(uuid)) = parse_transfer_id(id) {
+            if !self.journal.uploads.iter().any(|j| j.upload_uuid == uuid) {
+                return self.cancel(id);
+            }
+        }
         if let Some(token) = self.cancels.remove(id) {
             // Drop the cancelled token — resume must mint a fresh one or
             // is_cancelled() fires instantly and the job can never resume.
@@ -903,6 +909,7 @@ impl Worker {
             }
             self.save_journal();
         }
+        self.cancelled.insert(id.to_string());
         self.emit(Event::Transfer(TransferUpdate {
             id: id.to_string(),
             label: String::new(),

@@ -152,10 +152,22 @@ pub async fn respond(
     extra_headers: &[(&str, &str)],
     body: &[u8],
 ) -> Result<()> {
+    respond_len(sock, code, extra_headers, body, body.len() as u64).await
+}
+
+/// Same as `respond` but the declared Content-Length may exceed the
+/// body sent — HEAD answers with the entity length and no entity.
+pub async fn respond_len(
+    sock: &mut TcpStream,
+    code: u16,
+    extra_headers: &[(&str, &str)],
+    body: &[u8],
+    content_length: u64,
+) -> Result<()> {
     let mut h = format!(
         "HTTP/1.1 {code} {}\r\nContent-Length: {}\r\nConnection: close\r\n",
         reason(code),
-        body.len()
+        content_length
     );
     for (k, v) in extra_headers {
         h.push_str(&format!("{k}: {v}\r\n"));

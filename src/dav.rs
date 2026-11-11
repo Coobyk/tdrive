@@ -337,11 +337,9 @@ async fn handle(mut sock: tokio::net::TcpStream, remote: Remote, cmd: CmdTx) -> 
             } else {
                 Vec::new()
             };
-            // HEAD reports the range length without a body.
+            // HEAD reports the entity length without the entity.
             if req.method == "HEAD" {
-                headers.push(("X-Content-Length-Note", format!("{}", end_excl - start)));
-                let _ = len;
-                return http::respond(
+                return http::respond_len(
                     &mut sock,
                     code,
                     &headers
@@ -349,6 +347,7 @@ async fn handle(mut sock: tokio::net::TcpStream, remote: Remote, cmd: CmdTx) -> 
                         .map(|(k, v)| (*k, v.as_str()))
                         .collect::<Vec<_>>(),
                     &[],
+                    (end_excl - start) as u64,
                 )
                 .await;
             }

@@ -1,5 +1,6 @@
 //! Download engine — chunked body fetch and journal-backed resume.
 use super::*;
+use crate::remote::BODY_CHUNK;
 
 /// The in-flight staging path for `dest` — the `.tdrive-part` suffix
 /// marks a partial body; cancel cleans it up, success renames it away.
@@ -104,8 +105,8 @@ impl Worker {
             // Resume mid-part at a whole-chunk boundary; bytes past the last
             // confirmed chunk are re-fetched.
             let within = (written - part_offset).max(0);
-            let skip = (within / DOWNLOAD_CHUNK as i64) as i32;
-            written = part_offset + skip as i64 * DOWNLOAD_CHUNK as i64;
+            let skip = (within / BODY_CHUNK as i64) as i32;
+            written = part_offset + skip as i64 * BODY_CHUNK as i64;
             out.set_len(written as u64).await?;
             out.seek(std::io::SeekFrom::Start(written as u64)).await?;
             ctx.journal(Command::DlConfirmed {
@@ -113,7 +114,7 @@ impl Worker {
                 written,
             });
 
-            let mut dl = client.iter_download(&media).chunk_size(DOWNLOAD_CHUNK);
+            let mut dl = client.iter_download(&media).chunk_size(BODY_CHUNK);
             if skip > 0 {
                 dl = dl.skip_chunks(skip);
             }
@@ -177,7 +178,7 @@ impl Worker {
     }
 }
 
-pub(super) fn unique_dest(path: PathBuf) -> PathBuf {
+fn unique_dest(path: PathBuf) -> PathBuf {
     if !path.exists() {
         return path;
     }

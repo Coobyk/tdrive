@@ -201,7 +201,7 @@ impl Remote {
 /// Recover the real message id after `send_message` reports `Empty{id:0}`
 /// — the op reached the channel, so the newest message carrying our exact
 /// text is the one just sent. Returns 0 when recovery fails.
-pub(crate) async fn recover_msg_id(client: &Client, peer: PeerRef, header: &str) -> i64 {
+async fn recover_msg_id(client: &Client, peer: PeerRef, header: &str) -> i64 {
     let mut iter = client.iter_messages(peer);
     for _ in 0..20 {
         let m = match iter.next().await {

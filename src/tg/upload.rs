@@ -44,23 +44,20 @@ impl Worker {
         // Encryption is staged inside the task — even multi-GB encrypts
         // never block the command loop.
         let encrypted = self.master_key.lock().unwrap().is_some();
-        let size = if encrypted {
-            plaintext_size
-        } else {
-            plaintext_size
-        };
+        let size = plaintext_size;
 
         if size > LARGE_FILE_MAX_BYTES {
             return Err(anyhow!("file exceeds the maximum upload size"));
         }
 
         let res: Result<()> = if size <= MAX_PART_BYTES {
-            let id = upload_transfer_id(&name);
+            let id = upload_transfer_id(&uuid::Uuid::new_v4().to_string());
             let name2 = name.clone();
+            let id2 = id.clone();
             self.spawn_cancellable(&id, &name, move |ctx| async move {
                 Self::upload_single_task(
                     &ctx,
-                    path.clone(),
+                    id2,
                     path,
                     name2,
                     parent,
@@ -232,15 +229,14 @@ impl Worker {
 
     pub(super) async fn upload_single_task(
         ctx: &TransferCtx,
+        id: String,
         path: PathBuf,
-        pt_source: PathBuf,
         name: String,
         parent: String,
         size: i64,
         encrypted: bool,
         plaintext_size: i64,
     ) -> Result<()> {
-        let id = upload_transfer_id(&name);
         let permit = ctx.upload_sem.acquire().await;
         ctx.update(&id, &name, 0, size, TransferState::Active);
         // Encrypt to staged ciphertext first when the vault is unlocked.
@@ -277,8 +273,7 @@ impl Worker {
                 ctx.op_applied(header, msg_id);
                 ctx.update(&id, &name, size, size, TransferState::Done);
                 drop(permit);
-                Self::publish_renditions(ctx, &pt_source, &name, msg_id, msg_id, "", encrypted)
-                    .await;
+                Self::publish_renditions(ctx, &path, &name, msg_id, msg_id, "", encrypted).await;
                 Ok(())
             }
             Err(e) => {
@@ -300,7 +295,7 @@ impl Worker {
         let file = tokio::fs::File::open(path).await?;
         let progress = ProgressReader::new(file, {
             let tx = ctx.tx.clone();
-            let id = upload_transfer_id(&name);
+            let id = upload_transfer_id(&uuid::Uuid::new_v4().to_string());
             let label = name.to_string();
             move |sent| {
                 let _ = tx.try_send(Event::Transfer(TransferUpdate {

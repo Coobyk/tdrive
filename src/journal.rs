@@ -2,7 +2,7 @@
 //!
 //! Upload jobs key on the TDX1 `u=` upload uuid: each part records the
 //! Telegram message id assigned once its send was accepted, so a restarted
-//! job re-sends only missing parts. Download jobs track confirmed 1 MiB
+//! job re-sends only missing parts. Download jobs track confirmed 512 KiB
 //! blocks already written to the destination.
 
 use anyhow::Result;
@@ -58,7 +58,7 @@ pub struct DownloadJob {
     pub body_msg_ids: Vec<i64>,
     pub total_size: i64,
     pub dest: PathBuf,
-    /// Blocks confirmed (flushed) so far, 1 MiB each.
+    /// Blocks confirmed (flushed) so far, 512 KiB each.
     pub confirmed_bytes: i64,
     /// Ciphertext staged on disk; decrypted to `dest` when complete.
     #[serde(default)]

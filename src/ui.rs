@@ -379,7 +379,9 @@ impl Root {
                 self.thumbnails.insert(file_id, path);
             }
             Event::ThumbnailFailed { file_id } => {
-                self.thumb_requested.remove(&file_id);
+                // Keep the id marked — a deterministic failure would
+                // otherwise re-request on every render forever.
+                let _ = file_id;
             }
             Event::PreviewReady { file_id, path } => {
                 if let Some(v) = &mut self.viewer {
@@ -413,7 +415,6 @@ impl Root {
                 self.status = format!("streaming: {url}");
                 let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
             }
-            Event::JournalChanged => {}
             Event::Error { context, message } => {
                 self.status = format!("{context}: {message}");
             }
