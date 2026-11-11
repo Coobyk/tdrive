@@ -144,9 +144,34 @@ pub enum Entry {
     File(FileEntry),
 }
 
+impl Entry {
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Folder(d) => &d.id,
+            Self::File(f) => &f.id,
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Folder(d) => &d.name,
+            Self::File(f) => &f.name,
+        }
+    }
+
+    pub fn is_folder(&self) -> bool {
+        matches!(self, Self::Folder(_))
+    }
+}
+
 impl Namespace {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Whether any rendition (thumb/preview) is recorded for `file_id`.
+    pub fn has_rendition(&self, file_id: &str) -> bool {
+        self.renditions.contains_key(file_id)
     }
 
     /// Apply one message. `msg_id` is the Telegram message id, `raw` is the

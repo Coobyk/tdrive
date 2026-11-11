@@ -138,130 +138,77 @@ impl Worker {
     }
 
     /// Download a file's "thumb" rendition into the local cache and tell
-    /// the UI where to read it. Encrypted renditions decrypt with TDE1.
-    /// Thumbnails fetch off the command loop — each is a bounded parallel
-    /// task so an image-heavy folder doesn't queue N×2 sequential RTTs.
+    /// the UI where to read it.
     pub(super) fn spawn_thumbnail_fetch(&mut self, file_id: &str) -> Result<()> {
-        let Some((body_id, r)) = self
-            .namespace
-            .renditions
-            .get(file_id)
-            .and_then(|m| m.get("thumbnail"))
-            .cloned()
-        else {
-            return Ok(());
-        };
-        let dir = dirs::cache_dir()
-            .unwrap_or_else(|| std::env::temp_dir().join("tdrive-rs-staging"))
-            .join("tdrive-rs/thumbs");
-        std::fs::create_dir_all(&dir)?;
-        let out = dir.join(format!("{body_id}.bin"));
-        if out.exists() {
-            self.emit(Event::ThumbnailReady {
-                file_id: file_id.to_string(),
-                path: out,
-            });
-            return Ok(());
-        }
-        let client = self.client()?.clone();
-        let peer = self.channel()?;
-        let master = self.master_key.clone();
-        let sem = self.thumb_sem.clone();
-        let tx = self.tx.clone();
-        let file_id = file_id.to_string();
-        tokio::spawn(async move {
-            let _permit = sem.acquire().await;
-            let key = *master.lock().unwrap();
-            if let Ok(msgs) = client.get_messages_by_id(peer, &[body_id as i32]).await {
-                if let Some(media) = msgs.into_iter().flatten().next().and_then(|m| m.media()) {
-                    let ok = if r.encrypted {
-                        match key {
-                            Some(key) => {
-                                let staging = dir.join(format!("{body_id}.enc"));
-                                let dl = client.download_media(&media, &staging).await;
-                                if dl.is_ok() {
-                                    let out2 = out.clone();
-                                    let staging2 = staging.clone();
-                                    let dec = tokio::task::spawn_blocking(move || {
-                                        crypto::decrypt_file(&key, &staging2, &out2)?;
-                                        strip_tdr1(&out2)?;
-                                        Ok::<_, anyhow::Error>(())
-                                    })
-                                    .await;
-                                    let _ = std::fs::remove_file(&staging);
-                                    dec.map(|r| r.is_ok()).unwrap_or(false)
-                                } else {
-                                    false
-                                }
-                            }
-                            None => false,
-                        }
-                    } else {
-                        client.download_media(&media, &out).await.is_ok()
-                    };
-                    let _ = tx
-                        .send(if ok {
-                            Event::ThumbnailReady { file_id, path: out }
-                        } else {
-                            Event::ThumbnailFailed { file_id }
-                        })
-                        .await;
-                }
-            }
-        });
-        Ok(())
+        self.spawn_rendition_fetch(file_id, FetchKind::Thumb)
     }
 
-    /// Download a viewable rendition for the in-app viewer: prefer the
-    /// 1600px "preview" rendition, fall back to "thumbnail", then to the
-    /// raw body when the file is itself an image. Emits PreviewReady or
-    /// PreviewFailed once the cache file is readable.
+    /// Download a viewable rendition for the in-app viewer — "preview",
+    /// then "thumbnail", then the raw body when the file is itself an image.
     pub(super) fn spawn_preview_fetch(&mut self, file_id: &str) -> Result<()> {
-        let Some(file) = self.namespace.files.get(file_id).cloned() else {
-            return Ok(());
-        };
+        self.spawn_rendition_fetch(file_id, FetchKind::Preview)
+    }
+
+    /// One rendition fetch: resolve the source body, fetch the media off
+    /// the command loop (bounded by `thumb_sem`), decrypt + TDR1-strip
+    /// renditions, cache by body id, emit Ready/Failed.
+    fn spawn_rendition_fetch(&mut self, file_id: &str, kind: FetchKind) -> Result<()> {
         // (body msg id, is_rendition, encrypted)
-        let source = self
-            .namespace
-            .renditions
-            .get(file_id)
-            .and_then(|m| {
-                m.get("preview")
-                    .or_else(|| m.get("thumbnail"))
-                    .map(|(id, r)| (*id, true, r.encrypted))
-            })
-            .or_else(|| {
-                if is_image_name(&file.name) {
-                    Some((
-                        if file.content_msg_id > 0 {
-                            file.content_msg_id
-                        } else {
-                            file.msg_id
-                        },
-                        false,
-                        file.encrypted,
-                    ))
-                } else {
-                    None
-                }
-            });
+        let source = match kind {
+            FetchKind::Thumb => self
+                .namespace
+                .renditions
+                .get(file_id)
+                .and_then(|m| m.get("thumbnail"))
+                .map(|(id, r)| (*id, true, r.encrypted)),
+            FetchKind::Preview => {
+                let file = self.namespace.files.get(file_id).cloned();
+                self.namespace
+                    .renditions
+                    .get(file_id)
+                    .and_then(|m| {
+                        m.get("preview")
+                            .or_else(|| m.get("thumbnail"))
+                            .map(|(id, r)| (*id, true, r.encrypted))
+                    })
+                    .or_else(|| {
+                        file.and_then(|f| {
+                            if !is_image_name(&f.name) {
+                                return None;
+                            }
+                            Some((
+                                *self.namespace.body_msg_ids(&f).first()?,
+                                false,
+                                f.encrypted,
+                            ))
+                        })
+                    })
+            }
+        };
         let Some((body_id, is_rendition, encrypted)) = source else {
-            return Err(anyhow!("no previewable body for {}", file.name));
+            return match kind {
+                FetchKind::Thumb => Ok(()),
+                FetchKind::Preview => Err(anyhow!("no previewable body")),
+            };
+        };
+        let (dir, ext) = match kind {
+            FetchKind::Thumb => ("tdrive-rs/thumbs", "bin"),
+            FetchKind::Preview => ("tdrive-rs/previews", "img"),
         };
         let dir = dirs::cache_dir()
             .unwrap_or_else(|| std::env::temp_dir().join("tdrive-rs-staging"))
-            .join("tdrive-rs/previews");
+            .join(dir);
         std::fs::create_dir_all(&dir)?;
-        let out = dir.join(format!("{body_id}.img"));
+        let out = dir.join(format!("{body_id}.{ext}"));
         if out.exists() {
-            self.emit(Event::PreviewReady {
-                file_id: file_id.to_string(),
-                path: out,
-            });
+            self.emit(kind.ready(file_id, out));
             return Ok(());
         }
         if encrypted && self.master_key.lock().unwrap().is_none() {
-            return Err(anyhow!("unlock the drive to view encrypted files"));
+            return match kind {
+                FetchKind::Thumb => Ok(()),
+                FetchKind::Preview => Err(anyhow!("unlock the drive to view encrypted files")),
+            };
         }
         let client = self.client()?.clone();
         let peer = self.channel()?;
@@ -278,14 +225,13 @@ impl Worker {
                     .await
                     .ok()?;
                 let media = msgs.into_iter().flatten().next()?.media()?;
-                let staging = dir.join(format!("{body_id}.part"));
                 if encrypted {
-                    let key = key?;
+                    let staging = dir.join(format!("{body_id}.part"));
                     client.download_media(&media, &staging).await.ok()?;
                     let st = staging.clone();
                     let o = out.clone();
                     tokio::task::spawn_blocking(move || -> Result<()> {
-                        crypto::decrypt_file(&key, &st, &o)?;
+                        crypto::decrypt_file(&key.ok_or_else(|| anyhow!("locked"))?, &st, &o)?;
                         if is_rendition {
                             strip_tdr1(&o)?;
                         }
@@ -304,9 +250,9 @@ impl Worker {
             .is_some();
             let _ = tx
                 .send(if ok {
-                    Event::PreviewReady { file_id, path: out }
+                    kind.ready(&file_id, out)
                 } else {
-                    Event::PreviewFailed { file_id }
+                    kind.failed(&file_id)
                 })
                 .await;
         });
@@ -314,7 +260,40 @@ impl Worker {
     }
 }
 
-/// Extract a mid-video frame to a temp JPEG via ffmpeg (TDrive's video
+/// Which rendition surface a fetch targets — picks the source order,
+/// cache dir, and the Ready/Failed events.
+#[derive(Clone, Copy)]
+enum FetchKind {
+    Thumb,
+    Preview,
+}
+
+impl FetchKind {
+    fn ready(&self, file_id: &str, path: std::path::PathBuf) -> Event {
+        match self {
+            Self::Thumb => Event::ThumbnailReady {
+                file_id: file_id.to_string(),
+                path,
+            },
+            Self::Preview => Event::PreviewReady {
+                file_id: file_id.to_string(),
+                path,
+            },
+        }
+    }
+
+    fn failed(&self, file_id: &str) -> Event {
+        match self {
+            Self::Thumb => Event::ThumbnailFailed {
+                file_id: file_id.to_string(),
+            },
+            Self::Preview => Event::PreviewFailed {
+                file_id: file_id.to_string(),
+            },
+        }
+    }
+}
+
 /// thumbnail approach — best-effort, returns None without ffmpeg).
 pub(super) async fn extract_video_frame(source: &PathBuf) -> Option<PathBuf> {
     let out = std::env::temp_dir().join(format!("tdrive-vf-{}.jpg", uuid::Uuid::new_v4()));

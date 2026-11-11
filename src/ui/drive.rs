@@ -19,19 +19,19 @@ impl Root {
         let upload = cx.listener(|this, _: &MouseDownEvent, _, cx| this.pick_upload(cx));
         let backup = cx.listener(|this, _: &MouseDownEvent, _, cx| this.pick_backup(cx));
         let watch = cx.listener(|this, _: &MouseDownEvent, _, cx| {
-            this.modal = Some(Modal::WatchBackup);
+            this.open_modal(Modal::WatchBackup, "", "/path/to/photos", cx);
             cx.notify();
         });
         let mount = cx.listener(|this, _: &MouseDownEvent, _, cx| {
             if this.mount_dir.is_some() {
                 this.send(Command::Unmount);
             } else {
-                this.modal = Some(Modal::Mount);
+                this.open_modal(Modal::Mount, "", "/mnt/tdrive", cx);
             }
             cx.notify();
         });
         let uplim = cx.listener(|this, _: &MouseDownEvent, _, cx| {
-            this.modal = Some(Modal::UploadLimit);
+            this.open_modal(Modal::UploadLimit, "", "3", cx);
             cx.notify();
         });
         let refresh = cx.listener(|this, _: &MouseDownEvent, _, cx| {
@@ -40,7 +40,7 @@ impl Root {
             cx.notify();
         });
         let new_folder = cx.listener(|this, _: &MouseDownEvent, _, cx| {
-            this.modal = Some(Modal::NewFolder);
+            this.open_modal(Modal::NewFolder, "", "folder name", cx);
             cx.notify();
         });
         let back = cx.listener(|this, _: &MouseDownEvent, _, cx| {
@@ -150,8 +150,7 @@ impl Root {
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _, _, cx| {
-                        this.cwd = String::new();
-                        this.selected = None;
+                        this.set_cwd(String::new());
                         cx.notify();
                     }),
                 ),
@@ -169,7 +168,7 @@ impl Root {
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, _, _, cx| {
-                                this.cwd = id.clone();
+                                this.set_cwd(id.clone());
                                 cx.notify();
                             }),
                         ),
@@ -304,9 +303,9 @@ impl Root {
             }
             if !self.trash {
                 let obj = sel_c.clone();
+                let nm2 = name.clone();
                 let rn = cx.listener(move |this, _: &MouseDownEvent, _, cx| {
-                    this.modal = Some(Modal::Rename { obj: obj.clone() });
-                    cx.notify();
+                    this.open_modal(Modal::Rename { obj: obj.clone() }, &nm2, "new name", cx);
                 });
                 let obj2 = sel_c.clone();
                 let mv = cx.listener(move |this, _: &MouseDownEvent, _, cx| {
@@ -678,10 +677,7 @@ impl Root {
     pub(super) fn visible_ids(&self, cx: &App) -> Vec<String> {
         self.current_entries(cx)
             .iter()
-            .map(|e| match e {
-                Entry::Folder(d) => d.id.clone(),
-                Entry::File(f) => f.id.clone(),
-            })
+            .map(|e| e.id().to_string())
             .collect()
     }
 
@@ -704,15 +700,13 @@ impl Root {
         entry: &Entry,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let (id, name, is_folder) = match entry {
-            Entry::Folder(d) => (d.id.clone(), d.name.clone(), true),
-            Entry::File(f) => (f.id.clone(), f.name.clone(), false),
-        };
+        let (id, name, is_folder) = (
+            entry.id().to_string(),
+            entry.name().to_string(),
+            entry.is_folder(),
+        );
         // Ask the worker for this file's rendition once.
-        if !is_folder
-            && self.namespace.renditions.contains_key(&id)
-            && !self.thumb_requested.contains(&id)
-        {
+        if !is_folder && self.namespace.has_rendition(&id) && !self.thumb_requested.contains(&id) {
             self.thumb_requested.insert(id.clone());
             self.send(Command::FetchThumbnail {
                 file_id: id.clone(),

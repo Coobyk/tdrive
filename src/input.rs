@@ -45,6 +45,21 @@ impl TextField {
         self.focus.is_focused(window)
     }
 
+    /// Set both text and placeholder — modal reuse starts each dialog
+    /// fresh instead of leaking the last dialog's value.
+    pub fn reset(
+        &mut self,
+        text: &str,
+        placeholder: impl Into<SharedString>,
+        cx: &mut Context<Self>,
+    ) {
+        self.clear(cx);
+        self.text = text.to_string();
+        self.cursor = text.len();
+        self.placeholder = placeholder.into();
+        cx.notify();
+    }
+
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.text.clear();
         self.cursor = 0;

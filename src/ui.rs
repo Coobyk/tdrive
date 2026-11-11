@@ -331,7 +331,9 @@ impl Root {
                 self.status = format!("opened {}", info.title);
                 if let Some(cfg) = &mut self.config {
                     cfg.last_channel_id = Some(info.id);
-                    let _ = cfg.save();
+                    if let Err(e) = cfg.save() {
+                        self.status = format!("config save failed: {e}");
+                    }
                 }
                 if pending_uploads > 0 {
                     self.send(Command::ResumeUploads);
@@ -558,18 +560,39 @@ impl Root {
             .and_then(|c| c.download_dir.clone())
             .or_else(dirs::download_dir)
             .unwrap_or_else(|| PathBuf::from("."));
-        if let Some(cfg) = &mut self.config {
-            cfg.download_dir = Some(dir.clone());
-            let _ = cfg.save();
-        }
         let task = cx.prompt_for_new_path(&dir, Some(&name));
         let tx = self.tg.clone();
-        cx.spawn(async move |_, _| {
+        cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(dest))) = task.await {
+                // Remember the folder the user actually picked — next
+                // save dialog opens there.
+                let _ = this.update(cx, |this, _| {
+                    if let Some(cfg) = &mut this.config {
+                        cfg.download_dir = dest.parent().map(|p| p.to_path_buf());
+                        if let Err(e) = cfg.save() {
+                            this.status = format!("config save failed: {e}");
+                        }
+                    }
+                });
                 let _ = tx.send(Command::Download { file_id, dest });
             }
         })
         .detach();
+    }
+
+    /// Open a modal with a clean f_name — the shared field otherwise
+    /// leaks the previous dialog's value and placeholder.
+    fn open_modal(
+        &mut self,
+        modal: Modal,
+        prefill: &str,
+        placeholder: impl Into<SharedString>,
+        cx: &mut Context<Self>,
+    ) {
+        self.f_name
+            .update(cx, |f, cx| f.reset(prefill, placeholder, cx));
+        self.modal = Some(modal);
+        cx.notify();
     }
 
     /// Descend/breadcrumb navigation — records history for M4/M5.

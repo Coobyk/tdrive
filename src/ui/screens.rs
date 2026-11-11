@@ -119,7 +119,7 @@ impl Root {
                     .child(button("Sign in", ACCENT, submit))
                     .into_any_element()
             }
-            _ => {
+            Screen::AuthPassword => {
                 let submit =
                     cx.listener(|this, _: &MouseDownEvent, _, cx| this.submit_password(cx));
                 div()
@@ -147,6 +147,9 @@ impl Root {
                     .child(button("Unlock", ACCENT, submit))
                     .into_any_element()
             }
+            // render_auth only runs for auth screens — Setup/Connecting/
+            // Picker/Drive dispatch before this match.
+            _ => unreachable!(),
         };
         self.centered_card(inner)
     }

@@ -16,38 +16,25 @@ impl Worker {
         let peer = self.channel()?;
         let watermark = self.namespace.last_msg_id;
         let mut ns = (*self.namespace).clone();
+        // Incremental when the watermark exists (offset past the last
+        // seen id); a zero watermark means empty-or-unsynced → full scan.
+        let mut iter = client.iter_messages(peer).reverse(true);
         if watermark > 0 {
-            // Incremental: forward-iterate from the last seen message.
-            let mut iter = client
+            iter = client
                 .iter_messages(peer)
                 .offset_id(watermark as i32)
                 .reverse(true);
-            while let Some(msg) = iter.next().await? {
-                if !ns.apply_message(msg.id() as i64, msg.text()) {
-                    if let Some(Media::Document(d)) = msg.media() {
-                        ns.record_unadopted(
-                            msg.id() as i64,
-                            d.name().unwrap_or("unnamed").to_string(),
-                            d.size().unwrap_or(0) as i64,
-                            msg.sender_id().map(|p| p.bare_id_unchecked()).unwrap_or(0),
-                            msg.date().as_second(),
-                        );
-                    }
-                }
-            }
-        } else {
-            let mut iter = client.iter_messages(peer).reverse(true);
-            while let Some(msg) = iter.next().await? {
-                if !ns.apply_message(msg.id() as i64, msg.text()) {
-                    if let Some(Media::Document(d)) = msg.media() {
-                        ns.record_unadopted(
-                            msg.id() as i64,
-                            d.name().unwrap_or("unnamed").to_string(),
-                            d.size().unwrap_or(0) as i64,
-                            msg.sender_id().map(|p| p.bare_id_unchecked()).unwrap_or(0),
-                            msg.date().as_second(),
-                        );
-                    }
+        }
+        while let Some(msg) = iter.next().await? {
+            if !ns.apply_message(msg.id() as i64, msg.text()) {
+                if let Some(Media::Document(d)) = msg.media() {
+                    ns.record_unadopted(
+                        msg.id() as i64,
+                        d.name().unwrap_or("unnamed").to_string(),
+                        d.size().unwrap_or(0) as i64,
+                        msg.sender_id().map(|p| p.bare_id_unchecked()).unwrap_or(0),
+                        msg.date().as_second(),
+                    );
                 }
             }
         }
