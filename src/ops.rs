@@ -227,6 +227,10 @@ pub fn enc_config(vault: &VaultConfig) -> Op {
 /// Write operations arriving over the mounted surfaces (WebDAV + FUSE).
 /// Semantics mirror TDrive's writable mount: mkdir is a folder commit,
 /// delete is a durable hard-delete, move is a CAS relocate.
+/// Largest payload a mount write may carry — dav PUT bodies and FUSE
+/// write buffers share the cap.
+pub const MAX_PUT_BYTES: usize = 512 * 1024 * 1024;
+
 #[derive(Debug)]
 pub enum VfsOp {
     /// Create folder `name` under `parent` (folder id or "").

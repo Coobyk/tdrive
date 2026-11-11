@@ -5,7 +5,7 @@
 //! durable mount-write ops (`fcommit`/`freplace`/`dcommit`/`relocate`/
 //! `harddel`) so other TDrive clients see identical metadata.
 
-use crate::ops::VfsOp;
+use crate::ops::{MAX_PUT_BYTES, VfsOp};
 use crate::project::{Entry, FileEntry, Namespace};
 use crate::remote::Remote;
 use crate::tg::Command;
@@ -37,6 +37,7 @@ pub struct TdFs {
 }
 
 struct PendingWrite {
+    ino: u64,
     parent: String,
     name: String,
     data: Vec<u8>,
@@ -80,6 +81,12 @@ impl InoMap {
     fn pending_take(&mut self, ino: u64) -> Option<(String, String)> {
         self.pending.remove(&ino)
     }
+    /// Bind a committed object onto a synthetic ino.
+    fn commit(&mut self, ino: u64, obj: &str) {
+        self.pending.remove(&ino);
+        self.obj_to_ino.insert(obj.to_string(), ino);
+        self.ino_to_obj.insert(ino, obj.to_string());
+    }
 }
 
 impl TdFs {
@@ -118,6 +125,7 @@ impl TdFs {
     fn commit_pending(&self, fh: u64) -> Result<(), Errno> {
         let p = match self.write_bufs.lock().unwrap().get(&fh) {
             Some(p) if !p.committed => PendingWrite {
+                ino: p.ino,
                 parent: p.parent.clone(),
                 name: p.name.clone(),
                 data: p.data.clone(),
@@ -126,17 +134,32 @@ impl TdFs {
             },
             _ => return Ok(()),
         };
-        let res = self.write_op(match p.obj {
-            Some(obj) => VfsOp::Replace { obj, bytes: p.data },
+        let res = self.write_op(match &p.obj {
+            Some(obj) => VfsOp::Replace {
+                obj: obj.clone(),
+                bytes: p.data.clone(),
+            },
             None => VfsOp::Put {
-                parent: p.parent,
-                name: p.name,
-                bytes: p.data,
+                parent: p.parent.clone(),
+                name: p.name.clone(),
+                bytes: p.data.clone(),
             },
         });
         // Only mark committed after the op succeeded — otherwise later
         // flushes would skip retrying and the data would be lost.
         if res.is_ok() {
+            // Rebind the synthetic ino onto the committed object, so
+            // subsequent lookups see the real file, not a phantom.
+            let obj_id =
+                p.obj
+                    .clone()
+                    .or_else(|| match self.snapshot().find_child(&p.parent, &p.name) {
+                        Some(crate::project::EntryRef::File(f)) => Some(f.id.clone()),
+                        _ => None,
+                    });
+            if let Some(obj) = obj_id {
+                self.inos.lock().unwrap().commit(p.ino, &obj);
+            }
             if let Some(p) = self.write_bufs.lock().unwrap().get_mut(&fh) {
                 p.committed = true;
             }
@@ -162,18 +185,25 @@ impl TdFs {
         self.inos.lock().unwrap().obj(ino).map(str::to_string)
     }
 
-    fn dir_attr(&self, ino: u64, ts: i64) -> FileAttr {
+    fn attr(&self, ino: u64, kind: FileType, size: u64, ts: i64) -> FileAttr {
+        let t = time(ts);
         FileAttr {
             ino: INodeNo(ino),
-            size: 0,
-            blocks: 0,
-            atime: time(ts),
-            mtime: time(ts),
-            ctime: time(ts),
-            crtime: time(ts),
-            kind: FileType::Directory,
-            perm: 0o555,
-            nlink: 2,
+            size,
+            blocks: (size + 511) / 512,
+            atime: t,
+            mtime: t,
+            ctime: t,
+            crtime: t,
+            kind,
+            perm: match kind {
+                FileType::Directory => 0o555,
+                _ => 0o444,
+            },
+            nlink: match kind {
+                FileType::Directory => 2,
+                _ => 1,
+            },
             uid: self.uid,
             gid: self.gid,
             rdev: 0,
@@ -182,49 +212,45 @@ impl TdFs {
         }
     }
 
+    fn dir_attr(&self, ino: u64, ts: i64) -> FileAttr {
+        self.attr(ino, FileType::Directory, 0, ts)
+    }
+
     fn file_attr(&self, ino: u64, f: &FileEntry) -> FileAttr {
-        let size = if f.encrypted {
-            f.plaintext_size
-        } else {
-            f.size
-        };
-        FileAttr {
-            ino: INodeNo(ino),
-            size: size.max(0) as u64,
-            blocks: (size.max(0) as u64 + 511) / 512,
-            atime: time(f.upload_time),
-            mtime: time(f.upload_time),
-            ctime: time(f.upload_time),
-            crtime: time(f.upload_time),
-            kind: FileType::RegularFile,
-            perm: 0o444,
-            nlink: 1,
-            uid: self.uid,
-            gid: self.gid,
-            rdev: 0,
-            blksize: 4096,
-            flags: 0,
-        }
+        self.attr(
+            ino,
+            FileType::RegularFile,
+            f.logical_size().max(0) as u64,
+            f.upload_time,
+        )
+    }
+
+    /// Attr for a node minted by mknod/create before its commit —
+    /// reported as a fresh empty regular file.
+    fn pending_attr(&self, ino: u64) -> FileAttr {
+        let mut a = self.attr(ino, FileType::RegularFile, 0, 0);
+        a.perm = 0o644;
+        a.atime = SystemTime::now();
+        a.mtime = SystemTime::now();
+        a.ctime = SystemTime::now();
+        a.crtime = SystemTime::now();
+        a
     }
 
     /// Resolve (parent dir id, entry name) to (ino, attr).
     fn resolve_name(&self, parent: &str, name: &OsStr) -> Option<(u64, FileAttr)> {
         let name = name.to_str()?;
         let ns = self.snapshot();
-        for e in ns.list(parent) {
-            match e {
-                Entry::Folder(d) if d.name == name => {
-                    let ino = self.inos.lock().unwrap().ino(&d.id);
-                    return Some((ino, self.dir_attr(ino, 0)));
-                }
-                Entry::File(f) if f.name == name => {
-                    let ino = self.inos.lock().unwrap().ino(&f.id);
-                    return Some((ino, self.file_attr(ino, &f)));
-                }
-                _ => {}
+        match ns.find_child(parent, name)? {
+            crate::project::EntryRef::Folder(d) => {
+                let ino = self.inos.lock().unwrap().ino(&d.id);
+                Some((ino, self.dir_attr(ino, 0)))
+            }
+            crate::project::EntryRef::File(f) => {
+                let ino = self.inos.lock().unwrap().ino(&f.id);
+                Some((ino, self.file_attr(ino, f)))
             }
         }
-        None
     }
 
     fn file_for_ino(&self, ino: u64) -> Option<FileEntry> {
@@ -299,26 +325,7 @@ impl Filesystem for TdFs {
                 // Pending mknod/create inos aren't committed to the
                 // namespace yet — report them as fresh empty files.
                 if self.inos.lock().unwrap().pending.contains_key(&ino.0) {
-                    reply.attr(
-                        &TTL,
-                        &FileAttr {
-                            ino,
-                            size: 0,
-                            blocks: 0,
-                            atime: SystemTime::now(),
-                            mtime: SystemTime::now(),
-                            ctime: SystemTime::now(),
-                            crtime: SystemTime::now(),
-                            kind: FileType::RegularFile,
-                            perm: 0o644,
-                            nlink: 1,
-                            uid: 0,
-                            gid: 0,
-                            rdev: 0,
-                            blksize: 4096,
-                            flags: 0,
-                        },
-                    );
+                    reply.attr(&TTL, &self.pending_attr(ino.0));
                 } else {
                     reply.error(Errno::ENOENT);
                 }
@@ -340,10 +347,10 @@ impl Filesystem for TdFs {
             fuser::OpenAccMode::O_WRONLY | fuser::OpenAccMode::O_RDWR => {
                 // Either an existing file (replace-write) or a node created
                 // via mknod that hasn't been opened yet.
-                let (parent, name, obj) = match self.file_for_ino(ino.0) {
-                    Some(f) => (f.parent.clone(), f.name.clone(), Some(f.id.clone())),
+                let (ino, parent, name, obj) = match self.file_for_ino(ino.0) {
+                    Some(f) => (ino.0, f.parent.clone(), f.name.clone(), Some(f.id.clone())),
                     None => match self.inos.lock().unwrap().pending_take(ino.0) {
-                        Some((dir, name)) => (dir, name, None),
+                        Some((dir, name)) => (ino.0, dir, name, None),
                         None => {
                             reply.error(Errno::ENOENT);
                             return;
@@ -354,6 +361,7 @@ impl Filesystem for TdFs {
                 self.write_bufs.lock().unwrap().insert(
                     fh,
                     PendingWrite {
+                        ino,
                         parent,
                         name,
                         data: Vec::new(),
@@ -390,27 +398,7 @@ impl Filesystem for TdFs {
             return;
         }
         let ino = self.inos.lock().unwrap().pending_create(dir, name);
-        reply.entry(
-            &TTL,
-            &FileAttr {
-                ino: INodeNo(ino),
-                size: 0,
-                blocks: 0,
-                atime: SystemTime::now(),
-                mtime: SystemTime::now(),
-                ctime: SystemTime::now(),
-                crtime: SystemTime::now(),
-                kind: FileType::RegularFile,
-                perm: 0o644,
-                nlink: 1,
-                uid: self.uid,
-                gid: self.gid,
-                rdev: 0,
-                blksize: 4096,
-                flags: 0,
-            },
-            Generation(0),
-        );
+        reply.entry(&TTL, &self.pending_attr(ino), Generation(0));
     }
 
     fn create(
@@ -435,10 +423,16 @@ impl Filesystem for TdFs {
             reply.error(Errno::EEXIST);
             return;
         }
+        let ino = self
+            .inos
+            .lock()
+            .unwrap()
+            .pending_create(dir.clone(), name.clone());
         let fh = self.take_fh();
         self.write_bufs.lock().unwrap().insert(
             fh,
             PendingWrite {
+                ino,
                 parent: dir,
                 name,
                 data: Vec::new(),
@@ -446,24 +440,7 @@ impl Filesystem for TdFs {
                 committed: false,
             },
         );
-        // Synthetic attr — the real entry appears once the buffer commits.
-        let attr = FileAttr {
-            ino: INodeNo(1 << 60 | fh),
-            size: 0,
-            blocks: 0,
-            atime: SystemTime::now(),
-            mtime: SystemTime::now(),
-            ctime: SystemTime::now(),
-            crtime: SystemTime::now(),
-            kind: FileType::RegularFile,
-            perm: 0o644,
-            nlink: 1,
-            uid: self.uid,
-            gid: self.gid,
-            rdev: 0,
-            blksize: 4096,
-            flags: 0,
-        };
+        let attr = self.pending_attr(ino);
         reply.created(
             &TTL,
             &attr,
@@ -494,7 +471,7 @@ impl Filesystem for TdFs {
         let end = off + data.len();
         // Writes are buffered whole — a sparse write at a huge offset
         // would otherwise allocate unbounded memory.
-        if end > 512 * 1024 * 1024 {
+        if end > MAX_PUT_BYTES {
             reply.error(Errno::EFBIG);
             return;
         }
@@ -556,11 +533,7 @@ impl Filesystem for TdFs {
         }) {
             Ok(()) => {
                 let ns = self.snapshot();
-                if let Some(d) = ns
-                    .folders
-                    .values()
-                    .find(|d| !d.tombstoned && d.parent == dir && d.name == name)
-                {
+                if let Some(crate::project::EntryRef::Folder(d)) = ns.find_child(&dir, &name) {
                     let ino = self.inos.lock().unwrap().ino(&d.id);
                     reply.entry(&TTL, &self.dir_attr(ino, 0), Generation(0));
                 } else {

@@ -5,17 +5,13 @@
 //! writable-mount contract TDrive exposes.
 
 use crate::http::{self, Range};
-use crate::ops::VfsOp;
+use crate::ops::{MAX_PUT_BYTES, VfsOp};
 use crate::project::{Entry, EntryRef, FileEntry};
 use crate::remote::Remote;
 use crate::tg::Command;
 use anyhow::Result;
 use std::sync::OnceLock;
 use tokio::net::TcpListener;
-
-/// Largest PUT body the mount accepts — shared cap with the FUSE write
-/// buffer (same concern: one request carries whole-file bytes).
-pub const MAX_PUT_BYTES: usize = 512 * 1024 * 1024;
 
 static PORT: OnceLock<u16> = OnceLock::new();
 
