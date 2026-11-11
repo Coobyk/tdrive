@@ -15,7 +15,7 @@ impl Worker {
             .cloned()
             .collect();
         for job in jobs {
-            let id = format!("up:{}", job.upload_uuid);
+            let id = upload_transfer_id(&job.upload_uuid);
             let name = job.name.clone();
             if let Err(e) = self.spawn_cancellable(&id, &name, move |ctx| async move {
                 Self::run_upload_task(&ctx, job).await
@@ -55,7 +55,7 @@ impl Worker {
         }
 
         let res: Result<()> = if size <= MAX_PART_BYTES {
-            let id = format!("up:{name}");
+            let id = upload_transfer_id(&name);
             let name2 = name.clone();
             self.spawn_cancellable(&id, &name, move |ctx| async move {
                 Self::upload_single_task(
@@ -108,7 +108,7 @@ impl Worker {
                 self.journal.uploads.push(job.clone());
                 self.save_journal();
             }
-            let id = format!("up:{}", job.upload_uuid);
+            let id = upload_transfer_id(&job.upload_uuid);
             let name = job.name.clone();
             self.spawn_cancellable(&id, &name, move |ctx| async move {
                 Self::run_upload_task(&ctx, job).await
@@ -240,7 +240,7 @@ impl Worker {
         encrypted: bool,
         plaintext_size: i64,
     ) -> Result<()> {
-        let id = format!("up:{}", name);
+        let id = upload_transfer_id(&name);
         let permit = ctx.upload_sem.acquire().await;
         ctx.update(&id, &name, 0, size, TransferState::Active);
         // Encrypt to staged ciphertext first when the vault is unlocked.
@@ -300,7 +300,7 @@ impl Worker {
         let file = tokio::fs::File::open(path).await?;
         let progress = ProgressReader::new(file, {
             let tx = ctx.tx.clone();
-            let id = format!("up:{name}");
+            let id = upload_transfer_id(&name);
             let label = name.to_string();
             move |sent| {
                 let _ = tx.try_send(Event::Transfer(TransferUpdate {
@@ -375,7 +375,7 @@ impl Worker {
         }
 
         let token = &ctx.token;
-        let transfer_id = format!("up:{}", job.upload_uuid);
+        let transfer_id = upload_transfer_id(&job.upload_uuid);
         let already: i64 = job
             .parts
             .iter()
@@ -480,7 +480,7 @@ impl Worker {
         let take = limited.take(size as u64);
         let progress = ProgressReader::new(take, {
             let tx = ctx.tx.clone();
-            let id = format!("up:{}", job.upload_uuid);
+            let id = upload_transfer_id(&job.upload_uuid);
             let label = job.name.clone();
             let total = job.stored_size;
             let base: i64 = job

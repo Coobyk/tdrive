@@ -695,10 +695,14 @@ impl Worker {
             }
             Command::TransferDone { id } => {
                 self.cancels.remove(&id);
-                if let Some(uuid) = id.strip_prefix("up:") {
-                    self.journal.uploads.retain(|j| j.upload_uuid != uuid);
-                } else if let Some(fid) = id.strip_prefix("dl:") {
-                    self.journal.downloads.retain(|j| j.file_id != fid);
+                match parse_transfer_id(&id) {
+                    Some(TransferTarget::Upload(uuid)) => {
+                        self.journal.uploads.retain(|j| j.upload_uuid != uuid)
+                    }
+                    Some(TransferTarget::Download(fid)) => {
+                        self.journal.downloads.retain(|j| j.file_id != fid)
+                    }
+                    None => {}
                 }
                 self.save_journal();
                 Ok(())
@@ -737,6 +741,9 @@ impl Worker {
         })
     }
 
+    /// Which job family a transfer id refers to — `up:` vs `dl:` is the
+    /// whole convention, and it only exists here.
+    // (free fns at module bottom)
     /// Mint the cancellation token, register it under `id`, and spawn —
     /// every cancellable transfer goes through here so pause/cancel can
     /// always find the token the task actually checks.
@@ -835,7 +842,7 @@ impl Worker {
             // is_cancelled() fires instantly and the job can never resume.
             token.cancel();
         }
-        if id.strip_prefix("dl:").is_some() {
+        if let Some(TransferTarget::Download(_)) = parse_transfer_id(id) {
             self.paused_downloads.insert(id.to_string());
         }
         self.emit(Event::Transfer(TransferUpdate {
@@ -849,42 +856,41 @@ impl Worker {
     }
 
     async fn resume(&mut self, id: &str) -> Result<()> {
-        if id.starts_with("up:") {
-            return self.resume_uploads().await;
-        }
-        if self.paused_downloads.remove(id) {
-            let file_id = id.strip_prefix("dl:").unwrap_or_default().to_string();
-            // Reuse the existing journal row — a fresh DownloadJob would
-            // reset confirmed_bytes and re-download from scratch.
-            let job = self
-                .journal
-                .downloads
-                .iter()
-                .find(|j| j.file_id == file_id)
-                .cloned();
-            if let Some(job) = job {
-                let token = CancellationToken::new();
-                self.cancels.insert(id.to_string(), token.clone());
-                let ctx = self.transfer_ctx(token)?;
+        match parse_transfer_id(id) {
+            Some(TransferTarget::Upload(_)) => self.resume_uploads().await,
+            Some(TransferTarget::Download(file_id)) => {
+                if !self.paused_downloads.remove(id) {
+                    return Err(anyhow!("nothing to resume"));
+                }
+                // Reuse the journal row — a fresh DownloadJob would reset
+                // confirmed_bytes and re-download from scratch.
+                let Some(job) = self
+                    .journal
+                    .downloads
+                    .iter()
+                    .find(|j| j.file_id == file_id)
+                    .cloned()
+                else {
+                    return Err(anyhow!("nothing to resume"));
+                };
                 let name = job.name.clone();
-                self.spawn_transfer(id, &name, async move {
+                self.spawn_cancellable(id, &name, move |ctx| async move {
                     Self::run_download_task(&ctx, job).await
-                });
-                return Ok(());
+                })
             }
+            None => Err(anyhow!("nothing to resume")),
         }
-        Err(anyhow!("nothing to resume"))
     }
 
     fn cancel(&mut self, id: &str) -> Result<()> {
         if let Some(token) = self.cancels.get(id) {
             token.cancel();
         }
-        if let Some(uuid) = id.strip_prefix("up:") {
+        if let Some(TransferTarget::Upload(uuid)) = parse_transfer_id(id) {
             self.journal.uploads.retain(|j| j.upload_uuid != uuid);
             self.save_journal();
         }
-        if let Some(fid) = id.strip_prefix("dl:") {
+        if let Some(TransferTarget::Download(fid)) = parse_transfer_id(id) {
             let dest = self
                 .journal
                 .downloads
@@ -956,4 +962,27 @@ impl<R: AsyncRead + Unpin> ProgressReader<R> {
             on_progress: Box::new(on_progress),
         }
     }
+}
+
+/// `up:`/`dl:` transfer ids — built and parsed only through these.
+pub(super) fn upload_transfer_id(key: &str) -> String {
+    format!("up:{key}")
+}
+
+pub(super) fn download_transfer_id(file_id: &str) -> String {
+    format!("dl:{file_id}")
+}
+
+enum TransferTarget {
+    Upload(String),
+    Download(String),
+}
+
+fn parse_transfer_id(id: &str) -> Option<TransferTarget> {
+    id.strip_prefix("up:")
+        .map(|k| TransferTarget::Upload(k.to_string()))
+        .or_else(|| {
+            id.strip_prefix("dl:")
+                .map(|k| TransferTarget::Download(k.to_string()))
+        })
 }

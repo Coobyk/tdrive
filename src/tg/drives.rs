@@ -62,30 +62,23 @@ impl Worker {
                 ttl_period: None,
             })
             .await?;
-        use grammers_client::tl::enums::Updates;
-        let chats = match updates {
-            Updates::Combined(u) => u.chats,
-            Updates::Updates(u) => u.chats,
-            _ => return Err(anyhow!("unexpected updates response")),
-        };
-        for chat in chats {
-            if let grammers_client::tl::enums::Chat::Channel(c) = chat {
-                self.open_channel(
-                    c.id,
-                    c.access_hash.unwrap_or(0),
-                    c.title,
-                    if shared {
-                        DriveKind::Shared
-                    } else {
-                        DriveKind::Personal
-                    },
-                )
-                .await?;
+        let chats = chats_from(updates)?;
+        for c in chats {
+            self.open_channel(
+                c.id,
+                c.access_hash.unwrap_or(0),
+                c.title,
                 if shared {
-                    self.export_invite().await?;
-                }
-                return Ok(());
+                    DriveKind::Shared
+                } else {
+                    DriveKind::Personal
+                },
+            )
+            .await?;
+            if shared {
+                self.export_invite().await?;
             }
+            return Ok(());
         }
         Err(anyhow!("channel not found in create response"))
     }
@@ -170,7 +163,7 @@ impl Worker {
             .cloned()
             .collect();
         for job in pending_downloads {
-            let id = format!("dl:{}", job.file_id);
+            let id = download_transfer_id(&job.file_id);
             let name = job.name.clone();
             if let Err(e) = self.spawn_cancellable(&id, &name, move |ctx| async move {
                 Self::run_download_task(&ctx, job).await
@@ -202,7 +195,7 @@ impl Worker {
                 &grammers_client::tl::functions::messages::ImportChatInvite { hash: hash.clone() },
             )
             .await;
-        use grammers_client::tl::enums::{Updates, messages::ChatInviteJoinResult};
+        use grammers_client::tl::enums::messages::ChatInviteJoinResult;
         let ok = match result {
             Ok(ChatInviteJoinResult::Ok(ok)) => ok,
             Err(e) if format!("{e}").contains("INVITE_REQUEST_SENT") => {
@@ -251,28 +244,41 @@ impl Worker {
             }
             _ => return Err(anyhow!("invite requires an interactive join")),
         };
-        let chats = match ok.updates {
-            Updates::Combined(u) => u.chats,
-            Updates::Updates(u) => u.chats,
-            _ => return Err(anyhow!("unexpected updates response")),
-        };
-        for chat in chats {
-            if let grammers_client::tl::enums::Chat::Channel(c) = chat {
-                self.open_channel(
-                    c.id,
-                    c.access_hash.unwrap_or(0),
-                    c.title,
-                    if c.megagroup {
-                        DriveKind::Shared
-                    } else {
-                        DriveKind::Personal
-                    },
-                )
-                .await?;
-                self.list_channels().await?;
-                return Ok(());
-            }
+        for c in chats_from(ok.updates)? {
+            self.open_channel(
+                c.id,
+                c.access_hash.unwrap_or(0),
+                c.title,
+                if c.megagroup {
+                    DriveKind::Shared
+                } else {
+                    DriveKind::Personal
+                },
+            )
+            .await?;
+            self.list_channels().await?;
+            return Ok(());
         }
         Err(anyhow!("invite did not resolve to a channel"))
     }
+}
+
+/// Pull the channel list out of an updates envelope and keep only real
+/// channels — both create and import land the drive the same way.
+fn chats_from(
+    updates: grammers_client::tl::enums::Updates,
+) -> Result<Vec<grammers_client::tl::types::Channel>> {
+    use grammers_client::tl::enums::{Chat, Updates};
+    let chats = match updates {
+        Updates::Combined(u) => u.chats,
+        Updates::Updates(u) => u.chats,
+        _ => anyhow::bail!("unexpected updates response"),
+    };
+    Ok(chats
+        .into_iter()
+        .filter_map(|c| match c {
+            Chat::Channel(c) => Some(c),
+            _ => None,
+        })
+        .collect())
 }

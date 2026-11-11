@@ -43,7 +43,7 @@ impl Worker {
             confirmed_bytes: 0,
             encrypted: file.encrypted,
         };
-        let id = format!("dl:{}", job.file_id);
+        let id = download_transfer_id(&job.file_id);
         self.journal.downloads.push(job.clone());
         self.save_journal();
         let name = job.name.clone();
@@ -58,7 +58,7 @@ impl Worker {
     pub(super) async fn run_download_task(ctx: &TransferCtx, job: DownloadJob) -> Result<()> {
         let client = ctx.remote.client.clone();
         let peer = ctx.peer;
-        let transfer_id = format!("dl:{}", job.file_id);
+        let transfer_id = download_transfer_id(&job.file_id);
         ctx.update(
             &transfer_id,
             &job.name,
