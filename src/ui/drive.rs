@@ -396,6 +396,7 @@ impl Root {
                         .text_color(rgb(DIM))
                         .child(format!("Transfers · {active_count} active · {total} total")),
                 )
+                .child(div().flex_1())
                 .child(if total > limit {
                     div()
                         .id("transfers-toggle")
