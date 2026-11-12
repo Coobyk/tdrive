@@ -2,7 +2,7 @@
 //! the app is single-window, so the current window's appearance is
 //! the theme.
 
-use gpui::{Hsla, WindowAppearance, hsla, rgba};
+use gpui::{Hsla, WindowAppearance, hsla, rgb, rgba};
 
 #[derive(Clone, Copy)]
 pub(crate) struct Theme {
@@ -32,7 +32,7 @@ pub(crate) struct Theme {
 }
 
 fn c(v: u32) -> Hsla {
-    rgba(v).into()
+    rgb(v).into()
 }
 
 /// One Dark — the palette the app shipped with.
