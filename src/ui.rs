@@ -55,6 +55,8 @@ enum Modal {
     Adopt,
     WatchBackup,
     Mount,
+    /// In-app file/folder picker — state lives on `pick`.
+    Pick,
     /// Review picked upload items — removable list + files/folder/7z
     /// mode. The plan lives on `upload_plan`.
     UploadOpts,
@@ -96,6 +98,76 @@ enum PlanMode {
 struct UploadPlan {
     items: Vec<UploadPick>,
     mode: PlanMode,
+}
+
+/// One row in the in-app picker — dirs first, alpha within each group.
+struct PickEntry {
+    path: PathBuf,
+    name: SharedString,
+    is_dir: bool,
+    size: u64,
+    children: Option<usize>,
+}
+
+/// In-app file/folder picker. No Linux portal dialog offers a mixed
+/// "files AND folders" selection mode, which is what the upload flow
+/// needs — so the app provides its own.
+struct PickState {
+    cwd: PathBuf,
+    sel: std::collections::BTreeSet<PathBuf>,
+    entries: Vec<PickEntry>,
+    show_hidden: bool,
+    err: Option<SharedString>,
+}
+
+impl PickState {
+    fn load(cwd: PathBuf) -> Self {
+        let mut st = PickState {
+            cwd,
+            sel: Default::default(),
+            entries: Vec::new(),
+            show_hidden: false,
+            err: None,
+        };
+        st.refresh();
+        st
+    }
+
+    /// Reload `entries`/`err` for `cwd` — keeps `sel` across nav.
+    fn refresh(&mut self) {
+        self.entries.clear();
+        self.err = None;
+        match std::fs::read_dir(&self.cwd) {
+            Ok(rd) => {
+                for e in rd.flatten() {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    if !self.show_hidden && name.starts_with('.') {
+                        continue;
+                    }
+                    let path = e.path();
+                    let md = e.metadata().ok();
+                    let is_dir = md.as_ref().is_some_and(|m| m.is_dir());
+                    self.entries.push(PickEntry {
+                        children: if is_dir {
+                            std::fs::read_dir(&path).ok().map(|d| d.count())
+                        } else {
+                            None
+                        },
+                        size: md.map(|m| m.len()).unwrap_or(0),
+                        name: name.into(),
+                        is_dir,
+                        path,
+                    });
+                }
+                self.entries.sort_by(|a, b| {
+                    b.is_dir
+                        .cmp(&a.is_dir)
+                        .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+                });
+            }
+            Err(e) => self.err = Some(format!("{e}").into()),
+        }
+    }
 }
 
 /// Rubber-band selection state — corners live in file-list content
@@ -177,6 +249,10 @@ pub struct Root {
     clip: Option<Clip>,
     /// Picked paths awaiting the upload-review modal's verdict.
     upload_plan: Option<UploadPlan>,
+    /// In-app picker state while `Modal::Pick` is open.
+    pick: Option<PickState>,
+    /// Last picker location — reopen where the user left off.
+    last_pick_dir: Option<PathBuf>,
     /// Left press on an already-selected row, armed to become a
     /// drag-move once the pointer travels past the threshold.
     pending_move: Option<(String, Point<Pixels>)>,
@@ -283,6 +359,8 @@ impl Root {
             empty_menu: None,
             clip: None,
             upload_plan: None,
+            pick: None,
+            last_pick_dir: None,
             pending_move: None,
             drag_moving: false,
             drop_hover: None,
@@ -655,30 +733,41 @@ impl Root {
         self.send(Command::CreateChannel { title });
     }
 
-    /// The pickers only differ in what they let you select — both land
-    /// in the same upload-review modal afterwards.
+    /// One picker for files and folders — its selection feeds the
+    /// upload-review modal, which sorts out the shape.
     fn pick_upload(&mut self, cx: &mut Context<Self>) {
-        // TDRIVE_UPLOAD_DEBUG="/a/b:/c/d" skips the portal picker —
-        // headless boxes have no file dialog.
+        // TDRIVE_UPLOAD_DEBUG="/a/b:/c/d" skips the picker — headless
+        // boxes and scripted tests have no dialogs.
         if let Ok(debug) = std::env::var("TDRIVE_UPLOAD_DEBUG") {
             let paths: Vec<PathBuf> = debug.split(':').map(PathBuf::from).collect();
             self.open_upload_review(paths, cx);
             return;
         }
-        let task = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: true,
-            multiple: true,
-            prompt: Some("Select files or folders to upload".into()),
-        });
-        cx.spawn(async move |this, cx| {
-            if let Ok(Ok(Some(paths))) = task.await {
-                let _ = this.update(cx, |this, cx| {
-                    this.open_upload_review(paths, cx);
-                });
+        let dir = self
+            .last_pick_dir
+            .clone()
+            .or_else(dirs::home_dir)
+            .unwrap_or_else(|| PathBuf::from("/"));
+        self.pick = Some(PickState::load(dir));
+        self.modal = Some(Modal::Pick);
+        cx.notify();
+    }
+
+    fn pick_nav(&mut self, dir: PathBuf, cx: &mut Context<Self>) {
+        if let Some(p) = &mut self.pick {
+            p.cwd = dir;
+            p.refresh();
+        }
+        cx.notify();
+    }
+
+    fn pick_toggle(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if let Some(p) = &mut self.pick {
+            if !p.sel.remove(&path) {
+                p.sel.insert(path);
             }
-        })
-        .detach();
+        }
+        cx.notify();
     }
 
     /// Build the review plan: one row per picked path, dir trees counted
@@ -921,6 +1010,26 @@ impl Root {
                     self.send(Command::SetUploadLimit { n });
                 }
                 self.modal = None;
+            }
+            Some(Modal::Pick) => {
+                if let Some(pick) = self.pick.take() {
+                    // A picked dir already contributes its whole
+                    // subtree — drop selections nested inside another.
+                    let mut paths: Vec<PathBuf> = Vec::new();
+                    for p in &pick.sel {
+                        if !paths.iter().any(|k| p.starts_with(k)) {
+                            paths.push(p.clone());
+                        }
+                    }
+                    if paths.is_empty() {
+                        self.pick = Some(pick);
+                        return;
+                    }
+                    self.last_pick_dir = Some(pick.cwd.clone());
+                    self.modal = None;
+                    self.open_upload_review(paths, cx);
+                    return;
+                }
             }
             Some(Modal::UploadOpts) => {
                 if let Some(plan) = self.upload_plan.take() {
