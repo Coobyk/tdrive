@@ -472,8 +472,8 @@ impl Root {
                         div()
                             .flex()
                             .gap_2()
-                            .child(pill("As files", PlanMode::Files, cx))
-                            .child(pill("As folder", PlanMode::Folder, cx))
+                            .child(pill("Just upload", PlanMode::Files, cx))
+                            .child(pill("New folder", PlanMode::Folder, cx))
                             .child(pill("7z archive", PlanMode::Archive, cx)),
                     );
                 if mode != PlanMode::Files {
@@ -499,7 +499,7 @@ impl Root {
                         div()
                             .text_xs()
                             .text_color(theme().dim)
-                            .child("Files land here — picked folders keep their subfolders."),
+                            .child("Items land here as-is — folders keep their contents."),
                     );
                 }
                 (

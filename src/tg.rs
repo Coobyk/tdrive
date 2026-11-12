@@ -115,9 +115,9 @@ pub enum Command {
         parent: String,
     },
     /// Upload picked files/folders. `wrap = Some(name)` nests
-    /// everything in one new folder; `None` dumps each item — files
-    /// land directly, picked dirs contribute their contents while
-    /// keeping their own subtree.
+    /// everything in one new folder; `None` lands items as-is — files
+    /// land directly, picked dirs become same-named folders keeping
+    /// their subtree.
     UploadItems {
         items: Vec<PathBuf>,
         parent: String,

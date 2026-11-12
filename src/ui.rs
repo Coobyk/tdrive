@@ -87,7 +87,7 @@ struct UploadPick {
 
 #[derive(Clone, Copy, PartialEq)]
 enum PlanMode {
-    /// Dump into cwd — picked dirs contribute contents with subtrees.
+    /// Items land in cwd as-is — dirs become same-named folders.
     Files,
     /// Everything nested under one new named folder.
     Folder,
@@ -771,8 +771,7 @@ impl Root {
     }
 
     /// Build the review plan: one row per picked path, dir trees counted
-    /// once. Default mode mirrors the likely intent — any dir in the
-    /// set means "as folder", files-only means "as files".
+    /// once. Default is "just upload" — items land as-is.
     fn open_upload_review(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
         let mut items = Vec::new();
         for path in paths {
@@ -797,11 +796,7 @@ impl Root {
         } else {
             "upload".to_string()
         };
-        let mode = if items.iter().any(|i| i.dir) {
-            PlanMode::Folder
-        } else {
-            PlanMode::Files
-        };
+        let mode = PlanMode::Files;
         self.upload_plan = Some(UploadPlan { items, mode });
         self.open_modal(Modal::UploadOpts, &default_name, "name", cx);
     }

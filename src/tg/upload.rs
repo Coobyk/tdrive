@@ -145,9 +145,9 @@ impl Worker {
     /// by uuid so landing before a mkdir is self-healing. mkdir ops send
     /// concurrently (bounded) so a deep tree doesn't trickle.
     ///
-    /// `wrap` nests everything under one new folder. Without it each
-    /// picked dir contributes its *contents* (not itself) — the subtree
-    /// structure below it still maps to real folders.
+    /// `wrap` nests all picked items under one new folder. Every picked
+    /// item lands as itself either way — a file as a file, a dir as a
+    /// same-named folder whose subtree maps to real folders.
     pub(super) async fn upload_items_task(
         ctx: &TransferCtx,
         items: Vec<PathBuf>,
@@ -180,7 +180,15 @@ impl Worker {
         let mut queue = Vec::new();
         for item in items {
             if item.is_dir() {
-                queue.push((item, top.clone()));
+                let obj = wire::new_folder_id();
+                push_mkdir(
+                    obj.clone(),
+                    top.clone(),
+                    item.file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "folder".into()),
+                );
+                queue.push((item, obj));
             } else if item.is_file() {
                 ctx.journal(Command::Upload {
                     path: item,
