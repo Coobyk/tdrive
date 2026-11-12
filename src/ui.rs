@@ -173,6 +173,8 @@ pub struct Root {
     tools_menu: Option<Point<Pixels>>,
     /// Empty-space right-click menu (upload/new-folder/paste).
     empty_menu: Option<Point<Pixels>>,
+    /// The Upload button's pick-type dropdown.
+    upload_menu: Option<Point<Pixels>>,
     /// Internal clipboard for ctrl+c/x + Paste — cut pastes as moves.
     clip: Option<Clip>,
     /// Picked paths awaiting the upload-review modal's verdict.
@@ -281,6 +283,7 @@ impl Root {
             context_menu: None,
             tools_menu: None,
             empty_menu: None,
+            upload_menu: None,
             clip: None,
             upload_plan: None,
             pending_move: None,
@@ -802,6 +805,7 @@ impl Root {
             self.context_menu = None;
             self.tools_menu = None;
             self.empty_menu = None;
+            self.upload_menu = None;
             self.pending_move = None;
             self.drag_moving = false;
             self.drop_hover = None;

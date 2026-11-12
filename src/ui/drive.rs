@@ -268,6 +268,7 @@ impl Root {
 
     fn fire_menu_act(&mut self, act: MenuAct, cx: &mut Context<Self>) {
         self.empty_menu = None;
+        self.upload_menu = None;
         match act {
             MenuAct::Sel(a) => self.fire_sel_act(a, cx),
             MenuAct::Tool(t) => self.fire_tool(t, cx),
@@ -649,11 +650,22 @@ impl Root {
             .map(|c| c.title.clone())
             .unwrap_or_default();
 
-        // Action listeners — file ops are toolbar buttons; the rarer
-        // drive-level ops live behind the Tools dropdown (fire_tool).
-        let upload = cx.listener(|this, _: &MouseDownEvent, _, cx| this.pick_upload(cx));
-        let upload_dir =
-            cx.listener(|this, _: &MouseDownEvent, _, cx| this.pick_upload_dirs(cx));
+        // Action listeners — Upload opens a pick-type dropdown; the
+        // rarer drive-level ops live behind the Tools menu (fire_tool).
+        // stop_propagation or the window-level dismiss would close the
+        // menu on the same click that opened it.
+        let upload_btn = cx.listener(|this, ev: &MouseDownEvent, _, cx| {
+            this.upload_menu = if this.upload_menu.is_some() {
+                None
+            } else {
+                Some(ev.position)
+            };
+            this.context_menu = None;
+            this.tools_menu = None;
+            this.empty_menu = None;
+            cx.stop_propagation();
+            cx.notify();
+        });
         let refresh = cx.listener(|this, _: &MouseDownEvent, _, cx| {
             this.send(Command::Sync);
             this.status = "syncing…".into();
@@ -679,6 +691,7 @@ impl Root {
             this.tools_menu = None;
             this.context_menu = None;
             this.empty_menu = None;
+            this.upload_menu = None;
             cx.notify();
         });
         // stop_propagation or the window-level dismiss would close the
@@ -819,6 +832,7 @@ impl Root {
                     this.context_menu = None;
                     this.tools_menu = None;
                     this.empty_menu = None;
+                    this.upload_menu = None;
                     this.pending_move = None;
                     this.drag_anchor = None;
                     let at = this.content_pos(ev.position);
@@ -981,8 +995,7 @@ impl Root {
                     ));
                 }
                 actions = actions
-                    .child(tool_button("upload", "Upload", Tone::Primary, upload))
-                    .child(tool_button("folder_up", "Folder", Tone::Ghost, upload_dir))
+                    .child(tool_button("upload", "Upload", Tone::Primary, upload_btn))
                     .child(tool_button("folder_plus", "New folder", Tone::Ghost, new_folder));
             }
             actions = actions
@@ -1014,6 +1027,20 @@ impl Root {
                 items.push(("paste", "Paste".into(), Tone::Ghost, MenuAct::Area(AreaAct::Paste)));
             }
             self.popup_menu(pos, items, false, 0., window, cx)
+        } else if let Some(pos) = self.upload_menu {
+            // The Upload button's dropdown — the review modal merges
+            // both kinds anyway, this only chooses what the native
+            // picker accepts.
+            let items: Vec<(&'static str, String, Tone, MenuAct)> = vec![
+                ("upload", "Choose files…".into(), Tone::Ghost, MenuAct::Area(AreaAct::Upload)),
+                (
+                    "folder_up",
+                    "Choose folder…".into(),
+                    Tone::Ghost,
+                    MenuAct::Area(AreaAct::UploadDir),
+                ),
+            ];
+            self.popup_menu(pos, items, true, 6., window, cx)
         } else {
             div().into_any_element()
         };
@@ -1205,6 +1232,7 @@ impl Root {
                         this.context_menu = None;
                         this.tools_menu = None;
                         this.empty_menu = None;
+                        this.upload_menu = None;
                         cx.notify();
                     }
                 }),
@@ -1284,11 +1312,13 @@ impl Root {
                 if this.context_menu.is_some()
                     || this.tools_menu.is_some()
                     || this.empty_menu.is_some()
+                    || this.upload_menu.is_some()
                 {
                     if e.keystroke.key == "escape" {
                         this.context_menu = None;
                         this.tools_menu = None;
                         this.empty_menu = None;
+                        this.upload_menu = None;
                         cx.notify();
                     }
                     return;
@@ -1667,6 +1697,7 @@ impl Root {
                     this.context_menu = None;
                     this.tools_menu = None;
                     this.empty_menu = None;
+                    this.upload_menu = None;
                     if ev.click_count == 2 && is_folder {
                         this.set_cwd(click_id.clone());
                     } else if !this.trash
@@ -1698,6 +1729,7 @@ impl Root {
                     this.context_menu = Some(ev.position);
                     this.tools_menu = None;
                     this.empty_menu = None;
+                    this.upload_menu = None;
                     cx.notify();
                     cx.stop_propagation();
                 }),
@@ -1819,6 +1851,7 @@ impl Root {
                     this.context_menu = None;
                     this.tools_menu = None;
                     this.empty_menu = None;
+                    this.upload_menu = None;
                     if ev.click_count == 2 && is_folder {
                         this.set_cwd(id_click.clone());
                     } else if ev.click_count == 2 {
@@ -1852,6 +1885,7 @@ impl Root {
                     this.context_menu = Some(ev.position);
                     this.tools_menu = None;
                     this.empty_menu = None;
+                    this.upload_menu = None;
                     cx.notify();
                     cx.stop_propagation();
                 }),
