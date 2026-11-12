@@ -75,6 +75,8 @@ enum ToolAct {
 /// Actions offered by the empty-space right-click menu.
 #[derive(Clone, Copy)]
 enum AreaAct {
+    /// Opens the pick-type dropdown at the context menu's spot.
+    UploadMenu,
     Upload,
     UploadDir,
     NewFolder,
@@ -267,12 +269,18 @@ impl Root {
     }
 
     fn fire_menu_act(&mut self, act: MenuAct, cx: &mut Context<Self>) {
-        self.empty_menu = None;
+        let menu_pos = self.empty_menu.take();
         self.upload_menu = None;
         match act {
             MenuAct::Sel(a) => self.fire_sel_act(a, cx),
             MenuAct::Tool(t) => self.fire_tool(t, cx),
             MenuAct::Area(a) => match a {
+                // Swap menus in place — reads as a submenu.
+                AreaAct::UploadMenu => {
+                    if let Some(pos) = menu_pos {
+                        self.upload_menu = Some((pos, false));
+                    }
+                }
                 AreaAct::Upload => self.pick_upload(cx),
                 AreaAct::UploadDir => self.pick_upload_dirs(cx),
                 AreaAct::NewFolder => {
@@ -658,7 +666,7 @@ impl Root {
             this.upload_menu = if this.upload_menu.is_some() {
                 None
             } else {
-                Some(ev.position)
+                Some((ev.position, true))
             };
             this.context_menu = None;
             this.tools_menu = None;
@@ -1019,18 +1027,16 @@ impl Root {
             self.popup_menu(pos, items, false, 0., window, cx)
         } else if let Some(pos) = self.empty_menu {
             let mut items: Vec<(&'static str, String, Tone, MenuAct)> = vec![
-                ("upload", "Upload files".into(), Tone::Ghost, MenuAct::Area(AreaAct::Upload)),
-                ("folder_up", "Upload folder".into(), Tone::Ghost, MenuAct::Area(AreaAct::UploadDir)),
+                ("upload", "Upload…".into(), Tone::Ghost, MenuAct::Area(AreaAct::UploadMenu)),
                 ("folder_plus", "New folder".into(), Tone::Ghost, MenuAct::Area(AreaAct::NewFolder)),
             ];
             if self.clip.is_some() {
                 items.push(("paste", "Paste".into(), Tone::Ghost, MenuAct::Area(AreaAct::Paste)));
             }
             self.popup_menu(pos, items, false, 0., window, cx)
-        } else if let Some(pos) = self.upload_menu {
-            // The Upload button's dropdown — the review modal merges
-            // both kinds anyway, this only chooses what the native
-            // picker accepts.
+        } else if let Some((pos, right)) = self.upload_menu {
+            // Pick-type dropdown — the review modal merges both kinds
+            // anyway, this only chooses what the native picker accepts.
             let items: Vec<(&'static str, String, Tone, MenuAct)> = vec![
                 ("upload", "Choose files…".into(), Tone::Ghost, MenuAct::Area(AreaAct::Upload)),
                 (
@@ -1040,7 +1046,7 @@ impl Root {
                     MenuAct::Area(AreaAct::UploadDir),
                 ),
             ];
-            self.popup_menu(pos, items, true, 6., window, cx)
+            self.popup_menu(pos, items, right, 6., window, cx)
         } else {
             div().into_any_element()
         };

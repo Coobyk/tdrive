@@ -173,8 +173,9 @@ pub struct Root {
     tools_menu: Option<Point<Pixels>>,
     /// Empty-space right-click menu (upload/new-folder/paste).
     empty_menu: Option<Point<Pixels>>,
-    /// The Upload button's pick-type dropdown.
-    upload_menu: Option<Point<Pixels>>,
+    /// Pick-type dropdown — position + whether it right-aligns (Upload
+    /// button) or opens at the cursor (right-click submenu).
+    upload_menu: Option<(Point<Pixels>, bool)>,
     /// Internal clipboard for ctrl+c/x + Paste — cut pastes as moves.
     clip: Option<Clip>,
     /// Picked paths awaiting the upload-review modal's verdict.
