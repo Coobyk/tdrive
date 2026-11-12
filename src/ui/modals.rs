@@ -1,6 +1,6 @@
 //! Modal dialogs — every confirm routes through `modal_confirm`
 //! so Enter and click can never diverge.
-use super::controls::{Tone, button, human_size, icon_button, icon_sized, tool_button_id};
+use super::controls::{Tone, button, human_size, icon_button, icon_sized, tool_button, tool_button_id};
 use super::*;
 
 impl Root {
@@ -194,185 +194,6 @@ impl Root {
                 }
                 ("Unadopted attachments".into(), list.into_any_element())
             }
-            Modal::Pick => {
-                let Some(pick) = &self.pick else {
-                    return div().into_any_element();
-                };
-                let up_dir = pick.cwd.parent().map(|p| p.to_path_buf());
-                let show_hidden = pick.show_hidden;
-                let n_sel = pick.sel.len();
-
-                // Header: up / current dir / hidden-file toggle.
-                let mut head = div().flex().items_center().gap_2();
-                if let Some(dir) = up_dir {
-                    let up = cx.listener(move |this, _: &MouseDownEvent, _, cx| {
-                        this.pick_nav(dir.clone(), cx);
-                    });
-                    head = head.child(icon_button(
-                        "pick-up".to_string(),
-                        "arrow_up",
-                        theme().ghost,
-                        theme().panel2,
-                        up,
-                    ));
-                }
-                let eye = cx.listener(|this, _: &MouseDownEvent, _, cx| {
-                    if let Some(p) = &mut this.pick {
-                        p.show_hidden = !p.show_hidden;
-                        p.refresh();
-                    }
-                    cx.notify();
-                });
-                head = head
-                    .child(
-                        div()
-                            .flex_1()
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_xs()
-                            .text_color(theme().dim)
-                            .child(pick.cwd.display().to_string()),
-                    )
-                    .child(icon_button(
-                        "pick-hidden".to_string(),
-                        "eye",
-                        if show_hidden { theme().accent } else { theme().dim },
-                        theme().panel2,
-                        eye,
-                    ));
-
-                let mut rows = div()
-                    .id("pick-list")
-                    .flex()
-                    .flex_col()
-                    .h(px(240.))
-                    .overflow_y_scroll()
-                    .border_1()
-                    .border_color(theme().border)
-                    .rounded_md();
-                if let Some(err) = &pick.err {
-                    rows = rows.child(
-                        div()
-                            .p_3()
-                            .text_sm()
-                            .text_color(theme().danger)
-                            .child(err.clone()),
-                    );
-                } else if pick.entries.is_empty() {
-                    rows = rows.child(
-                        div()
-                            .p_3()
-                            .text_sm()
-                            .text_color(theme().dim)
-                            .child("empty folder"),
-                    );
-                }
-                for e in &pick.entries {
-                    let sel = pick.sel.contains(&e.path);
-                    let toggle_path = e.path.clone();
-                    let open_path = e.path.clone();
-                    let meta = if e.is_dir {
-                        e.children
-                            .map(|n| format!("{n} items"))
-                            .unwrap_or_default()
-                    } else {
-                        human_size(e.size as i64)
-                    };
-                    let mut check = div()
-                        .w(px(14.))
-                        .h(px(14.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded_sm()
-                        .border_1()
-                        .border_color(if sel { theme().accent } else { theme().border })
-                        .bg(if sel { theme().accent } else { theme().panel });
-                    if sel {
-                        check = check.child(icon_sized("check", 10., theme().panel));
-                    }
-                    let mut row = div()
-                        .id(SharedString::from(format!("pk-{}", e.path.display())))
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .px_2()
-                        .h(px(30.))
-                        .cursor_pointer()
-                        .hover(|s| s.bg(theme().panel2))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, _: &MouseDownEvent, _, cx| {
-                                this.pick_toggle(toggle_path.clone(), cx);
-                            }),
-                        )
-                        .child(check)
-                        .child(icon_sized(
-                            if e.is_dir { "folder" } else { "file" },
-                            14.,
-                            if e.is_dir { theme().accent } else { theme().file_icon },
-                        ))
-                        .child(
-                            div()
-                                .flex_1()
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .text_sm()
-                                .child(e.name.clone()),
-                        )
-                        .child(div().text_xs().text_color(theme().dim).child(meta));
-                    row = if e.is_dir {
-                        let open = cx.listener(move |this, _: &MouseDownEvent, _, cx| {
-                            cx.stop_propagation();
-                            this.pick_nav(open_path.clone(), cx);
-                        });
-                        row.child(icon_button(
-                            format!("pk-open-{}", e.path.display()),
-                            "chevron_right",
-                            theme().dim,
-                            theme().panel,
-                            open,
-                        ))
-                    } else {
-                        row.child(div().w(px(24.)))
-                    };
-                    rows = rows.child(row);
-                }
-
-                let sel_btn = cx.listener(|this, _: &MouseDownEvent, _, cx| {
-                    this.modal_confirm(cx)
-                });
-                (
-                    "Select items to upload".into(),
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_3()
-                        .child(head)
-                        .child(rows)
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .text_xs()
-                                        .text_color(theme().dim)
-                                        .child(format!(
-                                            "{n_sel} selected — click rows, › opens folders"
-                                        )),
-                                )
-                                .child(button(
-                                    if n_sel == 0 { "Select" } else { "Add" },
-                                    if n_sel == 0 { theme().panel2 } else { theme().accent },
-                                    sel_btn,
-                                )),
-                        )
-                        .into_any_element(),
-                )
-            }
             Modal::UploadOpts => {
                 let Some(plan) = &self.upload_plan else {
                     return div().into_any_element();
@@ -384,6 +205,18 @@ impl Root {
                     .gap_1()
                     .max_h(px(220.))
                     .overflow_y_scroll();
+                if plan.items.is_empty() {
+                    list = list.child(
+                        div()
+                            .p_4()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(theme().border)
+                            .text_sm()
+                            .text_color(theme().dim)
+                            .child("Add files or a folder to begin."),
+                    );
+                }
                 for (i, item) in plan.items.iter().enumerate() {
                     let meta = if item.dir {
                         format!(
@@ -420,9 +253,6 @@ impl Root {
                                 let rm = cx.listener(move |this, _: &MouseDownEvent, _, cx| {
                                     if let Some(p) = &mut this.upload_plan {
                                         p.items.remove(i);
-                                        if p.items.is_empty() {
-                                            this.modal = None;
-                                        }
                                     }
                                     cx.notify();
                                 });
@@ -463,6 +293,16 @@ impl Root {
                         )
                 };
 
+                // "+ Add" opens the matching native dialog and merges
+                // results into this plan — files and folders both
+                // reachable even though one dialog can't hold them.
+                let add_files = cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                    this.add_upload_pick(false, cx);
+                });
+                let add_dirs = cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                    this.add_upload_pick(true, cx);
+                });
+                let empty = plan.items.is_empty();
                 let mut body = div()
                     .flex()
                     .flex_col()
@@ -472,11 +312,27 @@ impl Root {
                         div()
                             .flex()
                             .gap_2()
+                            .child(tool_button("upload", "Add files…", Tone::Ghost, add_files))
+                            .child(tool_button(
+                                "folder_up",
+                                "Add folder…",
+                                Tone::Ghost,
+                                add_dirs,
+                            )),
+                    );
+                if !empty {
+                    body = body.child(
+                        div()
+                            .flex()
+                            .gap_2()
                             .child(pill("Just upload", PlanMode::Files, cx))
                             .child(pill("New folder", PlanMode::Folder, cx))
                             .child(pill("7z archive", PlanMode::Archive, cx)),
                     );
-                if mode != PlanMode::Files {
+                }
+                if empty {
+                    // Nothing to commit yet — pills and confirm stay hidden.
+                } else if mode != PlanMode::Files {
                     body = body.child(
                         div()
                             .flex()
@@ -502,16 +358,13 @@ impl Root {
                             .child("Items land here as-is — folders keep their contents."),
                     );
                 }
-                (
-                    "Upload".into(),
-                    body.child({
-                        let ok = cx.listener(|this, _: &MouseDownEvent, _, cx| {
-                            this.modal_confirm(cx)
-                        });
-                        button("Upload", theme().accent, ok)
-                    })
-                    .into_any_element(),
-                )
+                if !empty {
+                    let ok = cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                        this.modal_confirm(cx)
+                    });
+                    body = body.child(button("Upload", theme().accent, ok));
+                }
+                ("Upload".into(), body.into_any_element())
             }
             Modal::UploadLimit => (
                 "Upload limit".into(),
