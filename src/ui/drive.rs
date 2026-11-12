@@ -251,17 +251,23 @@ impl Root {
                 body = body.child(self.render_row(&e, cx));
             }
         }
+        if self.selected.is_some() {
+            body = body.child(div().h(px(64.)));
+        }
 
-        // Selected actions
+        // Selected actions — floating pill anchored to the bottom of the
+        // file area so selection never reflows the list.
         let mut actions = div()
             .flex()
             .items_center()
             .gap_2()
             .h(px(44.))
             .px_3()
-            .border_b_1()
+            .rounded_lg()
+            .border_1()
             .border_color(theme().border)
-            .bg(theme().panel);
+            .bg(theme().panel)
+            .shadow_lg();
         if let Some(sel) = &self.selected {
             let name = self
                 .namespace
@@ -625,12 +631,27 @@ impl Root {
                     .border_color(theme().border)
                     .child(toolbar),
             )
-            .child(if self.selected.is_some() {
-                actions.into_any_element()
-            } else {
-                div().into_any_element()
-            })
-            .child(body)
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .relative()
+                    .child(body)
+                    .child(if self.selected.is_some() {
+                        div()
+                            .absolute()
+                            .bottom(px(10.))
+                            .left_0()
+                            .w_full()
+                            .flex()
+                            .justify_center()
+                            .child(actions)
+                            .into_any_element()
+                    } else {
+                        div().into_any_element()
+                    }),
+            )
             .child(
                 div()
                     .border_t_1()
