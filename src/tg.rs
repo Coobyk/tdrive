@@ -421,6 +421,8 @@ pub fn spawn() -> Handle {
             let mut worker = Worker {
                 cmd_tx: cmd_tx_worker,
                 client: None,
+                pool_runner: None,
+                api_id: 0,
                 api_hash: String::new(),
                 login_token: None,
                 password_token: None,
@@ -505,6 +507,10 @@ impl TransferCtx {
 
 struct Worker {
     client: Option<Client>,
+    /// Pool runner task — abort on reconnect so two connections never
+    /// share one auth key (Telegram answers AUTH_KEY_DUPLICATED).
+    pool_runner: Option<tokio::task::JoinHandle<()>>,
+    api_id: i32,
     api_hash: String,
     login_token: Option<LoginToken>,
     password_token: Option<PasswordToken>,
