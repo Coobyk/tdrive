@@ -92,8 +92,15 @@ pub(crate) fn theme() -> Theme {
 }
 
 /// Resolve the OS appearance into a palette. Call once at startup and
-/// again on every appearance change.
+/// again on every appearance change. `TDRIVE_APPEARANCE=dark|light`
+/// overrides the OS value — portals on some Linux sessions report the
+/// wrong scheme, and it gives us a way to render-check both palettes.
 pub(crate) fn apply_appearance(appearance: WindowAppearance) {
+    let appearance = match std::env::var("TDRIVE_APPEARANCE").as_deref() {
+        Ok("dark") => WindowAppearance::Dark,
+        Ok("light") => WindowAppearance::Light,
+        _ => appearance,
+    };
     *THEME.write().unwrap() = match appearance {
         WindowAppearance::Light | WindowAppearance::VibrantLight => light(),
         WindowAppearance::Dark | WindowAppearance::VibrantDark => dark(),
