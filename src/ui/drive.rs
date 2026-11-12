@@ -75,10 +75,7 @@ enum ToolAct {
 /// Actions offered by the empty-space right-click menu.
 #[derive(Clone, Copy)]
 enum AreaAct {
-    /// Opens the pick-type dropdown at the context menu's spot.
-    UploadMenu,
     Upload,
-    UploadDir,
     NewFolder,
     Paste,
 }
@@ -269,24 +266,15 @@ impl Root {
     }
 
     fn fire_menu_act(&mut self, act: MenuAct, cx: &mut Context<Self>) {
-        // Item clicks stop propagation, so closing popups is our job —
-        // UploadMenu then reopens upload_menu at the same spot.
-        let menu_pos = self.empty_menu.take();
+        // Item clicks stop propagation, so closing popups is our job.
         self.context_menu = None;
         self.tools_menu = None;
-        self.upload_menu = None;
+        self.empty_menu = None;
         match act {
             MenuAct::Sel(a) => self.fire_sel_act(a, cx),
             MenuAct::Tool(t) => self.fire_tool(t, cx),
             MenuAct::Area(a) => match a {
-                // Swap menus in place — reads as a submenu.
-                AreaAct::UploadMenu => {
-                    if let Some(pos) = menu_pos {
-                        self.upload_menu = Some((pos, false));
-                    }
-                }
                 AreaAct::Upload => self.pick_upload(cx),
-                AreaAct::UploadDir => self.pick_upload_dirs(cx),
                 AreaAct::NewFolder => {
                     self.open_modal(Modal::NewFolder, "", "folder name", cx)
                 }
@@ -664,20 +652,13 @@ impl Root {
             .map(|c| c.title.clone())
             .unwrap_or_default();
 
-        // Action listeners — Upload opens a pick-type dropdown; the
-        // rarer drive-level ops live behind the Tools menu (fire_tool).
-        // stop_propagation or the window-level dismiss would close the
-        // menu on the same click that opened it.
-        let upload_btn = cx.listener(|this, ev: &MouseDownEvent, _, cx| {
-            this.upload_menu = if this.upload_menu.is_some() {
-                None
-            } else {
-                Some((ev.position, true))
-            };
+        // Action listeners — the rarer drive-level ops live behind
+        // the Tools menu (fire_tool).
+        let upload_btn = cx.listener(|this, _: &MouseDownEvent, _, cx| {
             this.context_menu = None;
             this.tools_menu = None;
             this.empty_menu = None;
-            cx.stop_propagation();
+            this.pick_upload(cx);
             cx.notify();
         });
         let refresh = cx.listener(|this, _: &MouseDownEvent, _, cx| {
@@ -705,7 +686,6 @@ impl Root {
             this.tools_menu = None;
             this.context_menu = None;
             this.empty_menu = None;
-            this.upload_menu = None;
             cx.notify();
         });
         // stop_propagation or the window-level dismiss would close the
@@ -846,7 +826,6 @@ impl Root {
                     this.context_menu = None;
                     this.tools_menu = None;
                     this.empty_menu = None;
-                    this.upload_menu = None;
                     this.pending_move = None;
                     this.drag_anchor = None;
                     let at = this.content_pos(ev.position);
@@ -1033,26 +1012,13 @@ impl Root {
             self.popup_menu(pos, items, false, 0., window, cx)
         } else if let Some(pos) = self.empty_menu {
             let mut items: Vec<(&'static str, String, Tone, MenuAct)> = vec![
-                ("upload", "Upload…".into(), Tone::Ghost, MenuAct::Area(AreaAct::UploadMenu)),
+                ("upload", "Upload".into(), Tone::Ghost, MenuAct::Area(AreaAct::Upload)),
                 ("folder_plus", "New folder".into(), Tone::Ghost, MenuAct::Area(AreaAct::NewFolder)),
             ];
             if self.clip.is_some() {
                 items.push(("paste", "Paste".into(), Tone::Ghost, MenuAct::Area(AreaAct::Paste)));
             }
             self.popup_menu(pos, items, false, 0., window, cx)
-        } else if let Some((pos, right)) = self.upload_menu {
-            // Pick-type dropdown — the review modal merges both kinds
-            // anyway, this only chooses what the native picker accepts.
-            let items: Vec<(&'static str, String, Tone, MenuAct)> = vec![
-                ("upload", "Choose files…".into(), Tone::Ghost, MenuAct::Area(AreaAct::Upload)),
-                (
-                    "folder_up",
-                    "Choose folder…".into(),
-                    Tone::Ghost,
-                    MenuAct::Area(AreaAct::UploadDir),
-                ),
-            ];
-            self.popup_menu(pos, items, right, 6., window, cx)
         } else {
             div().into_any_element()
         };
@@ -1244,7 +1210,6 @@ impl Root {
                         this.context_menu = None;
                         this.tools_menu = None;
                         this.empty_menu = None;
-                        this.upload_menu = None;
                         cx.notify();
                     }
                 }),
@@ -1324,13 +1289,11 @@ impl Root {
                 if this.context_menu.is_some()
                     || this.tools_menu.is_some()
                     || this.empty_menu.is_some()
-                    || this.upload_menu.is_some()
                 {
                     if e.keystroke.key == "escape" {
                         this.context_menu = None;
                         this.tools_menu = None;
                         this.empty_menu = None;
-                        this.upload_menu = None;
                         cx.notify();
                     }
                     return;
@@ -1709,7 +1672,6 @@ impl Root {
                     this.context_menu = None;
                     this.tools_menu = None;
                     this.empty_menu = None;
-                    this.upload_menu = None;
                     if ev.click_count == 2 && is_folder {
                         this.set_cwd(click_id.clone());
                     } else if !this.trash
@@ -1741,7 +1703,6 @@ impl Root {
                     this.context_menu = Some(ev.position);
                     this.tools_menu = None;
                     this.empty_menu = None;
-                    this.upload_menu = None;
                     cx.notify();
                     cx.stop_propagation();
                 }),
@@ -1863,7 +1824,6 @@ impl Root {
                     this.context_menu = None;
                     this.tools_menu = None;
                     this.empty_menu = None;
-                    this.upload_menu = None;
                     if ev.click_count == 2 && is_folder {
                         this.set_cwd(id_click.clone());
                     } else if ev.click_count == 2 {
@@ -1897,7 +1857,6 @@ impl Root {
                     this.context_menu = Some(ev.position);
                     this.tools_menu = None;
                     this.empty_menu = None;
-                    this.upload_menu = None;
                     cx.notify();
                     cx.stop_propagation();
                 }),

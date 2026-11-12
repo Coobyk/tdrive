@@ -173,9 +173,6 @@ pub struct Root {
     tools_menu: Option<Point<Pixels>>,
     /// Empty-space right-click menu (upload/new-folder/paste).
     empty_menu: Option<Point<Pixels>>,
-    /// Pick-type dropdown — position + whether it right-aligns (Upload
-    /// button) or opens at the cursor (right-click submenu).
-    upload_menu: Option<(Point<Pixels>, bool)>,
     /// Internal clipboard for ctrl+c/x + Paste — cut pastes as moves.
     clip: Option<Clip>,
     /// Picked paths awaiting the upload-review modal's verdict.
@@ -284,7 +281,6 @@ impl Root {
             context_menu: None,
             tools_menu: None,
             empty_menu: None,
-            upload_menu: None,
             clip: None,
             upload_plan: None,
             pending_move: None,
@@ -671,31 +667,14 @@ impl Root {
         }
         let task = cx.prompt_for_paths(PathPromptOptions {
             files: true,
-            directories: false,
+            directories: true,
             multiple: true,
-            prompt: Some("Select files to upload".into()),
+            prompt: Some("Select files or folders to upload".into()),
         });
         cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(paths))) = task.await {
                 let _ = this.update(cx, |this, cx| {
                     this.open_upload_review(paths, cx);
-                });
-            }
-        })
-        .detach();
-    }
-
-    fn pick_upload_dirs(&mut self, cx: &mut Context<Self>) {
-        let task = cx.prompt_for_paths(PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: true,
-            prompt: Some("Select folders to upload".into()),
-        });
-        cx.spawn(async move |this, cx| {
-            if let Ok(Ok(Some(dirs))) = task.await {
-                let _ = this.update(cx, |this, cx| {
-                    this.open_upload_review(dirs, cx);
                 });
             }
         })
@@ -806,7 +785,6 @@ impl Root {
             self.context_menu = None;
             self.tools_menu = None;
             self.empty_menu = None;
-            self.upload_menu = None;
             self.pending_move = None;
             self.drag_moving = false;
             self.drop_hover = None;
