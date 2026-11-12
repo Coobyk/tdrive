@@ -114,6 +114,16 @@ impl Root {
         acts
     }
 
+    /// Selection actions shown inline in the bar — everything except
+    /// "Move to new folder", which stays in the right-click menu so a
+    /// wide selection never overflows the window edge.
+    fn bar_acts(&self) -> Vec<SelAct> {
+        self.sel_acts()
+            .into_iter()
+            .filter(|a| *a != SelAct::MoveToNew)
+            .collect()
+    }
+
     /// Label for the delete confirmation — one name or a count.
     fn sel_label(&self) -> String {
         if self.selected.len() == 1 {
@@ -907,9 +917,8 @@ impl Root {
             );
         }
         // The working bar — path on the left; the right side is
-        // contextual: selection actions when something's selected,
-        // create/ops otherwise. Sync and Tools anchor the tail so they
-        // never move.
+        // contextual: a compact selection set when something's
+        // selected, otherwise the create/ops set plus Sync/Tools.
         let mut actions = div()
             .flex()
             .items_center()
@@ -930,12 +939,14 @@ impl Root {
             }
             actions = actions.child(
                 div()
+                    .max_w(px(180.))
+                    .overflow_hidden()
                     .text_sm()
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme().text)
                     .child(self.sel_label()),
             );
-            for act in self.sel_acts() {
+            for act in self.bar_acts() {
                 let (icon, label, tone) = act.meta();
                 actions = actions.child(tool_button(
                     icon,
@@ -974,10 +985,10 @@ impl Root {
                     .child(tool_button("folder_up", "Folder", Tone::Ghost, upload_dir))
                     .child(tool_button("folder_plus", "New folder", Tone::Ghost, new_folder));
             }
+            actions = actions
+                .child(tool_button("refresh", "Sync", Tone::Ghost, refresh))
+                .child(tool_button("sliders", "Tools", Tone::Ghost, tools_btn));
         }
-        actions = actions
-            .child(tool_button("refresh", "Sync", Tone::Ghost, refresh))
-            .child(tool_button("sliders", "Tools", Tone::Ghost, tools_btn));
 
         // Popup menus — the right-click menu tracks the cursor; the
         // Tools dropdown right-aligns to its button. Window coords work
