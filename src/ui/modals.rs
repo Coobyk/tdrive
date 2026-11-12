@@ -31,6 +31,19 @@ impl Root {
                     })
                     .into_any_element(),
             ),
+            Modal::MoveToNew { .. } => (
+                "Move to new folder".into(),
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .child(self.f_name.clone())
+                    .child({
+                        let ok = cx.listener(|this, _: &MouseDownEvent, _, cx| this.modal_confirm(cx));
+                        button("Move", theme().accent, ok)
+                    })
+                    .into_any_element(),
+            ),
             Modal::Rename { .. } => {
                 (
                     "Rename".into(),

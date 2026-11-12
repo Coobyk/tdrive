@@ -12,6 +12,15 @@ impl Worker {
         self.send_and_project(&op).await
     }
 
+    pub(super) async fn mkdir_id(&mut self, id: String, parent: String, name: String) -> Result<()> {
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return Err(anyhow!("folder name required"));
+        }
+        let op = ops::folder_commit_with_id(id, parent, name);
+        self.send_and_project(&op).await
+    }
+
     pub(super) async fn rename(&mut self, obj: String, name: String) -> Result<()> {
         let op = ops::rename(obj, name);
         self.send_and_project(&op).await

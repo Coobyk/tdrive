@@ -136,6 +136,13 @@ pub enum Command {
         parent: String,
         name: String,
     },
+    /// Mkdir with a caller-minted id — "move to new folder" needs the
+    /// id up front to route the moves.
+    MkdirId {
+        id: String,
+        parent: String,
+        name: String,
+    },
     Rename {
         obj: String,
         name: String,
@@ -602,6 +609,7 @@ impl Worker {
             Command::ResumeUploads => self.resume_uploads().await,
             Command::Download { file_id, dest } => self.download(file_id, dest).await,
             Command::Mkdir { parent, name } => self.mkdir(parent, name).await,
+            Command::MkdirId { id, parent, name } => self.mkdir_id(id, parent, name).await,
             Command::Rename { obj, name } => self.rename(obj, name).await,
             Command::Move { obj, parent } => self.move_obj(obj, parent).await,
             Command::Copy { obj, parent } => self.copy_obj(obj, parent).await,

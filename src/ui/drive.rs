@@ -28,6 +28,7 @@ pub(super) enum SelAct {
     Cut,
     Paste,
     Move,
+    MoveToNew,
     Delete,
     Restore,
     Purge,
@@ -44,6 +45,7 @@ impl SelAct {
             SelAct::Cut => ("cut", "Cut", Tone::Ghost),
             SelAct::Paste => ("paste", "Paste", Tone::Ghost),
             SelAct::Move => ("move", "Move", Tone::Ghost),
+            SelAct::MoveToNew => ("folder_up", "Move to new folder", Tone::Ghost),
             SelAct::Delete => ("trash", "Delete", Tone::Danger),
             SelAct::Restore => ("restore", "Restore", Tone::Ghost),
             SelAct::Purge => ("trash", "Delete forever", Tone::Danger),
@@ -65,10 +67,20 @@ enum ToolAct {
 
 /// Item kind for the shared popup menu — file right-click and the
 /// Tools dropdown render identically, only the dispatcher differs.
+/// Actions offered by the empty-space right-click menu.
+#[derive(Clone, Copy)]
+enum AreaAct {
+    Upload,
+    UploadDir,
+    NewFolder,
+    Paste,
+}
+
 #[derive(Clone, Copy)]
 enum MenuAct {
     Sel(SelAct),
     Tool(ToolAct),
+    Area(AreaAct),
 }
 
 impl Root {
@@ -89,7 +101,7 @@ impl Root {
         if single {
             acts.push(SelAct::Rename);
         }
-        acts.extend([SelAct::Copy, SelAct::Cut, SelAct::Move]);
+        acts.extend([SelAct::Copy, SelAct::Cut, SelAct::Move, SelAct::MoveToNew]);
         if self.clip.is_some() {
             acts.push(SelAct::Paste);
         }
@@ -166,6 +178,14 @@ impl Root {
             SelAct::Move => {
                 self.modal = Some(Modal::Move { objs: sel });
             }
+            SelAct::MoveToNew => {
+                self.open_modal(
+                    Modal::MoveToNew { objs: sel },
+                    "",
+                    "new folder name",
+                    cx,
+                );
+            }
             SelAct::Delete => {
                 self.modal = Some(Modal::Delete {
                     objs: sel,
@@ -232,9 +252,21 @@ impl Root {
     }
 
     fn fire_menu_act(&mut self, act: MenuAct, cx: &mut Context<Self>) {
+        self.empty_menu = None;
         match act {
             MenuAct::Sel(a) => self.fire_sel_act(a, cx),
             MenuAct::Tool(t) => self.fire_tool(t, cx),
+            MenuAct::Area(a) => match a {
+                AreaAct::Upload => self.pick_upload(cx),
+                AreaAct::UploadDir => self.pick_upload_dirs(cx),
+                AreaAct::NewFolder => {
+                    self.open_modal(Modal::NewFolder, "", "folder name", cx)
+                }
+                AreaAct::Paste => {
+                    let dest = self.cwd.clone();
+                    self.paste_clip(dest, cx);
+                }
+            },
         }
     }
 
@@ -630,6 +662,8 @@ impl Root {
             this.trash = !this.trash;
             this.selected.clear();
             this.tools_menu = None;
+            this.context_menu = None;
+            this.empty_menu = None;
             cx.notify();
         });
         // stop_propagation or the window-level dismiss would close the
@@ -748,6 +782,7 @@ impl Root {
                     // container is on empty space — arm a rubber band.
                     this.context_menu = None;
                     this.tools_menu = None;
+                    this.empty_menu = None;
                     this.pending_move = None;
                     this.drag_anchor = None;
                     let at = this.content_pos(ev.position);
@@ -783,7 +818,22 @@ impl Root {
                 if moved {
                     this.rubber_apply(cx);
                 }
-            }));
+            }))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, ev: &MouseDownEvent, _, cx| {
+                    // Rows stop propagation on right-press, so this only
+                    // sees empty space — open the area menu. Nothing to
+                    // create into trash.
+                    if this.trash {
+                        return;
+                    }
+                    this.empty_menu = Some(ev.position);
+                    this.context_menu = None;
+                    this.tools_menu = None;
+                    cx.notify();
+                }),
+            );
         if self.entries_cache.is_empty() {
             body = body.child(
                 div()
@@ -890,6 +940,16 @@ impl Root {
                     (icon, label.to_string(), tone, MenuAct::Sel(a))
                 })
                 .collect();
+            self.popup_menu(pos, items, false, 0., window, cx)
+        } else if let Some(pos) = self.empty_menu {
+            let mut items: Vec<(&'static str, String, Tone, MenuAct)> = vec![
+                ("upload", "Upload files".into(), Tone::Ghost, MenuAct::Area(AreaAct::Upload)),
+                ("folder_up", "Upload folder".into(), Tone::Ghost, MenuAct::Area(AreaAct::UploadDir)),
+                ("folder_plus", "New folder".into(), Tone::Ghost, MenuAct::Area(AreaAct::NewFolder)),
+            ];
+            if self.clip.is_some() {
+                items.push(("paste", "Paste".into(), Tone::Ghost, MenuAct::Area(AreaAct::Paste)));
+            }
             self.popup_menu(pos, items, false, 0., window, cx)
         } else {
             div().into_any_element()
@@ -1075,9 +1135,13 @@ impl Root {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _: &MouseDownEvent, _, cx| {
-                    if this.context_menu.is_some() || this.tools_menu.is_some() {
+                    if this.context_menu.is_some()
+                        || this.tools_menu.is_some()
+                        || this.empty_menu.is_some()
+                    {
                         this.context_menu = None;
                         this.tools_menu = None;
+                        this.empty_menu = None;
                         cx.notify();
                     }
                 }),
@@ -1154,10 +1218,14 @@ impl Root {
                     }
                     return;
                 }
-                if this.context_menu.is_some() || this.tools_menu.is_some() {
+                if this.context_menu.is_some()
+                    || this.tools_menu.is_some()
+                    || this.empty_menu.is_some()
+                {
                     if e.keystroke.key == "escape" {
                         this.context_menu = None;
                         this.tools_menu = None;
+                        this.empty_menu = None;
                         cx.notify();
                     }
                     return;
@@ -1555,6 +1623,7 @@ impl Root {
                     this.drive_focus.focus(window);
                     this.context_menu = None;
                     this.tools_menu = None;
+                    this.empty_menu = None;
                     if ev.click_count == 2 && is_folder {
                         this.set_cwd(click_id.clone());
                     } else if !this.trash
@@ -1585,7 +1654,9 @@ impl Root {
                     }
                     this.context_menu = Some(ev.position);
                     this.tools_menu = None;
+                    this.empty_menu = None;
                     cx.notify();
+                    cx.stop_propagation();
                 }),
             )
             .on_mouse_move(cx.listener(move |this, ev: &MouseMoveEvent, _, cx| {
@@ -1704,6 +1775,7 @@ impl Root {
                     this.drive_focus.focus(window);
                     this.context_menu = None;
                     this.tools_menu = None;
+                    this.empty_menu = None;
                     if ev.click_count == 2 && is_folder {
                         this.set_cwd(id_click.clone());
                     } else if ev.click_count == 2 {
@@ -1736,7 +1808,9 @@ impl Root {
                     }
                     this.context_menu = Some(ev.position);
                     this.tools_menu = None;
+                    this.empty_menu = None;
                     cx.notify();
+                    cx.stop_propagation();
                 }),
             )
             .on_mouse_move(cx.listener(move |this, ev: &MouseMoveEvent, _, cx| {

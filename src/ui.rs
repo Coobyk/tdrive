@@ -40,6 +40,10 @@ enum Modal {
     Move {
         objs: Vec<String>,
     },
+    /// "Move to new folder" — mkdir under cwd, then move `objs` into it.
+    MoveToNew {
+        objs: Vec<String>,
+    },
     Delete {
         objs: Vec<String>,
         name: String,
@@ -143,6 +147,8 @@ pub struct Root {
     context_menu: Option<Point<Pixels>>,
     /// Tools dropdown position (window coords) while open.
     tools_menu: Option<Point<Pixels>>,
+    /// Empty-space right-click menu (upload/new-folder/paste).
+    empty_menu: Option<Point<Pixels>>,
     /// Internal clipboard for ctrl+c/x + Paste — cut pastes as moves.
     clip: Option<Clip>,
     /// Left press on an already-selected row, armed to become a
@@ -248,6 +254,7 @@ impl Root {
             drag_anchor: None,
             context_menu: None,
             tools_menu: None,
+            empty_menu: None,
             clip: None,
             pending_move: None,
             drag_moving: false,
@@ -732,6 +739,7 @@ impl Root {
             self.selected.clear();
             self.context_menu = None;
             self.tools_menu = None;
+            self.empty_menu = None;
             self.pending_move = None;
             self.drag_moving = false;
             self.drop_hover = None;
@@ -777,6 +785,31 @@ impl Root {
         self.modal = None;
     }
 
+    /// Mkdir under cwd with a minted id, then move every object in —
+    /// the folder id must exist before the moves are queued.
+    fn confirm_move_to_new(&mut self, objs: &[String], cx: &mut Context<Self>) {
+        let name = self.f_name.read(cx).text().trim().to_string();
+        if name.is_empty() {
+            return;
+        }
+        let id = crate::wire::new_folder_id();
+        self.send(Command::MkdirId {
+            id: id.clone(),
+            parent: self.cwd.clone(),
+            name,
+        });
+        for obj in objs {
+            self.send(Command::Move {
+                obj: obj.clone(),
+                parent: id.clone(),
+            });
+        }
+        self.mark_pending(objs, PendKind::Move, &id, cx);
+        self.f_name.update(cx, |f, cx| f.clear(cx));
+        self.modal = None;
+        self.selected.clear();
+    }
+
     fn confirm_rename(&mut self, obj: &str, cx: &mut Context<Self>) {
         let name = self.f_name.read(cx).text().trim().to_string();
         if name.is_empty() {
@@ -806,6 +839,10 @@ impl Root {
     fn modal_confirm(&mut self, cx: &mut Context<Self>) {
         match &self.modal {
             Some(Modal::NewFolder) => self.confirm_mkdir(cx),
+            Some(Modal::MoveToNew { objs }) => {
+                let objs = objs.clone();
+                self.confirm_move_to_new(&objs, cx)
+            }
             Some(Modal::Rename { obj }) => {
                 let obj = obj.clone();
                 self.confirm_rename(&obj, cx)
