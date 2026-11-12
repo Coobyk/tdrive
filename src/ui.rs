@@ -370,7 +370,17 @@ impl Root {
             }
             Event::Namespace(ns) => {
                 self.namespace = ns;
-                self.selected.clear();
+                // Refreshes land constantly (thumbnails, syncs, ops) —
+                // prune ids that vanished rather than wiping the whole
+                // selection out from under the user.
+                let live = |id: &String| {
+                    self.namespace.folders.contains_key(id)
+                        || self.namespace.files.contains_key(id)
+                };
+                self.selected.retain(live);
+                if self.anchor.as_ref().is_some_and(|a| !live(a)) {
+                    self.anchor = self.selected.first().cloned();
+                }
             }
             Event::Transfer(t) => {
                 self.transfers.insert(t.id.clone(), t.clone());

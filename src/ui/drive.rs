@@ -412,6 +412,9 @@ impl Root {
             return;
         }
         let objs = self.selected.clone();
+        if objs.is_empty() {
+            return;
+        }
         let copy = ev.modifiers.control;
         for obj in &objs {
             self.send(if copy {
