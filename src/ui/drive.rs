@@ -17,6 +17,8 @@ impl Root {
 
         // Toolbar
         let upload = cx.listener(|this, _: &MouseDownEvent, _, cx| this.pick_upload(cx));
+        let upload_dir =
+            cx.listener(|this, _: &MouseDownEvent, _, cx| this.pick_upload_dirs(cx));
         let backup = cx.listener(|this, _: &MouseDownEvent, _, cx| this.pick_backup(cx));
         let watch = cx.listener(|this, _: &MouseDownEvent, _, cx| {
             this.open_modal(Modal::WatchBackup, "", "/path/to/photos", cx);
@@ -82,6 +84,12 @@ impl Root {
             .gap_2()
             .w_full()
             .child(tool_button("upload", "Upload", Tone::Primary, upload))
+            .child(tool_button(
+                "folder_up",
+                "Folder",
+                Tone::Ghost,
+                upload_dir,
+            ))
             .child(tool_button("folder_plus", "New folder", Tone::Ghost, new_folder))
             .child(div().w(px(12.)))
             .child(tool_button("camera", "Backup", Tone::Ghost, backup))

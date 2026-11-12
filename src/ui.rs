@@ -510,27 +510,38 @@ impl Root {
     /// One picker for files AND folders — files queue directly, folders
     /// get the structure-vs-archive choice.
     fn pick_upload(&mut self, cx: &mut Context<Self>) {
+        // The portal has no "files and folders" chooser — directories:true
+        // is a folder-only picker. Files here, folders in pick_upload_dirs.
         let task = cx.prompt_for_paths(PathPromptOptions {
             files: true,
-            directories: true,
+            directories: false,
             multiple: true,
-            prompt: Some("Select files or folders to upload".into()),
+            prompt: Some("Select files to upload".into()),
         });
         let cwd = self.cwd.clone();
         let tx = self.tg.clone();
-        cx.spawn(async move |this, cx| {
+        cx.spawn(async move |_, _| {
             if let Ok(Ok(Some(paths))) = task.await {
-                let mut dirs = Vec::new();
                 for path in paths {
-                    if path.is_dir() {
-                        dirs.push(path);
-                    } else {
-                        let _ = tx.send(Command::Upload {
-                            path,
-                            parent: cwd.clone(),
-                        });
-                    }
+                    let _ = tx.send(Command::Upload {
+                        path,
+                        parent: cwd.clone(),
+                    });
                 }
+            }
+        })
+        .detach();
+    }
+
+    fn pick_upload_dirs(&mut self, cx: &mut Context<Self>) {
+        let task = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: true,
+            prompt: Some("Select folders to upload".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(dirs))) = task.await {
                 if !dirs.is_empty() {
                     let _ = this.update(cx, |this, cx| {
                         this.modal = Some(Modal::UploadDirs { dirs });
