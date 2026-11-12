@@ -269,7 +269,11 @@ impl Root {
     }
 
     fn fire_menu_act(&mut self, act: MenuAct, cx: &mut Context<Self>) {
+        // Item clicks stop propagation, so closing popups is our job —
+        // UploadMenu then reopens upload_menu at the same spot.
         let menu_pos = self.empty_menu.take();
+        self.context_menu = None;
+        self.tools_menu = None;
         self.upload_menu = None;
         match act {
             MenuAct::Sel(a) => self.fire_sel_act(a, cx),
@@ -292,6 +296,7 @@ impl Root {
                 }
             },
         }
+        cx.notify();
     }
 
     /// Floating menu shell shared by the right-click menu and the Tools
@@ -350,6 +355,7 @@ impl Root {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
                             this.fire_menu_act(act, cx)
                         }),
                     )
