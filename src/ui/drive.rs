@@ -15,6 +15,9 @@ pub(super) const GRID_ROW_H: f32 = CELL_H + 2. * GRID_PAD;
 const RUBBER_CLICK: f32 = 4.;
 /// Drag-move threshold for an armed press on a selected row.
 const DRAG_ARM: f32 = 6.;
+/// Uniform chrome height — titlebar, action bar and the context bar
+/// all share it so the window reads as one consistent grid.
+const BAR_H: f32 = 36.;
 
 /// Actions that apply to the current selection — shared between the
 /// selection bar and the right-click menu.
@@ -707,40 +710,70 @@ impl Root {
             .child(tool_button("refresh", "Sync", Tone::Ghost, refresh))
             .child(tool_button("sliders", "Tools", Tone::Ghost, tools_btn));
 
-        // Breadcrumb
+        // Path bar — the drive name is the first crumb, the deepest
+        // folder is emphasized. Trash and search get a terminal crumb
+        // so the bar always answers "where am I".
+        let search_q = self.f_search.read(cx).text().trim().to_string();
+        let at_root = !self.trash && search_q.is_empty() && self.cwd.is_empty();
         let mut crumbs = div().flex().items_center().gap_1().text_sm().child(
             div()
-                .id("crumb-root")
+                .id("crumb-drive")
                 .cursor_pointer()
-                .text_color(theme().dim)
+                .font_weight(if at_root {
+                    FontWeight::MEDIUM
+                } else {
+                    FontWeight::NORMAL
+                })
+                .text_color(if at_root { theme().text } else { theme().dim })
                 .hover(|s| s.text_color(theme().accent))
-                .child("root")
+                .child(channel_name.clone())
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _, _, cx| {
+                        this.trash = false;
                         this.set_cwd(String::new());
                         cx.notify();
                     }),
                 ),
         );
-        for (id, name) in self.namespace.folder_path(&self.cwd) {
-            crumbs = crumbs
-                .child(icon_sized("chevron_right", 10., theme().file_icon))
-                .child(
+        let tail: Vec<(String, String)> = if self.trash {
+            vec![(String::new(), "Trash".into())]
+        } else if !search_q.is_empty() {
+            vec![(String::new(), format!("\"{search_q}\""))]
+        } else {
+            self.namespace.folder_path(&self.cwd)
+        };
+        for (i, (id, name)) in tail.iter().enumerate() {
+            let last = i == tail.len() - 1;
+            crumbs = crumbs.child(icon_sized("chevron_right", 10., theme().file_icon));
+            if id.is_empty() || last {
+                // Terminal crumb — current folder or mode label.
+                crumbs = crumbs.child(
+                    div()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme().text)
+                        .child(name.clone()),
+                );
+            } else {
+                crumbs = crumbs.child(
                     div()
                         .id(SharedString::from(format!("crumb-{id}")))
                         .cursor_pointer()
                         .text_color(theme().dim)
                         .hover(|s| s.text_color(theme().accent))
-                        .child(name)
+                        .child(name.clone())
                         .on_mouse_down(
                             MouseButton::Left,
-                            cx.listener(move |this, _, _, cx| {
-                                this.set_cwd(id.clone());
-                                cx.notify();
-                            }),
+                            {
+                                let id = id.clone();
+                                cx.listener(move |this, _, _, cx| {
+                                    this.set_cwd(id.clone());
+                                    cx.notify();
+                                })
+                            },
                         ),
                 );
+            }
         }
 
         // File rows — trash view, search results, or folder listing.
@@ -880,40 +913,41 @@ impl Root {
                     .bg(theme().accent_soft),
             );
         }
-        // Selection bar — always rendered so (de)selecting never
-        // reflows the list.
+        // Context bar — always rendered so (de)selecting never reflows
+        // the list. Left: where you are (path). Right: what's selected
+        // and what you can do with it.
         let mut actions = div()
             .flex()
             .items_center()
             .gap_2()
-            .h(px(44.))
+            .h(px(BAR_H))
             .w_full()
             .px_3()
             .border_b_1()
             .border_color(theme().border)
-            .bg(theme().panel);
+            .bg(theme().panel)
+            .child(crumbs)
+            .child(div().flex_1());
         if self.selected.is_empty() {
             actions = actions.child(
                 div()
-                    .text_sm()
+                    .text_xs()
                     .text_color(theme().dim)
-                    .child("No selection — ctrl/shift-click or drag to select multiple"),
+                    .child("ctrl/shift-click or drag to select"),
             );
         } else {
             if self.selected.len() == 1 {
                 let sel = &self.selected[0];
                 if let Some(path) = self.thumbnails.get(sel) {
-                    actions = actions.child(img(path.clone()).w(px(28.)).h(px(28.)));
+                    actions = actions.child(img(path.clone()).w(px(24.)).h(px(24.)));
                 }
             }
-            actions = actions
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(theme().text)
-                        .child(self.sel_label()),
-                )
-                .child(div().flex_1());
+            actions = actions.child(
+                div()
+                    .text_sm()
+                    .text_color(theme().text)
+                    .child(self.sel_label()),
+            );
             for act in self.sel_acts() {
                 let (icon, label, tone) = act.meta();
                 actions = actions.child(tool_button(
@@ -1332,16 +1366,16 @@ impl Root {
                 }
                 cx.notify();
             }))
-            // Titlebar — drive identity + breadcrumb nav on the left,
-            // search and session actions on the right.
+            // Titlebar — app wordmark left; search + session/view
+            // controls right. Location lives in the context bar now.
             .child(
                 div()
                     .flex()
                     .items_center()
                     .gap_2()
                     .w_full()
-                    .px_4()
-                    .py_2()
+                    .h(px(BAR_H))
+                    .px_3()
                     .bg(theme().panel)
                     .border_b_1()
                     .border_color(theme().border)
@@ -1351,15 +1385,6 @@ impl Root {
                             .text_color(theme().text)
                             .child("TDrive"),
                     )
-                    .child(div().text_color(theme().dim).child("·"))
-                    .child(
-                        div()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme().text)
-                            .child(channel_name),
-                    )
-                    .child(div().text_color(theme().dim).child("·"))
-                    .child(crumbs)
                     .child(div().flex_1())
                     .child(
                         div()
@@ -1402,8 +1427,10 @@ impl Root {
             // Action bar — one grouped row of controls.
             .child(
                 div()
-                    .px_4()
-                    .py_2()
+                    .h(px(BAR_H))
+                    .px_3()
+                    .flex()
+                    .items_center()
                     .border_b_1()
                     .border_color(theme().border)
                     .child(toolbar),
@@ -1498,9 +1525,9 @@ impl Root {
                     )
                     .child(
                         div()
-                            .px_4()
+                            .px_3()
                             .py_1()
-                            .text_sm()
+                            .text_xs()
                             .text_color(theme().dim)
                             .child(self.status.clone()),
                     ),
