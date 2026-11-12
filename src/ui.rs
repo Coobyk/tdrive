@@ -106,6 +106,8 @@ pub struct Root {
     drag_anchor: Option<String>,
     /// Right-click menu position (window coords) while open.
     context_menu: Option<Point<Pixels>>,
+    /// Tools dropdown position (window coords) while open.
+    tools_menu: Option<Point<Pixels>>,
     transfers: BTreeMap<String, TransferUpdate>,
     modal: Option<Modal>,
     signed_in_as: String,
@@ -186,6 +188,7 @@ impl Root {
             anchor: None,
             drag_anchor: None,
             context_menu: None,
+            tools_menu: None,
             transfers: BTreeMap::new(),
             modal: None,
             signed_in_as: String::new(),
@@ -627,6 +630,7 @@ impl Root {
             self.cwd = id;
             self.selected.clear();
             self.context_menu = None;
+            self.tools_menu = None;
         }
     }
 

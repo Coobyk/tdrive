@@ -32,6 +32,26 @@ impl SelAct {
     }
 }
 
+/// Drive-level operations behind the Tools dropdown — infrequent, so
+/// they don't earn permanent toolbar space.
+#[derive(Clone, Copy)]
+enum ToolAct {
+    Backup,
+    Watch,
+    Mount,
+    Limit,
+    Optimize,
+    Lock,
+}
+
+/// Item kind for the shared popup menu — file right-click and the
+/// Tools dropdown render identically, only the dispatcher differs.
+#[derive(Clone, Copy)]
+enum MenuAct {
+    Sel(SelAct),
+    Tool(ToolAct),
+}
+
 impl Root {
     /// Which actions apply right now — Restore/Purge in trash; file-only
     /// and single-only actions hidden when the selection doesn't fit.
@@ -119,6 +139,110 @@ impl Root {
         cx.notify();
     }
 
+    /// Tools-dropdown actions — identical to what the old toolbar row
+    /// dispatched, just reached via one menu instead of six buttons.
+    fn fire_tool(&mut self, act: ToolAct, cx: &mut Context<Self>) {
+        self.tools_menu = None;
+        match act {
+            ToolAct::Backup => self.pick_backup(cx),
+            ToolAct::Watch => self.open_modal(Modal::WatchBackup, "", "/path/to/photos", cx),
+            ToolAct::Mount => {
+                if self.mount_dir.is_some() {
+                    self.send(Command::Unmount);
+                } else {
+                    self.open_modal(Modal::Mount, "", "/mnt/tdrive", cx);
+                }
+            }
+            ToolAct::Limit => self.open_modal(Modal::UploadLimit, "", "3", cx),
+            ToolAct::Optimize => self.send(Command::OptimizeDrive),
+            ToolAct::Lock => {
+                if self.vault_configured && self.vault_unlocked {
+                    self.send(Command::Lock);
+                } else if self.vault_configured {
+                    self.modal = Some(Modal::Unlock {
+                        hint: self.vault_hint.clone(),
+                    });
+                } else {
+                    self.modal = Some(Modal::Encrypt);
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    fn fire_menu_act(&mut self, act: MenuAct, cx: &mut Context<Self>) {
+        match act {
+            MenuAct::Sel(a) => self.fire_sel_act(a, cx),
+            MenuAct::Tool(t) => self.fire_tool(t, cx),
+        }
+    }
+
+    /// Floating menu shell shared by the right-click menu and the Tools
+    /// dropdown — edge-clamped inside the window. `align_right` pins the
+    /// menu's right edge to the click (dropdowns); `dy` nudges it below
+    /// its button.
+    fn popup_menu(
+        &self,
+        pos: Point<Pixels>,
+        items: Vec<(&'static str, String, Tone, MenuAct)>,
+        align_right: bool,
+        dy: f32,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let vw = f32::from(window.viewport_size().width);
+        let vh = f32::from(window.viewport_size().height);
+        let (w, row_h) = (200f32, 30.5f32);
+        let h = items.len() as f32 * row_h + 8.;
+        let raw_x = if align_right {
+            f32::from(pos.x) - w + 16.
+        } else {
+            f32::from(pos.x)
+        };
+        let x = px(raw_x.max(8.).min(vw - w - 8.));
+        let y = px((f32::from(pos.y) + dy).max(8.).min(vh - h - 8.));
+        let mut menu = div()
+            .absolute()
+            .left(x)
+            .top(y)
+            .w(px(w))
+            .flex()
+            .flex_col()
+            .py_1()
+            .bg(theme().panel)
+            .border_1()
+            .border_color(theme().border)
+            .rounded_md()
+            .shadow_lg();
+        for (icon_name, label, tone, act) in items {
+            let color = match tone {
+                Tone::Danger => theme().danger,
+                _ => theme().text,
+            };
+            menu = menu.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_3()
+                    .h(px(row_h))
+                    .text_sm()
+                    .text_color(color)
+                    .cursor_pointer()
+                    .hover(|s| s.bg(theme().panel2))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                            this.fire_menu_act(act, cx)
+                        }),
+                    )
+                    .child(icon_sized(icon_name, 13., color))
+                    .child(label),
+            );
+        }
+        menu.into_any_element()
+    }
+
     /// Click semantics: ctrl toggles, shift ranges from the anchor,
     /// plain selects one. Also arms drag-select on plain clicks.
     fn apply_click(&mut self, id: String, ev: &MouseDownEvent, cx: &mut Context<Self>) {
@@ -181,27 +305,11 @@ impl Root {
             .map(|c| c.title.clone())
             .unwrap_or_default();
 
-        // Toolbar
+        // Action listeners — file ops are toolbar buttons; the rarer
+        // drive-level ops live behind the Tools dropdown (fire_tool).
         let upload = cx.listener(|this, _: &MouseDownEvent, _, cx| this.pick_upload(cx));
         let upload_dir =
             cx.listener(|this, _: &MouseDownEvent, _, cx| this.pick_upload_dirs(cx));
-        let backup = cx.listener(|this, _: &MouseDownEvent, _, cx| this.pick_backup(cx));
-        let watch = cx.listener(|this, _: &MouseDownEvent, _, cx| {
-            this.open_modal(Modal::WatchBackup, "", "/path/to/photos", cx);
-            cx.notify();
-        });
-        let mount = cx.listener(|this, _: &MouseDownEvent, _, cx| {
-            if this.mount_dir.is_some() {
-                this.send(Command::Unmount);
-            } else {
-                this.open_modal(Modal::Mount, "", "/mnt/tdrive", cx);
-            }
-            cx.notify();
-        });
-        let uplim = cx.listener(|this, _: &MouseDownEvent, _, cx| {
-            this.open_modal(Modal::UploadLimit, "", "3", cx);
-            cx.notify();
-        });
         let refresh = cx.listener(|this, _: &MouseDownEvent, _, cx| {
             this.send(Command::Sync);
             this.status = "syncing…".into();
@@ -224,92 +332,38 @@ impl Root {
         let trash_toggle = cx.listener(|this, _: &MouseDownEvent, _, cx| {
             this.trash = !this.trash;
             this.selected.clear();
+            this.tools_menu = None;
             cx.notify();
         });
-        let v_configured = self.vault_configured;
-        let v_unlocked = self.vault_unlocked;
-        let v_hint = self.vault_hint.clone();
-        let lock_btn = cx.listener(move |this, _: &MouseDownEvent, _, cx| {
-            if v_configured && v_unlocked {
-                this.send(Command::Lock);
-            } else if v_configured {
-                this.modal = Some(Modal::Unlock {
-                    hint: v_hint.clone(),
-                });
+        // stop_propagation or the window-level dismiss would close the
+        // menu on the same click that opened it.
+        let tools_btn = cx.listener(|this, ev: &MouseDownEvent, _, cx| {
+            this.tools_menu = if this.tools_menu.is_some() {
+                None
             } else {
-                this.modal = Some(Modal::Encrypt);
-            }
+                Some(ev.position)
+            };
+            this.context_menu = None;
+            cx.stop_propagation();
             cx.notify();
         });
 
-        // Action bar — file ops on the left, drive tools + view
-        // controls on the right. One row, grouped by intent.
-        let mut toolbar = div()
-            .flex()
-            .items_center()
-            .gap_2()
-            .w_full()
-            .child(tool_button("upload", "Upload", Tone::Primary, upload))
-            .child(tool_button(
-                "folder_up",
-                "Folder",
-                Tone::Ghost,
-                upload_dir,
-            ))
-            .child(tool_button("folder_plus", "New folder", Tone::Ghost, new_folder))
-            .child(div().w(px(12.)))
-            .child(tool_button("camera", "Backup", Tone::Ghost, backup))
-            .child(tool_button("eye", "Watch", Tone::Ghost, watch))
-            .child(tool_button(
-                "hard_drive",
-                if self.mount_dir.is_some() {
-                    "Unmount"
-                } else {
-                    "Mount"
-                },
-                Tone::Ghost,
-                mount,
-            ))
-            .child(div().flex_1())
-            .child(tool_button("refresh", "Sync", Tone::Ghost, refresh))
-            .child(tool_button("sliders", "Limit", Tone::Ghost, uplim))
-            .child(tool_button(
-                if self.trash { "folder" } else { "trash" },
-                if self.trash { "Files" } else { "Trash" },
-                Tone::Ghost,
-                trash_toggle,
-            ));
+        // Action bar — create ops on the left (or Empty trash in the
+        // trash view), sync + tools dropdown on the right.
+        let mut toolbar = div().flex().items_center().gap_2().w_full();
         if self.trash {
             let et = cx.listener(|this, _: &MouseDownEvent, _, cx| {
                 this.send(Command::EmptyTrash);
                 cx.notify();
             });
             toolbar = toolbar.child(tool_button("trash", "Empty trash", Tone::Danger, et));
+        } else {
+            toolbar = toolbar
+                .child(tool_button("upload", "Upload", Tone::Primary, upload))
+                .child(tool_button("folder_up", "Folder", Tone::Ghost, upload_dir))
+                .child(tool_button("folder_plus", "New folder", Tone::Ghost, new_folder));
         }
-        if !self.trash {
-            let opt = cx.listener(|this, _: &MouseDownEvent, _, cx| {
-                this.send(Command::OptimizeDrive);
-                cx.notify();
-            });
-            toolbar = toolbar.child(tool_button("sparkles", "Optimize", Tone::Ghost, opt));
-        }
-        if self.channel_kind.is_personal() {
-            let lock_label = if self.vault_configured {
-                if self.vault_unlocked {
-                    "Unlocked"
-                } else {
-                    "Unlock"
-                }
-            } else {
-                "Encrypt"
-            };
-            toolbar = toolbar.child(tool_button(
-                if self.vault_configured && self.vault_unlocked { "unlock" } else { "lock" },
-                lock_label,
-                Tone::Ghost,
-                lock_btn,
-            ));
-        }
+        toolbar = toolbar.child(div().flex_1());
         if !self.namespace.unadopted.is_empty() && !self.trash {
             let n = self.namespace.unadopted.len();
             let ad = cx.listener(|this, _: &MouseDownEvent, _, cx| {
@@ -318,14 +372,9 @@ impl Root {
             });
             toolbar = toolbar.child(tool_button("inbox", &format!("Unadopted ({n})"), Tone::Ghost, ad));
         }
-        if !self.trash {
-            let label = if self.grid { "List" } else { "Grid" };
-            let gt = cx.listener(|this, _: &MouseDownEvent, _, cx| {
-                this.grid = !this.grid;
-                cx.notify();
-            });
-            toolbar = toolbar.child(tool_button(if self.grid { "list" } else { "grid" }, label, Tone::Ghost, gt));
-        }
+        toolbar = toolbar
+            .child(tool_button("refresh", "Sync", Tone::Ghost, refresh))
+            .child(tool_button("sliders", "Tools", Tone::Ghost, tools_btn));
 
         // Breadcrumb
         let mut crumbs = div().flex().items_center().gap_1().text_sm().child(
@@ -472,57 +521,49 @@ impl Root {
             }
         }
 
-        // Right-click menu — same actions as the bar, absolute at the
-        // click point. Window coords work because this subtree fills the
-        // whole window on the Drive screen.
+        // Popup menus — the right-click menu tracks the cursor; the
+        // Tools dropdown right-aligns to its button. Window coords work
+        // because this subtree fills the whole window on the Drive
+        // screen.
         let context = if let Some(pos) = self.context_menu {
-            let vw = f32::from(window.viewport_size().width);
-            let vh = f32::from(window.viewport_size().height);
-            let (w, row_h) = (px(200.), 30.5f32);
-            let h = self.sel_acts().len() as f32 * row_h + 8.;
-            let x = px(f32::from(pos.x).min(vw - 208.));
-            let y = px(f32::from(pos.y).min(vh - h - 8.));
-            let mut menu = div()
-                .absolute()
-                .left(x)
-                .top(y)
-                .w(w)
-                .flex()
-                .flex_col()
-                .py_1()
-                .bg(theme().panel)
-                .border_1()
-                .border_color(theme().border)
-                .rounded_md()
-                .shadow_lg();
-            for act in self.sel_acts() {
-                let (icon, label, tone) = act.meta();
-                let color = match tone {
-                    Tone::Danger => theme().danger,
-                    _ => theme().text,
+            let items = self
+                .sel_acts()
+                .into_iter()
+                .map(|a| {
+                    let (icon, label, tone) = a.meta();
+                    (icon, label.to_string(), tone, MenuAct::Sel(a))
+                })
+                .collect();
+            self.popup_menu(pos, items, false, 0., window, cx)
+        } else {
+            div().into_any_element()
+        };
+        let tools = if let Some(pos) = self.tools_menu {
+            let mut items: Vec<(&'static str, String, Tone, MenuAct)> = vec![
+                ("camera", "Photo backup".into(), Tone::Ghost, MenuAct::Tool(ToolAct::Backup)),
+                ("eye", "Watch folder".into(), Tone::Ghost, MenuAct::Tool(ToolAct::Watch)),
+                (
+                    "hard_drive",
+                    (if self.mount_dir.is_some() { "Unmount" } else { "Mount" }).into(),
+                    Tone::Ghost,
+                    MenuAct::Tool(ToolAct::Mount),
+                ),
+                ("sliders", "Upload limit".into(), Tone::Ghost, MenuAct::Tool(ToolAct::Limit)),
+                ("sparkles", "Optimize drive".into(), Tone::Ghost, MenuAct::Tool(ToolAct::Optimize)),
+            ];
+            if self.channel_kind.is_personal() {
+                let (icon, label) = if self.vault_configured {
+                    if self.vault_unlocked {
+                        ("unlock", "Lock drive")
+                    } else {
+                        ("lock", "Unlock drive")
+                    }
+                } else {
+                    ("lock", "Encrypt drive")
                 };
-                menu = menu.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .px_3()
-                        .h(px(row_h))
-                        .text_sm()
-                        .text_color(color)
-                        .cursor_pointer()
-                        .hover(|s| s.bg(theme().panel2))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, _: &MouseDownEvent, _, cx| {
-                                this.fire_sel_act(act, cx)
-                            }),
-                        )
-                        .child(icon_sized(icon, 13., color))
-                        .child(label),
-                );
+                items.push((icon, label.into(), Tone::Ghost, MenuAct::Tool(ToolAct::Lock)));
             }
-            menu.into_any_element()
+            self.popup_menu(pos, items, true, 6., window, cx)
         } else {
             div().into_any_element()
         };
@@ -678,8 +719,9 @@ impl Root {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _: &MouseDownEvent, _, cx| {
-                    if this.context_menu.is_some() {
+                    if this.context_menu.is_some() || this.tools_menu.is_some() {
                         this.context_menu = None;
+                        this.tools_menu = None;
                         cx.notify();
                     }
                 }),
@@ -709,9 +751,10 @@ impl Root {
                     }
                     return;
                 }
-                if this.context_menu.is_some() {
+                if this.context_menu.is_some() || this.tools_menu.is_some() {
                     if e.keystroke.key == "escape" {
                         this.context_menu = None;
+                        this.tools_menu = None;
                         cx.notify();
                     }
                     return;
@@ -819,7 +862,28 @@ impl Root {
                             .child(icon_sized("search", 13., theme().dim))
                             .child(div().w(px(200.)).child(self.f_search.clone())),
                     )
+                    .child(if !self.trash {
+                        let gt = cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                            this.grid = !this.grid;
+                            cx.notify();
+                        });
+                        tool_button(
+                            if self.grid { "list" } else { "grid" },
+                            if self.grid { "List" } else { "Grid" },
+                            Tone::Ghost,
+                            gt,
+                        )
+                        .into_any_element()
+                    } else {
+                        div().into_any_element()
+                    })
                     .child(tool_button("drives", "Drives", Tone::Ghost, back))
+                    .child(tool_button(
+                        if self.trash { "folder" } else { "trash" },
+                        if self.trash { "Files" } else { "Trash" },
+                        Tone::Ghost,
+                        trash_toggle,
+                    ))
                     .child(tool_button("log_out", "Sign out", Tone::Ghost, sign_out)),
             )
             // Action bar — one grouped row of controls.
@@ -909,6 +973,7 @@ impl Root {
             .child(self.render_modal(window, cx))
             .child(self.render_viewer(cx))
             .child(context)
+            .child(tools)
     }
 
     /// Whether background work is in flight — drives the bottom-left
@@ -1002,6 +1067,7 @@ impl Root {
                         this.anchor = Some(rc_id.clone());
                     }
                     this.context_menu = Some(ev.position);
+                    this.tools_menu = None;
                     cx.notify();
                 }),
             )
@@ -1104,6 +1170,7 @@ impl Root {
                         this.anchor = Some(rc_id.clone());
                     }
                     this.context_menu = Some(ev.position);
+                    this.tools_menu = None;
                     cx.notify();
                 }),
             )
