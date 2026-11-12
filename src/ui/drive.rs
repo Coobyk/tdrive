@@ -3,6 +3,19 @@
 use super::controls::{Tone, entry_icon, icon_sized, tool_button};
 use super::*;
 
+// Fixed geometry so the rubber band can hit-test items by index math
+// instead of measuring rendered bounds.
+pub(super) const ROW_H: f32 = 38.;
+pub(super) const CELL_W: f32 = 100.;
+pub(super) const CELL_H: f32 = 104.;
+pub(super) const GRID_PAD: f32 = 4.;
+pub(super) const GRID_GAP: f32 = 8.;
+pub(super) const GRID_ROW_H: f32 = CELL_H + 2. * GRID_PAD;
+/// Band smaller than this on release counts as a click, not a drag.
+const RUBBER_CLICK: f32 = 4.;
+/// Drag-move threshold for an armed press on a selected row.
+const DRAG_ARM: f32 = 6.;
+
 /// Actions that apply to the current selection — shared between the
 /// selection bar and the right-click menu.
 #[derive(Clone, Copy, PartialEq)]
@@ -148,7 +161,7 @@ impl Root {
                 } else {
                     self.cwd.clone()
                 };
-                self.paste_clip(dest);
+                self.paste_clip(dest, cx);
             }
             SelAct::Move => {
                 self.modal = Some(Modal::Move { objs: sel });
@@ -160,13 +173,27 @@ impl Root {
                 });
             }
             SelAct::Restore | SelAct::Purge => {
-                for obj in sel {
+                for obj in &sel {
                     self.send(if act == SelAct::Restore {
-                        Command::Restore { obj }
+                        Command::Restore {
+                            obj: obj.clone(),
+                        }
                     } else {
-                        Command::Purge { obj }
+                        Command::Purge {
+                            obj: obj.clone(),
+                        }
                     });
                 }
+                self.mark_pending(
+                    &sel,
+                    if act == SelAct::Purge {
+                        PendKind::Delete
+                    } else {
+                        PendKind::Timed
+                    },
+                    "",
+                    cx,
+                );
                 self.selected.clear();
             }
         }
@@ -340,7 +367,7 @@ impl Root {
 
     /// Paste the clipboard under `dest` — cut moves, copy duplicates.
     /// Moves that would make a cycle are skipped per object.
-    fn paste_clip(&mut self, dest: String) {
+    fn paste_clip(&mut self, dest: String, cx: &mut Context<Self>) {
         let Some((objs, cut)) = self
             .clip
             .as_ref()
@@ -348,7 +375,7 @@ impl Root {
         else {
             return;
         };
-        let mut n = 0;
+        let mut pasted = Vec::new();
         for obj in &objs {
             if cut {
                 if !self.can_drop_into(&dest, std::slice::from_ref(obj)) {
@@ -364,8 +391,15 @@ impl Root {
                     parent: dest.clone(),
                 });
             }
-            n += 1;
+            pasted.push(obj.clone());
         }
+        let n = pasted.len();
+        self.mark_pending(
+            &pasted,
+            if cut { PendKind::Move } else { PendKind::Timed },
+            &dest,
+            cx,
+        );
         if cut {
             self.clip = None;
         }
@@ -376,16 +410,126 @@ impl Root {
         );
     }
 
+    /// Objects just sent through the worker get a pulsing ghost look
+    /// until the namespace proves the op landed (or a deadline hits,
+    /// for anything that stalls on the network).
+    pub(super) fn mark_pending(&mut self, objs: &[String], kind: PendKind, dest: &str, cx: &mut Context<Self>) {
+        let ttl = std::time::Duration::from_secs(match kind {
+            PendKind::Timed => 8,
+            _ => 15,
+        });
+        let deadline = std::time::Instant::now() + ttl;
+        for o in objs {
+            self.pending_ops.insert(
+                o.clone(),
+                PendingOp {
+                    dest: dest.to_string(),
+                    kind,
+                    deadline,
+                },
+            );
+        }
+        // If no namespace event ever arrives, clear ghosts on schedule
+        // instead of leaving dimmed rows behind.
+        let t = cx.background_executor().timer(ttl);
+        cx.spawn(async move |this, cx| {
+            t.await;
+            let _ = this.update(cx, |this, cx| {
+                let now = std::time::Instant::now();
+                this.pending_ops.retain(|_, p| p.deadline > now);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Ids the rubber band currently covers — list rows are full-width
+    /// so only the band's vertical span matters there; grid cells
+    /// check both axes.
+    fn rubber_hits(&self) -> Vec<String> {
+        let Some(r) = &self.rubber else { return vec![] };
+        let (top, bot) = (
+            f32::from(r.start.y.min(r.current.y)),
+            f32::from(r.start.y.max(r.current.y)),
+        );
+        let ids = &self.entries_cache;
+        if ids.is_empty() {
+            return vec![];
+        }
+        if self.grid && !self.trash {
+            let (left, right) = (
+                f32::from(r.start.x.min(r.current.x)),
+                f32::from(r.start.x.max(r.current.x)),
+            );
+            let cols = self.grid_cols.max(1);
+            (0..ids.len())
+                .filter(|&i| {
+                    let (row, col) = (i / cols, i % cols);
+                    let cy0 = row as f32 * GRID_ROW_H + GRID_PAD;
+                    let cx0 = GRID_PAD + col as f32 * (CELL_W + GRID_GAP);
+                    cy0 + CELL_H > top && cy0 < bot && cx0 + CELL_W > left && cx0 < right
+                })
+                .map(|i| ids[i].id().to_string())
+                .collect()
+        } else {
+            let n = ids.len();
+            let i0 = (top / ROW_H).floor().max(0.) as usize;
+            let i1 = ((bot / ROW_H).floor().max(0.) as usize).min(n - 1);
+            if i0 > i1 {
+                return vec![];
+            }
+            ids[i0.min(n - 1)..=i1]
+                .iter()
+                .map(|e| e.id().to_string())
+                .collect()
+        }
+    }
+
+    /// Live-update the selection to whatever the band covers — union
+    /// with the pre-drag selection when ctrl was held at press.
+    fn rubber_apply(&mut self, cx: &mut Context<Self>) {
+        let hits = self.rubber_hits();
+        if let Some(r) = &self.rubber {
+            if r.additive {
+                let mut sel = r.base.clone();
+                for h in hits {
+                    if !sel.contains(&h) {
+                        sel.push(h);
+                    }
+                }
+                self.selected = sel;
+            } else {
+                self.selected = hits;
+            }
+        }
+        self.anchor = self.selected.first().cloned();
+        cx.notify();
+    }
+
+    /// Window-space point → file-list content space (for the band and
+    /// hit-testing).
+    fn content_pos(&self, pos: Point<Pixels>) -> Point<Pixels> {
+        let origin = *self.file_origin.borrow();
+        let off = self.scroll_handle.offset();
+        point(
+            pos.x - origin.x - off.x,
+            pos.y - origin.y - off.y,
+        )
+    }
+
     /// Row/cell hover while the left button is held — once the armed
     /// press travels past the threshold it becomes a drag-move and the
     /// hovered folder lights up as a drop target; otherwise the hover
-    /// keeps range-selecting.
+    /// keeps range-selecting. A rubber-band press owns the pointer.
     fn hover_during_drag(&mut self, id: &str, ev: &MouseMoveEvent, cx: &mut Context<Self>) {
+        if self.rubber.is_some() {
+            return;
+        }
         if let Some((_, start)) = self.pending_move.clone() {
             if !self.drag_moving
                 && (f32::from(ev.position.x - start.x).abs()
                     + f32::from(ev.position.y - start.y).abs())
-                    > 6.
+                    > DRAG_ARM
             {
                 self.drag_moving = true;
             }
@@ -407,7 +551,7 @@ impl Root {
 
     /// Left release on a row/cell during a drag-move — ctrl held means
     /// copy, otherwise move. The folder under the pointer is the dest.
-    fn drop_on(&mut self, id: &str, ev: &MouseUpEvent) {
+    fn drop_on(&mut self, id: &str, ev: &MouseUpEvent, cx: &mut Context<Self>) {
         if !self.drag_moving || !self.can_drop_into(id, &self.selected) {
             return;
         }
@@ -429,6 +573,12 @@ impl Root {
                 }
             });
         }
+        self.mark_pending(
+            &objs,
+            if copy { PendKind::Timed } else { PendKind::Move },
+            id,
+            cx,
+        );
         self.status = format!(
             "{} {} item{}",
             if copy { "copying" } else { "moving" },
@@ -590,7 +740,50 @@ impl Root {
             .w_full()
             .flex_1()
             .overflow_y_scroll()
-            .track_scroll(&self.scroll_handle);
+            .track_scroll(&self.scroll_handle)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, ev: &MouseDownEvent, _, cx| {
+                    // Rows stop propagation, so a press reaching the
+                    // container is on empty space — arm a rubber band.
+                    this.context_menu = None;
+                    this.tools_menu = None;
+                    this.pending_move = None;
+                    this.drag_anchor = None;
+                    let at = this.content_pos(ev.position);
+                    this.rubber = Some(Rubber {
+                        start: at,
+                        current: at,
+                        additive: ev.modifiers.control,
+                        base: this.selected.clone(),
+                    });
+                    cx.notify();
+                }),
+            )
+            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
+                if this.rubber.is_none() {
+                    return;
+                }
+                if !matches!(ev.pressed_button, Some(MouseButton::Left)) {
+                    this.rubber = None;
+                    cx.notify();
+                    return;
+                }
+                let at = this.content_pos(ev.position);
+                let moved = if let Some(r) = &mut this.rubber {
+                    if r.current != at {
+                        r.current = at;
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                if moved {
+                    this.rubber_apply(cx);
+                }
+            }));
         if self.entries_cache.is_empty() {
             body = body.child(
                 div()
@@ -610,7 +803,7 @@ impl Root {
         } else if self.grid && !self.trash {
             self.grid_cols = ((f32::from(window.viewport_size().width) / 110.) as usize).max(1);
             for chunk in self.entries_cache.clone().chunks(self.grid_cols) {
-                let mut r = div().flex().gap_2().p_1();
+                let mut r = div().flex().gap_2().p_1().h(px(GRID_ROW_H));
                 for e in chunk {
                     r = r.child(self.render_cell(e, cx));
                 }
@@ -620,6 +813,22 @@ impl Root {
             for e in self.entries_cache.clone() {
                 body = body.child(self.render_row(&e, cx));
             }
+        }
+        // Rubber band — plain absolute child so it scrolls with content.
+        if let Some(r) = &self.rubber {
+            let (x0, y0) = (r.start.x.min(r.current.x), r.start.y.min(r.current.y));
+            let (x1, y1) = (r.start.x.max(r.current.x), r.start.y.max(r.current.y));
+            body = body.child(
+                div()
+                    .absolute()
+                    .left(x0)
+                    .top(y0)
+                    .w(x1 - x0)
+                    .h(y1 - y0)
+                    .border_1()
+                    .border_color(theme().accent)
+                    .bg(theme().accent_soft),
+            );
         }
         // Selection bar — always rendered so (de)selecting never
         // reflows the list.
@@ -874,11 +1083,14 @@ impl Root {
                 }),
             )
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
+                this.cursor = ev.position;
+                this.drag_copy = ev.modifiers.control;
                 if ev.pressed_button.is_none() {
                     this.drag_anchor = None;
                     this.pending_move = None;
                     this.drag_moving = false;
                     this.drop_hover = None;
+                    this.rubber = None;
                 } else if let Some((_, start)) = &this.pending_move {
                     // Rows/cells only see hovers over themselves — the
                     // threshold also needs to trip over empty space or a
@@ -886,7 +1098,7 @@ impl Root {
                     if !this.drag_moving
                         && (f32::from(ev.position.x - start.x).abs()
                             + f32::from(ev.position.y - start.y).abs())
-                            > 6.
+                            > DRAG_ARM
                     {
                         this.drag_moving = true;
                         cx.notify();
@@ -905,7 +1117,18 @@ impl Root {
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                    if this.drag_moving {
+                    if let Some(r) = this.rubber.take() {
+                        let grown = (f32::from(r.current.x - r.start.x)).abs()
+                            + (f32::from(r.current.y - r.start.y)).abs()
+                            > RUBBER_CLICK;
+                        if !grown {
+                            // Never became a band — a click on empty
+                            // space, which deselects (ctrl keeps base).
+                            this.selected = if r.additive { r.base } else { vec![] };
+                            this.anchor = this.selected.first().cloned();
+                        }
+                        cx.notify();
+                    } else if this.drag_moving {
                         // Released over empty space — cancel the drag.
                         this.drag_moving = false;
                         this.drop_hover = None;
@@ -964,7 +1187,7 @@ impl Root {
                         }
                         "v" => {
                             if this.clip.is_some() {
-                                this.paste_clip(this.cwd.clone());
+                                this.paste_clip(this.cwd.clone(), cx);
                             }
                         }
                         _ => return,
@@ -1013,6 +1236,10 @@ impl Root {
                     "escape" => {
                         this.selected.clear();
                         this.anchor = None;
+                        this.rubber = None;
+                        this.drag_moving = false;
+                        this.pending_move = None;
+                        this.drop_hover = None;
                     }
                     "backspace" => {
                         let parent = this
@@ -1108,7 +1335,29 @@ impl Root {
                     .child(toolbar),
             )
             .child(actions)
-            .child(body)
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .min_h_0()
+                    .child(
+                        // Stashes the file area's viewport origin each
+                        // frame — mouse positions minus it land in
+                        // content space for the rubber band.
+                        div().absolute().inset_0().child(canvas(
+                            {
+                                let slot = self.file_origin.clone();
+                                move |bounds, _, _| {
+                                    *slot.borrow_mut() = bounds.origin;
+                                }
+                            },
+                            |_, _, _, _| {},
+                        )),
+                    )
+                    .child(body),
+            )
             .child(
                 div()
                     .border_t_1()
@@ -1186,6 +1435,32 @@ impl Root {
             .child(self.render_viewer(cx))
             .child(context)
             .child(tools)
+            .child(if self.drag_moving && !self.selected.is_empty() {
+                // Cursor-following chip — the "is it dragging?" signal.
+                let n = self.selected.len();
+                let label = format!(
+                    "{} {n} item{}",
+                    if self.drag_copy { "copy" } else { "move" },
+                    if n == 1 { "" } else { "s" },
+                );
+                deferred(
+                    div()
+                        .absolute()
+                        .left(self.cursor.x + px(14.))
+                        .top(self.cursor.y + px(14.))
+                        .px_2()
+                        .py_1()
+                        .rounded_md()
+                        .bg(theme().accent)
+                        .text_xs()
+                        .text_color(theme().on_accent)
+                        .shadow_lg()
+                        .child(label),
+                )
+                .into_any_element()
+            } else {
+                div().into_any_element()
+            })
     }
 
     /// Whether background work is in flight — drives the bottom-left
@@ -1241,19 +1516,24 @@ impl Root {
         }
         let selected = self.selected.contains(&id);
         let drop_target = self.drop_hover.as_deref() == Some(id.as_str());
+        let busy = self.pending_ops.contains_key(&id);
+        let drag_src = self.drag_moving && selected;
         let click_id = id.clone();
         let rc_id = id.clone();
         let hover_id = id.clone();
         let drop_id = id.clone();
         let thumb = self.thumbnails.get(&id).cloned();
-        div()
+        let cell = div()
             .flex()
             .flex_col()
             .items_center()
             .gap_1()
-            .w(px(100.))
+            .w(px(CELL_W))
+            .h(px(CELL_H))
             .p_2()
             .rounded_lg()
+            // Source cells go translucent while they're being dragged.
+            .opacity(if drag_src { 0.55 } else { 1. })
             .bg(if selected || drop_target {
                 theme().accent_soft
             } else {
@@ -1273,6 +1553,8 @@ impl Root {
                 MouseButton::Left,
                 cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
                     this.drive_focus.focus(window);
+                    this.context_menu = None;
+                    this.tools_menu = None;
                     if ev.click_count == 2 && is_folder {
                         this.set_cwd(click_id.clone());
                     } else if !this.trash
@@ -1289,6 +1571,9 @@ impl Root {
                         this.apply_click(click_id.clone(), ev, cx);
                     }
                     cx.notify();
+                    // A cell press must never reach the scroll
+                    // container's rubber-band arm.
+                    cx.stop_propagation();
                 }),
             )
             .on_mouse_down(
@@ -1311,7 +1596,7 @@ impl Root {
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(move |this, ev: &MouseUpEvent, _, cx| {
-                    this.drop_on(&drop_id, ev);
+                    this.drop_on(&drop_id, ev, cx);
                     cx.notify();
                 }),
             )
@@ -1349,7 +1634,17 @@ impl Root {
                     .text_center()
                     .truncate()
                     .child(name),
+            );
+        if busy {
+            cell.with_animation(
+                SharedString::from(format!("busy-{id}")),
+                Animation::new(std::time::Duration::from_millis(900)).repeat(),
+                |el, d| el.opacity(0.35 + 0.3 * (1. - (2. * d - 1.).abs())),
             )
+            .into_any_element()
+        } else {
+            cell.into_any_element()
+        }
     }
 
     pub(super) fn render_row(&mut self, entry: &Entry, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1368,20 +1663,24 @@ impl Root {
         };
         let selected = self.selected.contains(&id);
         let drop_target = self.drop_hover.as_deref() == Some(id.as_str());
+        let busy = self.pending_ops.contains_key(&id);
+        let drag_src = self.drag_moving && selected;
         let row_id = format!("row-{id}");
         let id_click = id.clone();
         let rc_id = id.clone();
         let hover_id = id.clone();
         let drop_id = id.clone();
 
-        div()
+        let row = div()
             .id(SharedString::from(row_id))
             .flex()
             .items_center()
             .gap_3()
             .w_full()
             .px_4()
-            .py_2()
+            .h(px(ROW_H))
+            // Source rows go translucent while they're being dragged.
+            .opacity(if drag_src { 0.55 } else { 1. })
             .bg(if drop_target {
                 theme().accent_soft
             } else if selected {
@@ -1403,6 +1702,8 @@ impl Root {
                 MouseButton::Left,
                 cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
                     this.drive_focus.focus(window);
+                    this.context_menu = None;
+                    this.tools_menu = None;
                     if ev.click_count == 2 && is_folder {
                         this.set_cwd(id_click.clone());
                     } else if ev.click_count == 2 {
@@ -1421,6 +1722,9 @@ impl Root {
                         this.apply_click(id_click.clone(), ev, cx);
                     }
                     cx.notify();
+                    // A row press must never reach the scroll
+                    // container's rubber-band arm.
+                    cx.stop_propagation();
                 }),
             )
             .on_mouse_down(
@@ -1443,7 +1747,7 @@ impl Root {
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(move |this, ev: &MouseUpEvent, _, cx| {
-                    this.drop_on(&drop_id, ev);
+                    this.drop_on(&drop_id, ev, cx);
                     cx.notify();
                 }),
             )
@@ -1474,6 +1778,18 @@ impl Root {
                     .flex()
                     .justify_end()
                     .child(meta),
+            );
+        if busy {
+            // In-flight op — pulse the row as a ghost until the
+            // namespace confirms it landed.
+            row.with_animation(
+                SharedString::from(format!("busy-{id}")),
+                Animation::new(std::time::Duration::from_millis(900)).repeat(),
+                |el, d| el.opacity(0.35 + 0.3 * (1. - (2. * d - 1.).abs())),
             )
+            .into_any_element()
+        } else {
+            row.into_any_element()
+        }
     }
 }

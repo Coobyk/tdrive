@@ -70,6 +70,35 @@ struct Clip {
     cut: bool,
 }
 
+/// Rubber-band selection state — corners live in file-list content
+/// space (viewport point minus scroll offset) so the band stays glued
+/// to items while the list scrolls under the pointer.
+struct Rubber {
+    start: Point<Pixels>,
+    current: Point<Pixels>,
+    /// ctrl was held at press — union hits with `base`, not replace.
+    additive: bool,
+    base: Vec<String>,
+}
+
+/// Which async namespace op is in flight for an object.
+#[derive(Clone, Copy, PartialEq)]
+enum PendKind {
+    /// Verified once the object's parent becomes `dest`.
+    Move,
+    /// Verified once the object leaves the namespace entirely.
+    Delete,
+    /// Cheap to verify? No (copy, restore) — clears on the next
+    /// namespace refresh or the deadline.
+    Timed,
+}
+
+struct PendingOp {
+    dest: String,
+    kind: PendKind,
+    deadline: std::time::Instant,
+}
+
 /// In-app file viewer state.
 struct Viewer {
     file_id: String,
@@ -124,6 +153,20 @@ pub struct Root {
     drag_moving: bool,
     /// Folder the drag currently hovers when it's a legal drop target.
     drop_hover: Option<String>,
+    /// Left press on empty file-area space, grown into a Finder-style
+    /// rubber band; corners are in content space (scroll-adjusted).
+    rubber: Option<Rubber>,
+    /// Last cursor position in window coords — the drag-move chip
+    /// follows it.
+    cursor: Point<Pixels>,
+    /// Ctrl held during a drag-move — chip reads "copy" instead.
+    drag_copy: bool,
+    /// Objects with an in-flight move/copy/delete — rows pulse dimmed
+    /// until the namespace confirms or the deadline passes.
+    pending_ops: std::collections::HashMap<String, PendingOp>,
+    /// Viewport origin of the file-scroll area in window coords,
+    /// refreshed every frame by a canvas in prepaint.
+    file_origin: std::rc::Rc<std::cell::RefCell<Point<Pixels>>>,
     transfers: BTreeMap<String, TransferUpdate>,
     modal: Option<Modal>,
     signed_in_as: String,
@@ -209,6 +252,11 @@ impl Root {
             pending_move: None,
             drag_moving: false,
             drop_hover: None,
+            rubber: None,
+            cursor: point(px(0.), px(0.)),
+            drag_copy: false,
+            pending_ops: std::collections::HashMap::new(),
+            file_origin: std::rc::Rc::new(std::cell::RefCell::new(point(px(0.), px(0.)))),
             transfers: BTreeMap::new(),
             modal: None,
             signed_in_as: String::new(),
@@ -381,6 +429,29 @@ impl Root {
                 if self.anchor.as_ref().is_some_and(|a| !live(a)) {
                     self.anchor = self.selected.first().cloned();
                 }
+                // A fresh projection is the ack for in-flight ops:
+                // a move is done once the object sits under its dest,
+                // a delete once the object is gone; copies/restores
+                // clear on the first refresh after being sent.
+                let now = std::time::Instant::now();
+                let ns = &self.namespace;
+                let parent_of = |id: &String| {
+                    ns.folders
+                        .get(id)
+                        .map(|e| e.parent.as_str())
+                        .or_else(|| ns.files.get(id).map(|e| e.parent.as_str()))
+                };
+                self.pending_ops.retain(|id, p| {
+                    if now > p.deadline {
+                        return false;
+                    }
+                    match p.kind {
+                        PendKind::Move => parent_of(id) != Some(p.dest.as_str()),
+                        PendKind::Delete => parent_of(id).is_some(),
+                        PendKind::Timed => false,
+                    }
+                });
+                self.rubber = None;
             }
             Event::Transfer(t) => {
                 self.transfers.insert(t.id.clone(), t.clone());
@@ -664,6 +735,7 @@ impl Root {
             self.pending_move = None;
             self.drag_moving = false;
             self.drop_hover = None;
+            self.rubber = None;
         }
     }
 
@@ -718,13 +790,14 @@ impl Root {
         self.modal = None;
     }
 
-    fn confirm_move(&mut self, objs: &[String], dest: &str) {
+    fn confirm_move(&mut self, objs: &[String], dest: &str, cx: &mut Context<Self>) {
         for obj in objs {
             self.send(Command::Move {
                 obj: obj.clone(),
                 parent: dest.to_string(),
             });
         }
+        self.mark_pending(objs, PendKind::Move, dest, cx);
         self.modal = None;
         self.selected.clear();
     }
@@ -739,7 +812,7 @@ impl Root {
             }
             Some(Modal::Delete { objs, .. }) => {
                 let objs = objs.clone();
-                self.confirm_delete(&objs)
+                self.confirm_delete(&objs, cx)
             }
             Some(Modal::Unlock { .. }) => {
                 let pw = self.f_password.read(cx).text();
@@ -790,12 +863,13 @@ impl Root {
         cx.notify();
     }
 
-    fn confirm_delete(&mut self, objs: &[String]) {
+    fn confirm_delete(&mut self, objs: &[String], cx: &mut Context<Self>) {
         for obj in objs {
             self.send(Command::Delete {
                 obj: obj.clone(),
             });
         }
+        self.mark_pending(objs, PendKind::Delete, "", cx);
         self.modal = None;
         self.selected.clear();
     }

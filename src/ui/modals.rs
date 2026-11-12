@@ -59,7 +59,7 @@ impl Root {
                 let o = objs.clone();
                 list = list.child(move_dest_row("root", "", {
                     cx.listener(move |this, _: &MouseDownEvent, _, cx| {
-                        this.confirm_move(&o, &root_dest);
+                        this.confirm_move(&o, &root_dest, cx);
                         cx.notify();
                     })
                 }));
@@ -77,7 +77,7 @@ impl Root {
                     let o = objs.clone();
                     list = list.child(move_dest_row(&d.name, &d.id, {
                         cx.listener(move |this, _: &MouseDownEvent, _, cx| {
-                            this.confirm_move(&o, &dest);
+                            this.confirm_move(&o, &dest, cx);
                             cx.notify();
                         })
                     }));
@@ -275,7 +275,7 @@ impl Root {
                         )
                         .child({
                             let ok = cx.listener(move |this, _: &MouseDownEvent, _, cx| {
-                                this.confirm_delete(&objs);
+                                this.confirm_delete(&objs, cx);
                                 cx.notify();
                             });
                             button("Delete", theme().danger, ok)
