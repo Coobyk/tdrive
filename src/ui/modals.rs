@@ -46,8 +46,8 @@ impl Root {
                         .into_any_element(),
                 )
             }
-            Modal::Move { obj } => {
-                let obj = obj.clone();
+            Modal::Move { objs } => {
+                let objs = objs.clone();
                 let mut list = div()
                     .id("move-list")
                     .flex()
@@ -56,7 +56,7 @@ impl Root {
                     .max_h(px(200.))
                     .overflow_y_scroll();
                 let root_dest = "".to_string();
-                let o = obj.clone();
+                let o = objs.clone();
                 list = list.child(move_dest_row("root", "", {
                     cx.listener(move |this, _: &MouseDownEvent, _, cx| {
                         this.confirm_move(&o, &root_dest);
@@ -66,11 +66,15 @@ impl Root {
                 for d in self.namespace.folders.values() {
                     // A folder can't move into itself or its own subtree —
                     // the projection would reject it after the send.
-                    if d.tombstoned || self.namespace.subtree_contains(&obj, &d.id) {
+                    if d.tombstoned
+                        || objs
+                            .iter()
+                            .any(|o| self.namespace.subtree_contains(o, &d.id))
+                    {
                         continue;
                     }
                     let dest = d.id.clone();
-                    let o = obj.clone();
+                    let o = objs.clone();
                     list = list.child(move_dest_row(&d.name, &d.id, {
                         cx.listener(move |this, _: &MouseDownEvent, _, cx| {
                             this.confirm_move(&o, &dest);
@@ -78,7 +82,14 @@ impl Root {
                         })
                     }));
                 }
-                ("Move to…".into(), list.into_any_element())
+                (
+                    if objs.len() == 1 {
+                        "Move to…".into()
+                    } else {
+                        format!("Move {} items to…", objs.len()).into()
+                    },
+                    list.into_any_element(),
+                )
             }
             Modal::Unlock { hint } => (
                 format!("Unlock drive{}", if hint.is_empty() { "".into() } else { format!(" (hint: {hint})") }).into(),
@@ -248,8 +259,8 @@ impl Root {
                     })
                     .into_any_element(),
             ),
-            Modal::Delete { obj, name } => {
-                let obj = obj.clone();
+            Modal::Delete { objs, name } => {
+                let objs = objs.clone();
                 (
                     "Delete".into(),
                     div()
@@ -264,7 +275,7 @@ impl Root {
                         )
                         .child({
                             let ok = cx.listener(move |this, _: &MouseDownEvent, _, cx| {
-                                this.confirm_delete(&obj);
+                                this.confirm_delete(&objs);
                                 cx.notify();
                             });
                             button("Delete", theme().danger, ok)

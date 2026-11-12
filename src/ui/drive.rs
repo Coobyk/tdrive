@@ -3,7 +3,173 @@
 use super::controls::{Tone, entry_icon, icon_sized, tool_button};
 use super::*;
 
+/// Actions that apply to the current selection — shared between the
+/// selection bar and the right-click menu.
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum SelAct {
+    Download,
+    Open,
+    View,
+    Rename,
+    Move,
+    Delete,
+    Restore,
+    Purge,
+}
+
+impl SelAct {
+    fn meta(self) -> (&'static str, &'static str, Tone) {
+        match self {
+            SelAct::Download => ("download", "Download", Tone::Ghost),
+            SelAct::Open => ("external", "Open", Tone::Ghost),
+            SelAct::View => ("eye", "View", Tone::Ghost),
+            SelAct::Rename => ("pencil", "Rename", Tone::Ghost),
+            SelAct::Move => ("move", "Move", Tone::Ghost),
+            SelAct::Delete => ("trash", "Delete", Tone::Danger),
+            SelAct::Restore => ("restore", "Restore", Tone::Ghost),
+            SelAct::Purge => ("trash", "Delete forever", Tone::Danger),
+        }
+    }
+}
+
 impl Root {
+    /// Which actions apply right now — Restore/Purge in trash; file-only
+    /// and single-only actions hidden when the selection doesn't fit.
+    fn sel_acts(&self) -> Vec<SelAct> {
+        if self.selected.is_empty() {
+            return Vec::new();
+        }
+        if self.trash {
+            return vec![SelAct::Restore, SelAct::Purge];
+        }
+        let single = self.selected.len() == 1;
+        let mut acts = Vec::new();
+        if single && crate::wire::is_file_id(&self.selected[0]) {
+            acts.extend([SelAct::Download, SelAct::Open, SelAct::View]);
+        }
+        if single {
+            acts.push(SelAct::Rename);
+        }
+        acts.extend([SelAct::Move, SelAct::Delete]);
+        acts
+    }
+
+    /// Label for the delete confirmation — one name or a count.
+    fn sel_label(&self) -> String {
+        if self.selected.len() == 1 {
+            let sel = &self.selected[0];
+            self.namespace
+                .files
+                .get(sel)
+                .map(|f| f.name.clone())
+                .or_else(|| self.namespace.folders.get(sel).map(|f| f.name.clone()))
+                .unwrap_or_default()
+        } else {
+            format!("{} items", self.selected.len())
+        }
+    }
+
+    fn fire_sel_act(&mut self, act: SelAct, cx: &mut Context<Self>) {
+        self.context_menu = None;
+        let sel = self.selected.clone();
+        match act {
+            SelAct::Download => {
+                if let Some(f) = self.namespace.files.get(&sel[0]).cloned() {
+                    self.pick_download_dest(f.id, f.name, cx);
+                }
+            }
+            SelAct::Open => {
+                self.send(Command::Stream {
+                    obj: sel[0].clone(),
+                });
+                self.status = "opening stream…".into();
+            }
+            SelAct::View => self.open_viewer(&sel[0], cx),
+            SelAct::Rename => {
+                let name = self.sel_label();
+                self.open_modal(
+                    Modal::Rename {
+                        obj: sel[0].clone(),
+                    },
+                    &name,
+                    "new name",
+                    cx,
+                );
+            }
+            SelAct::Move => {
+                self.modal = Some(Modal::Move { objs: sel });
+            }
+            SelAct::Delete => {
+                self.modal = Some(Modal::Delete {
+                    objs: sel,
+                    name: self.sel_label(),
+                });
+            }
+            SelAct::Restore | SelAct::Purge => {
+                for obj in sel {
+                    self.send(if act == SelAct::Restore {
+                        Command::Restore { obj }
+                    } else {
+                        Command::Purge { obj }
+                    });
+                }
+                self.selected.clear();
+            }
+        }
+        cx.notify();
+    }
+
+    /// Click semantics: ctrl toggles, shift ranges from the anchor,
+    /// plain selects one. Also arms drag-select on plain clicks.
+    fn apply_click(&mut self, id: String, ev: &MouseDownEvent, cx: &mut Context<Self>) {
+        if ev.modifiers.control {
+            if let Some(i) = self.selected.iter().position(|s| *s == id) {
+                self.selected.remove(i);
+            } else {
+                self.selected.push(id.clone());
+            }
+            self.anchor = Some(id);
+        } else if ev.modifiers.shift {
+            if let Some(anchor) = self.anchor.clone() {
+                if let Some(range) = self.range_to(&anchor, &id, cx) {
+                    self.selected = range;
+                }
+            }
+        } else {
+            self.selected = vec![id.clone()];
+            self.anchor = Some(id.clone());
+            if crate::wire::is_file_id(&id) {
+                self.send(Command::FetchThumbnail { file_id: id });
+            }
+        }
+        self.drag_anchor = self.anchor.clone();
+    }
+
+    /// Ids between `from` and `to` in display order — none if either
+    /// isn't visible.
+    fn range_to(&self, from: &str, to: &str, cx: &App) -> Option<Vec<String>> {
+        let ids = self.visible_ids(cx);
+        let (a, b) = (
+            ids.iter().position(|i| i == from)?,
+            ids.iter().position(|i| i == to)?,
+        );
+        Some(ids[a.min(b)..=a.max(b)].to_vec())
+    }
+
+    /// Extend the selection while left-dragging across a row/cell —
+    /// ranges from where the drag started.
+    fn drag_select_to(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(from) = self.drag_anchor.clone() else {
+            return;
+        };
+        if let Some(range) = self.range_to(&from, id, cx) {
+            if range != self.selected {
+                self.selected = range;
+                cx.notify();
+            }
+        }
+    }
+
     pub(super) fn render_drive(
         &mut self,
         window: &mut Window,
@@ -57,7 +223,7 @@ impl Root {
         });
         let trash_toggle = cx.listener(|this, _: &MouseDownEvent, _, cx| {
             this.trash = !this.trash;
-            this.selected = None;
+            this.selected.clear();
             cx.notify();
         });
         let v_configured = self.vault_configured;
@@ -259,102 +425,107 @@ impl Root {
                 body = body.child(self.render_row(&e, cx));
             }
         }
-        if self.selected.is_some() {
-            body = body.child(div().h(px(64.)));
-        }
-
-        // Selected actions — floating pill anchored to the bottom of the
-        // file area so selection never reflows the list.
+        // Selection bar — always rendered so (de)selecting never
+        // reflows the list.
         let mut actions = div()
             .flex()
             .items_center()
             .gap_2()
             .h(px(44.))
+            .w_full()
             .px_3()
-            .rounded_lg()
-            .border_1()
+            .border_b_1()
             .border_color(theme().border)
-            .bg(theme().panel)
-            .shadow_lg();
-        if let Some(sel) = &self.selected {
-            let name = self
-                .namespace
-                .files
-                .get(sel)
-                .map(|f| f.name.clone())
-                .or_else(|| self.namespace.folders.get(sel).map(|f| f.name.clone()))
-                .unwrap_or_default();
-            let sel_c = sel.clone();
-            let is_file = crate::wire::is_file_id(&sel);
-            if let Some(path) = self.thumbnails.get(&sel_c) {
-                actions = actions.child(img(path.clone()).w(px(28.)).h(px(28.)));
-            }
-            actions = actions
-                .child(div().text_sm().text_color(theme().text).child(name.clone()))
-                .child(div().flex_1());
-            if self.trash {
-                let obj = sel_c.clone();
-                let rs = cx.listener(move |this, _: &MouseDownEvent, _, cx| {
-                    this.send(Command::Restore { obj: obj.clone() });
-                    this.selected = None;
-                    cx.notify();
-                });
-                let obj2 = sel_c.clone();
-                let pg = cx.listener(move |this, _: &MouseDownEvent, _, cx| {
-                    this.send(Command::Purge { obj: obj2.clone() });
-                    this.selected = None;
-                    cx.notify();
-                });
-                actions = actions
-                    .child(tool_button("restore", "Restore", Tone::Ghost, rs))
-                    .child(tool_button("trash", "Delete forever", Tone::Danger, pg));
-            } else if is_file {
-                let file = self.namespace.files.get(sel).cloned();
-                if let Some(file) = file {
-                    let dl = cx.listener(move |this, _: &MouseDownEvent, _, cx| {
-                        this.pick_download_dest(file.id.clone(), file.name.clone(), cx)
-                    });
-                    actions = actions.child(tool_button("download", "Download", Tone::Ghost, dl));
-                    let id = sel_c.clone();
-                    let st = cx.listener(move |this, _: &MouseDownEvent, _, cx| {
-                        this.send(Command::Stream { obj: id.clone() });
-                        this.status = "opening stream…".into();
-                        cx.notify();
-                    });
-                    actions = actions.child(tool_button("external", "Open", Tone::Ghost, st));
-                    let id2 = sel_c.clone();
-                    let vw = cx.listener(move |this, _: &MouseDownEvent, _, cx| {
-                        this.open_viewer(&id2, cx);
-                    });
-                    actions = actions.child(tool_button("eye", "View", Tone::Ghost, vw));
+            .bg(theme().panel);
+        if self.selected.is_empty() {
+            actions = actions.child(
+                div()
+                    .text_sm()
+                    .text_color(theme().dim)
+                    .child("No selection — ctrl/shift-click or drag to select multiple"),
+            );
+        } else {
+            if self.selected.len() == 1 {
+                let sel = &self.selected[0];
+                if let Some(path) = self.thumbnails.get(sel) {
+                    actions = actions.child(img(path.clone()).w(px(28.)).h(px(28.)));
                 }
             }
-            if !self.trash {
-                let obj = sel_c.clone();
-                let nm2 = name.clone();
-                let rn = cx.listener(move |this, _: &MouseDownEvent, _, cx| {
-                    this.open_modal(Modal::Rename { obj: obj.clone() }, &nm2, "new name", cx);
-                });
-                let obj2 = sel_c.clone();
-                let mv = cx.listener(move |this, _: &MouseDownEvent, _, cx| {
-                    this.modal = Some(Modal::Move { obj: obj2.clone() });
-                    cx.notify();
-                });
-                let obj3 = sel_c.clone();
-                let nm = name.clone();
-                let del = cx.listener(move |this, _: &MouseDownEvent, _, cx| {
-                    this.modal = Some(Modal::Delete {
-                        obj: obj3.clone(),
-                        name: nm.clone(),
-                    });
-                    cx.notify();
-                });
-                actions = actions
-                    .child(tool_button("pencil", "Rename", Tone::Ghost, rn))
-                    .child(tool_button("move", "Move", Tone::Ghost, mv))
-                    .child(tool_button("trash", "Delete", Tone::Danger, del));
+            actions = actions
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(theme().text)
+                        .child(self.sel_label()),
+                )
+                .child(div().flex_1());
+            for act in self.sel_acts() {
+                let (icon, label, tone) = act.meta();
+                actions = actions.child(tool_button(
+                    icon,
+                    label,
+                    tone,
+                    cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                        this.fire_sel_act(act, cx)
+                    }),
+                ));
             }
         }
+
+        // Right-click menu — same actions as the bar, absolute at the
+        // click point. Window coords work because this subtree fills the
+        // whole window on the Drive screen.
+        let context = if let Some(pos) = self.context_menu {
+            let vw = f32::from(window.viewport_size().width);
+            let vh = f32::from(window.viewport_size().height);
+            let (w, row_h) = (px(200.), 30.5f32);
+            let h = self.sel_acts().len() as f32 * row_h + 8.;
+            let x = px(f32::from(pos.x).min(vw - 208.));
+            let y = px(f32::from(pos.y).min(vh - h - 8.));
+            let mut menu = div()
+                .absolute()
+                .left(x)
+                .top(y)
+                .w(w)
+                .flex()
+                .flex_col()
+                .py_1()
+                .bg(theme().panel)
+                .border_1()
+                .border_color(theme().border)
+                .rounded_md()
+                .shadow_lg();
+            for act in self.sel_acts() {
+                let (icon, label, tone) = act.meta();
+                let color = match tone {
+                    Tone::Danger => theme().danger,
+                    _ => theme().text,
+                };
+                menu = menu.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .px_3()
+                        .h(px(row_h))
+                        .text_sm()
+                        .text_color(color)
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme().panel2))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                                this.fire_sel_act(act, cx)
+                            }),
+                        )
+                        .child(icon_sized(icon, 13., color))
+                        .child(label),
+                );
+            }
+            menu.into_any_element()
+        } else {
+            div().into_any_element()
+        };
 
         // Transfers — collapsed pins the in-flight rows on top; expanded
         // swaps in a draggable pane with the full list.
@@ -504,7 +675,19 @@ impl Root {
                     cx.notify();
                 }),
             )
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                    if this.context_menu.is_some() {
+                        this.context_menu = None;
+                        cx.notify();
+                    }
+                }),
+            )
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
+                if ev.pressed_button.is_none() {
+                    this.drag_anchor = None;
+                }
                 if let Some((sy, sh)) = this.transfers_drag {
                     if ev.pressed_button.is_some() {
                         this.transfers_height =
@@ -526,6 +709,13 @@ impl Root {
                     }
                     return;
                 }
+                if this.context_menu.is_some() {
+                    if e.keystroke.key == "escape" {
+                        this.context_menu = None;
+                        cx.notify();
+                    }
+                    return;
+                }
                 let ids = this.visible_ids(cx);
                 match e.keystroke.key.as_str() {
                     "up" | "down" => {
@@ -534,7 +724,7 @@ impl Root {
                         }
                         let idx = ids
                             .iter()
-                            .position(|i| Some(i) == this.selected.as_ref())
+                            .position(|i| this.selected.len() == 1 && this.selected[0] == *i)
                             .map(|i| {
                                 if e.keystroke.key == "up" {
                                     i.saturating_sub(1)
@@ -543,7 +733,8 @@ impl Root {
                                 }
                             })
                             .unwrap_or(0);
-                        this.selected = Some(ids[idx].clone());
+                        this.selected = vec![ids[idx].clone()];
+                        this.anchor = Some(ids[idx].clone());
                         let row = if this.grid && !this.trash {
                             idx / this.grid_cols.max(1)
                         } else {
@@ -552,9 +743,10 @@ impl Root {
                         this.scroll_handle.scroll_to_top_of_item(row);
                     }
                     "enter" => {
-                        let Some(sel) = this.selected.clone() else {
+                        if this.selected.len() != 1 {
                             return;
-                        };
+                        }
+                        let sel = this.selected[0].clone();
                         if crate::wire::is_folder_id(&sel) {
                             this.set_cwd(sel);
                         } else if let Some(f) = this.namespace.files.get(&sel).cloned() {
@@ -562,6 +754,10 @@ impl Root {
                                 this.pick_download_dest(f.id, f.name, cx);
                             }
                         }
+                    }
+                    "escape" => {
+                        this.selected.clear();
+                        this.anchor = None;
                     }
                     "backspace" => {
                         let parent = this
@@ -571,20 +767,16 @@ impl Root {
                             .map(|d| d.parent.clone())
                             .unwrap_or_default();
                         this.cwd = parent;
-                        this.selected = None;
+                        this.selected.clear();
                     }
                     "delete" => {
-                        let Some(sel) = this.selected.clone() else {
+                        if this.selected.is_empty() {
                             return;
-                        };
-                        let name = this
-                            .namespace
-                            .files
-                            .get(&sel)
-                            .map(|f| f.name.clone())
-                            .or_else(|| this.namespace.folders.get(&sel).map(|d| d.name.clone()))
-                            .unwrap_or_default();
-                        this.modal = Some(Modal::Delete { obj: sel, name });
+                        }
+                        this.modal = Some(Modal::Delete {
+                            objs: this.selected.clone(),
+                            name: this.sel_label(),
+                        });
                     }
                     _ => return,
                 }
@@ -639,27 +831,8 @@ impl Root {
                     .border_color(theme().border)
                     .child(toolbar),
             )
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .w_full()
-                    .relative()
-                    .child(body)
-                    .child(if self.selected.is_some() {
-                        div()
-                            .absolute()
-                            .bottom(px(10.))
-                            .left_0()
-                            .w_full()
-                            .flex()
-                            .justify_center()
-                            .child(actions)
-                            .into_any_element()
-                    } else {
-                        div().into_any_element()
-                    }),
-            )
+            .child(actions)
+            .child(body)
             .child(
                 div()
                     .border_t_1()
@@ -735,6 +908,7 @@ impl Root {
             )
             .child(self.render_modal(window, cx))
             .child(self.render_viewer(cx))
+            .child(context)
     }
 
     /// Whether background work is in flight — drives the bottom-left
@@ -788,8 +962,10 @@ impl Root {
                 file_id: id.clone(),
             });
         }
-        let selected = self.selected.as_deref() == Some(id.as_str());
+        let selected = self.selected.contains(&id);
         let click_id = id.clone();
+        let rc_id = id.clone();
+        let hover_id = id.clone();
         let thumb = self.thumbnails.get(&id).cloned();
         div()
             .flex()
@@ -813,11 +989,27 @@ impl Root {
                     if ev.click_count == 2 && is_folder {
                         this.set_cwd(click_id.clone());
                     } else {
-                        this.selected = Some(click_id.clone());
+                        this.apply_click(click_id.clone(), ev, cx);
                     }
                     cx.notify();
                 }),
             )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
+                    if !this.selected.contains(&rc_id) {
+                        this.selected = vec![rc_id.clone()];
+                        this.anchor = Some(rc_id.clone());
+                    }
+                    this.context_menu = Some(ev.position);
+                    cx.notify();
+                }),
+            )
+            .on_mouse_move(cx.listener(move |this, ev: &MouseMoveEvent, _, cx| {
+                if matches!(ev.pressed_button, Some(MouseButton::Left)) {
+                    this.drag_select_to(&hover_id, cx);
+                }
+            }))
             .child(
                 div()
                     .w(px(80.))
@@ -868,9 +1060,11 @@ impl Root {
                 false,
             ),
         };
-        let selected = self.selected.as_deref() == Some(id.as_str());
+        let selected = self.selected.contains(&id);
         let row_id = format!("row-{id}");
         let id_click = id.clone();
+        let rc_id = id.clone();
+        let hover_id = id.clone();
 
         div()
             .id(SharedString::from(row_id))
@@ -896,14 +1090,27 @@ impl Root {
                     } else if ev.click_count == 2 {
                         this.open_viewer(&id_click, cx);
                     } else {
-                        this.selected = Some(id_click.clone());
-                        this.send(Command::FetchThumbnail {
-                            file_id: id_click.clone(),
-                        });
+                        this.apply_click(id_click.clone(), ev, cx);
                     }
                     cx.notify();
                 }),
             )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
+                    if !this.selected.contains(&rc_id) {
+                        this.selected = vec![rc_id.clone()];
+                        this.anchor = Some(rc_id.clone());
+                    }
+                    this.context_menu = Some(ev.position);
+                    cx.notify();
+                }),
+            )
+            .on_mouse_move(cx.listener(move |this, ev: &MouseMoveEvent, _, cx| {
+                if matches!(ev.pressed_button, Some(MouseButton::Left)) {
+                    this.drag_select_to(&hover_id, cx);
+                }
+            }))
             .child(
                 div()
                     .w(px(22.))

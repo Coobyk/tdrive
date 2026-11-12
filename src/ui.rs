@@ -38,10 +38,10 @@ enum Modal {
         obj: String,
     },
     Move {
-        obj: String,
+        objs: Vec<String>,
     },
     Delete {
-        obj: String,
+        objs: Vec<String>,
         name: String,
     },
     Unlock {
@@ -98,7 +98,14 @@ pub struct Root {
     channel: Option<ChannelInfo>,
     namespace: Arc<Namespace>,
     cwd: String,
-    selected: Option<String>,
+    selected: Vec<String>,
+    /// Range anchor for shift-click selection.
+    anchor: Option<String>,
+    /// Row id the current left-drag started on — drive-selects a range
+    /// while the pointer moves across other rows.
+    drag_anchor: Option<String>,
+    /// Right-click menu position (window coords) while open.
+    context_menu: Option<Point<Pixels>>,
     transfers: BTreeMap<String, TransferUpdate>,
     modal: Option<Modal>,
     signed_in_as: String,
@@ -175,7 +182,10 @@ impl Root {
             channel: None,
             namespace: Arc::new(Namespace::new()),
             cwd: String::new(),
-            selected: None,
+            selected: Vec::new(),
+            anchor: None,
+            drag_anchor: None,
+            context_menu: None,
             transfers: BTreeMap::new(),
             modal: None,
             signed_in_as: String::new(),
@@ -321,7 +331,7 @@ impl Root {
                 self.nav_fwd.clear();
                 self.trash = false;
                 self.modal = None;
-                self.selected = None;
+                self.selected.clear();
                 self.thumbnails.clear();
                 self.thumb_requested.clear();
                 self.status = format!("opened {}", info.title);
@@ -337,9 +347,7 @@ impl Root {
             }
             Event::Namespace(ns) => {
                 self.namespace = ns;
-                if self.selected.is_some() {
-                    self.selected = None;
-                }
+                self.selected.clear();
             }
             Event::Transfer(t) => {
                 self.transfers.insert(t.id.clone(), t.clone());
@@ -617,7 +625,8 @@ impl Root {
             self.nav_back.push(self.cwd.clone());
             self.nav_fwd.clear();
             self.cwd = id;
-            self.selected = None;
+            self.selected.clear();
+            self.context_menu = None;
         }
     }
 
@@ -634,7 +643,7 @@ impl Root {
                 .map(|d| d.parent.clone())
                 .unwrap_or_default();
         }
-        self.selected = None;
+        self.selected.clear();
     }
 
     /// M5 — history forward.
@@ -643,7 +652,7 @@ impl Root {
             self.nav_back.push(self.cwd.clone());
             self.cwd = next;
         }
-        self.selected = None;
+        self.selected.clear();
     }
 
     fn confirm_mkdir(&mut self, cx: &mut Context<Self>) {
@@ -672,12 +681,15 @@ impl Root {
         self.modal = None;
     }
 
-    fn confirm_move(&mut self, obj: &str, dest: &str) {
-        self.send(Command::Move {
-            obj: obj.to_string(),
-            parent: dest.to_string(),
-        });
+    fn confirm_move(&mut self, objs: &[String], dest: &str) {
+        for obj in objs {
+            self.send(Command::Move {
+                obj: obj.clone(),
+                parent: dest.to_string(),
+            });
+        }
         self.modal = None;
+        self.selected.clear();
     }
 
     /// Enter key = the modal's confirm button, Escape = cancel.
@@ -688,9 +700,9 @@ impl Root {
                 let obj = obj.clone();
                 self.confirm_rename(&obj, cx)
             }
-            Some(Modal::Delete { obj, .. }) => {
-                let obj = obj.clone();
-                self.confirm_delete(&obj)
+            Some(Modal::Delete { objs, .. }) => {
+                let objs = objs.clone();
+                self.confirm_delete(&objs)
             }
             Some(Modal::Unlock { .. }) => {
                 let pw = self.f_password.read(cx).text();
@@ -741,12 +753,14 @@ impl Root {
         cx.notify();
     }
 
-    fn confirm_delete(&mut self, obj: &str) {
-        self.send(Command::Delete {
-            obj: obj.to_string(),
-        });
+    fn confirm_delete(&mut self, objs: &[String]) {
+        for obj in objs {
+            self.send(Command::Delete {
+                obj: obj.clone(),
+            });
+        }
         self.modal = None;
-        self.selected = None;
+        self.selected.clear();
     }
 }
 
