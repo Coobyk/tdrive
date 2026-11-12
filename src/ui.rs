@@ -658,6 +658,13 @@ impl Root {
     /// The pickers only differ in what they let you select — both land
     /// in the same upload-review modal afterwards.
     fn pick_upload(&mut self, cx: &mut Context<Self>) {
+        // TDRIVE_UPLOAD_DEBUG="/a/b:/c/d" skips the portal picker —
+        // headless boxes have no file dialog.
+        if let Ok(debug) = std::env::var("TDRIVE_UPLOAD_DEBUG") {
+            let paths: Vec<PathBuf> = debug.split(':').map(PathBuf::from).collect();
+            self.open_upload_review(paths, cx);
+            return;
+        }
         let task = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
