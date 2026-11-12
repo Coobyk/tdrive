@@ -1038,10 +1038,11 @@ impl Root {
             )
             .child(
                 div()
+                    .w_full()
                     .text_xs()
                     .text_color(theme().text)
-                    .overflow_hidden()
-                    .whitespace_nowrap()
+                    .text_center()
+                    .truncate()
                     .child(name),
             )
     }
