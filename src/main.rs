@@ -19,6 +19,7 @@ use gpui::*;
 fn main() {
     let handle = tg::spawn();
     Application::new().with_assets(assets::Assets).run(move |cx: &mut App| {
+
         let bounds = Bounds::centered(None, size(px(960.), px(640.)), cx);
         cx.open_window(
             WindowOptions {

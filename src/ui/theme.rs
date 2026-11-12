@@ -49,9 +49,9 @@ fn dark() -> Theme {
         accent_hover: c(0x7db9f2),
         on_accent: c(0x1e222a),
         selected: c(0x3e4452),
-        accent_soft: theme().accent_soft.into(),
+        accent_soft: hsla(207. / 360., 0.82, 0.66, 0.13),
         danger: c(0xe06c75),
-        danger_soft: theme().danger_soft.into(),
+        danger_soft: rgba(0xe06c751f).into(),
         ok: c(0x98c379),
         file_icon: c(0x4d5666),
     }
