@@ -15,9 +15,11 @@ pub(super) const GRID_ROW_H: f32 = CELL_H + 2. * GRID_PAD;
 const RUBBER_CLICK: f32 = 4.;
 /// Drag-move threshold for an armed press on a selected row.
 const DRAG_ARM: f32 = 6.;
-/// Uniform chrome height — titlebar, action bar and the context bar
-/// all share it so the window reads as one consistent grid.
+/// Titlebar height.
 const BAR_H: f32 = 36.;
+/// Working-bar height — a little taller than the titlebar so the path
+/// and buttons read as the primary surface, not an accessory strip.
+const CTX_H: f32 = 42.;
 
 /// Actions that apply to the current selection — shared between the
 /// selection bar and the right-click menu.
@@ -682,45 +684,36 @@ impl Root {
             cx.notify();
         });
 
-        // Action bar — create ops on the left (or Empty trash in the
-        // trash view), sync + tools dropdown on the right.
-        let mut toolbar = div().flex().items_center().gap_2().w_full();
-        if self.trash {
-            let et = cx.listener(|this, _: &MouseDownEvent, _, cx| {
-                this.send(Command::EmptyTrash);
-                cx.notify();
-            });
-            toolbar = toolbar.child(tool_button("trash", "Empty trash", Tone::Danger, et));
-        } else {
-            toolbar = toolbar
-                .child(tool_button("upload", "Upload", Tone::Primary, upload))
-                .child(tool_button("folder_up", "Folder", Tone::Ghost, upload_dir))
-                .child(tool_button("folder_plus", "New folder", Tone::Ghost, new_folder));
-        }
-        toolbar = toolbar.child(div().flex_1());
-        if !self.namespace.unadopted.is_empty() && !self.trash {
-            let n = self.namespace.unadopted.len();
-            let ad = cx.listener(|this, _: &MouseDownEvent, _, cx| {
-                this.modal = Some(Modal::Adopt);
-                cx.notify();
-            });
-            toolbar = toolbar.child(tool_button("inbox", &format!("Unadopted ({n})"), Tone::Ghost, ad));
-        }
-        toolbar = toolbar
-            .child(tool_button("refresh", "Sync", Tone::Ghost, refresh))
-            .child(tool_button("sliders", "Tools", Tone::Ghost, tools_btn));
+        let et = cx.listener(|this, _: &MouseDownEvent, _, cx| {
+            this.send(Command::EmptyTrash);
+            cx.notify();
+        });
+        let ad = cx.listener(|this, _: &MouseDownEvent, _, cx| {
+            this.modal = Some(Modal::Adopt);
+            cx.notify();
+        });
+        let paste_here = cx.listener(|this, _: &MouseDownEvent, _, cx| {
+            let dest = this.cwd.clone();
+            this.paste_clip(dest, cx);
+        });
 
         // Path bar — the drive name is the first crumb, the deepest
         // folder is emphasized. Trash and search get a terminal crumb
         // so the bar always answers "where am I".
         let search_q = self.f_search.read(cx).text().trim().to_string();
         let at_root = !self.trash && search_q.is_empty() && self.cwd.is_empty();
-        let mut crumbs = div().flex().items_center().gap_1().text_sm().child(
+        let mut crumbs = div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .text_sm()
+            .child(icon_sized("folder", 13., theme().dim))
+            .child(
             div()
                 .id("crumb-drive")
                 .cursor_pointer()
                 .font_weight(if at_root {
-                    FontWeight::MEDIUM
+                    FontWeight::SEMIBOLD
                 } else {
                     FontWeight::NORMAL
                 })
@@ -750,7 +743,7 @@ impl Root {
                 // Terminal crumb — current folder or mode label.
                 crumbs = crumbs.child(
                     div()
-                        .font_weight(FontWeight::MEDIUM)
+                        .font_weight(FontWeight::SEMIBOLD)
                         .text_color(theme().text)
                         .child(name.clone()),
                 );
@@ -913,29 +906,22 @@ impl Root {
                     .bg(theme().accent_soft),
             );
         }
-        // Context bar — always rendered so (de)selecting never reflows
-        // the list. Left: where you are (path). Right: what's selected
-        // and what you can do with it.
+        // The working bar — path on the left; the right side is
+        // contextual: selection actions when something's selected,
+        // create/ops otherwise. Sync and Tools anchor the tail so they
+        // never move.
         let mut actions = div()
             .flex()
             .items_center()
             .gap_2()
-            .h(px(BAR_H))
+            .h(px(CTX_H))
             .w_full()
             .px_3()
             .border_b_1()
             .border_color(theme().border)
-            .bg(theme().panel)
             .child(crumbs)
             .child(div().flex_1());
-        if self.selected.is_empty() {
-            actions = actions.child(
-                div()
-                    .text_xs()
-                    .text_color(theme().dim)
-                    .child("ctrl/shift-click or drag to select"),
-            );
-        } else {
+        if !self.selected.is_empty() {
             if self.selected.len() == 1 {
                 let sel = &self.selected[0];
                 if let Some(path) = self.thumbnails.get(sel) {
@@ -945,6 +931,7 @@ impl Root {
             actions = actions.child(
                 div()
                     .text_sm()
+                    .font_weight(FontWeight::MEDIUM)
                     .text_color(theme().text)
                     .child(self.sel_label()),
             );
@@ -959,7 +946,38 @@ impl Root {
                     }),
                 ));
             }
+        } else {
+            actions = actions.child(
+                div()
+                    .text_xs()
+                    .text_color(theme().dim)
+                    .child(format!("{} items", self.entries_cache.len())),
+            );
+            if self.trash {
+                actions = actions.child(tool_button("trash", "Empty trash", Tone::Danger, et));
+            } else {
+                if self.clip.is_some() {
+                    actions =
+                        actions.child(tool_button("paste", "Paste", Tone::Ghost, paste_here));
+                }
+                if !self.namespace.unadopted.is_empty() {
+                    let n = self.namespace.unadopted.len();
+                    actions = actions.child(tool_button(
+                        "inbox",
+                        &format!("Unadopted ({n})"),
+                        Tone::Ghost,
+                        ad,
+                    ));
+                }
+                actions = actions
+                    .child(tool_button("upload", "Upload", Tone::Primary, upload))
+                    .child(tool_button("folder_up", "Folder", Tone::Ghost, upload_dir))
+                    .child(tool_button("folder_plus", "New folder", Tone::Ghost, new_folder));
+            }
         }
+        actions = actions
+            .child(tool_button("refresh", "Sync", Tone::Ghost, refresh))
+            .child(tool_button("sliders", "Tools", Tone::Ghost, tools_btn));
 
         // Popup menus — the right-click menu tracks the cursor; the
         // Tools dropdown right-aligns to its button. Window coords work
@@ -1424,17 +1442,6 @@ impl Root {
                     ))
                     .child(tool_button("log_out", "Sign out", Tone::Ghost, sign_out)),
             )
-            // Action bar — one grouped row of controls.
-            .child(
-                div()
-                    .h(px(BAR_H))
-                    .px_3()
-                    .flex()
-                    .items_center()
-                    .border_b_1()
-                    .border_color(theme().border)
-                    .child(toolbar),
-            )
             .child(actions)
             .child(
                 div()
@@ -1515,14 +1522,6 @@ impl Root {
                                 .into_any_element()
                         }
                     })
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme().dim)
-                            .px_3()
-                            .py_1()
-                            .child(format!("{} items", self.entries_cache.len())),
-                    )
                     .child(
                         div()
                             .px_3()
