@@ -27,7 +27,7 @@ impl Root {
                     .child(self.f_name.clone())
                     .child({
                         let ok = cx.listener(|this, _: &MouseDownEvent, _, cx| this.modal_confirm(cx));
-                        button("Create", ACCENT, ok)
+                        button("Create", theme().accent, ok)
                     })
                     .into_any_element(),
             ),
@@ -41,7 +41,7 @@ impl Root {
                         .child(self.f_name.clone())
                         .child({
                             let ok = cx.listener(|this, _: &MouseDownEvent, _, cx| this.modal_confirm(cx));
-                            button("Rename", ACCENT, ok)
+                            button("Rename", theme().accent, ok)
                         })
                         .into_any_element(),
                 )
@@ -89,7 +89,7 @@ impl Root {
                     .child(self.f_password.clone())
                     .child({
                         let ok = cx.listener(|this, _: &MouseDownEvent, _, cx| this.modal_confirm(cx));
-                        button("Unlock", ACCENT, ok)
+                        button("Unlock", theme().accent, ok)
                     })
                     .into_any_element(),
             ),
@@ -102,14 +102,14 @@ impl Root {
                     .child(
                         div()
                             .text_sm()
-                            .text_color(rgb(DIM))
+                            .text_color(theme().dim)
                             .child("Creates a password vault on this drive. There is no recovery without the password."),
                     )
                     .child(self.f_password.clone())
                     .child(self.f_channel.clone())
                     .child({
                         let ok = cx.listener(|this, _: &MouseDownEvent, _, cx| this.modal_confirm(cx));
-                        button("Create vault", ACCENT, ok)
+                        button("Create vault", theme().accent, ok)
                     })
                     .into_any_element(),
             ),
@@ -120,13 +120,13 @@ impl Root {
                         .flex()
                         .flex_col()
                         .gap_3()
-                        .child(div().text_sm().text_color(rgb(DIM)).child(
+                        .child(div().text_sm().text_color(theme().dim).child(
                             "Mount point path — the drive appears as a filesystem.",
                         ))
                         .child(self.f_name.clone())
                         .child({
                             let ok = cx.listener(|this, _: &MouseDownEvent, _, cx| this.modal_confirm(cx));
-                            button("Mount", ACCENT, ok)
+                            button("Mount", theme().accent, ok)
                         })
                         .into_any_element(),
                 )
@@ -138,13 +138,13 @@ impl Root {
                         .flex()
                         .flex_col()
                         .gap_3()
-                        .child(div().text_sm().text_color(rgb(DIM)).child(
+                        .child(div().text_sm().text_color(theme().dim).child(
                             "New images in this folder are uploaded to Photos periodically.",
                         ))
                         .child(self.f_name.clone())
                         .child({
                             let ok = cx.listener(|this, _: &MouseDownEvent, _, cx| this.modal_confirm(cx));
-                            button("Watch", ACCENT, ok)
+                            button("Watch", theme().accent, ok)
                         })
                         .into_any_element(),
                 )
@@ -165,7 +165,7 @@ impl Root {
                             .items_center()
                             .gap_2()
                             .child(div().flex_1().text_sm().child(format!("{} ({})", e.name, human_size(e.size))))
-                            .child(tool_button_id(format!("adopt-{}", e.msg_id), "Adopt", Tone::Ghost, ab)),
+                            .child(tool_button_id(format!("adopt-{}", e.msg_id), "download", "Adopt", Tone::Ghost, ab)),
                     );
                 }
                 ("Unadopted attachments".into(), list.into_any_element())
@@ -186,14 +186,14 @@ impl Root {
                         .flex()
                         .flex_col()
                         .gap_3()
-                        .child(div().text_sm().text_color(rgb(DIM)).child(label))
+                        .child(div().text_sm().text_color(theme().dim).child(label))
                         .child(
                             div()
                                 .flex()
                                 .gap_2()
                                 .child({
                                     let ok = cx.listener(|this, _: &MouseDownEvent, _, cx| this.modal_confirm(cx));
-                                    button("As folder", ACCENT, ok)
+                                    button("As folder", theme().accent, ok)
                                 })
                                 .child({
                                     let ok = cx.listener(move |this, _: &MouseDownEvent, _, cx| {
@@ -206,7 +206,7 @@ impl Root {
                                         this.modal = None;
                                         cx.notify();
                                     });
-                                    button(".7z archive", ACCENT, ok)
+                                    button(".7z archive", theme().accent, ok)
                                 }),
                         )
                         .into_any_element(),
@@ -221,13 +221,13 @@ impl Root {
                     .child(
                         div()
                             .text_sm()
-                            .text_color(rgb(DIM))
+                            .text_color(theme().dim)
                             .child("Max parallel uploads (1–16, default 3)"),
                     )
                     .child(self.f_name.clone())
                     .child({
                         let ok = cx.listener(|this, _: &MouseDownEvent, _, cx| this.modal_confirm(cx));
-                        button("Set", ACCENT, ok)
+                        button("Set", theme().accent, ok)
                     })
                     .into_any_element(),
             ),
@@ -238,13 +238,13 @@ impl Root {
                     .flex_col()
                     .gap_3()
                     .child(
-                        div().text_sm().text_color(rgb(DIM)).child(format!(
+                        div().text_sm().text_color(theme().dim).child(format!(
                             "{dead} obsolete messages — ops and bodies of files and                              folders that were created and later deleted — can be                              removed from the channel. Live files and unadopted                              uploads are untouched.",
                         )),
                     )
                     .child({
                         let ok = cx.listener(|this, _: &MouseDownEvent, _, cx| this.modal_confirm(cx));
-                        button("Delete messages", ACCENT, ok)
+                        button("Delete messages", theme().accent, ok)
                     })
                     .into_any_element(),
             ),
@@ -259,7 +259,7 @@ impl Root {
                         .child(
                             div()
                                 .text_sm()
-                                .text_color(rgb(DIM))
+                                .text_color(theme().dim)
                                 .child(format!("Delete “{name}”?")),
                         )
                         .child({
@@ -267,7 +267,7 @@ impl Root {
                                 this.confirm_delete(&obj);
                                 cx.notify();
                             });
-                            button("Delete", DANGER, ok)
+                            button("Delete", theme().danger, ok)
                         })
                         .into_any_element(),
                 )
@@ -292,9 +292,9 @@ impl Root {
                     .gap_4()
                     .p_5()
                     .rounded_lg()
-                    .bg(rgb(PANEL))
+                    .bg(theme().panel)
                     .border_1()
-                    .border_color(rgb(BORDER))
+                    .border_color(theme().border)
                     .shadow_lg()
                     // stop clicks inside the card from closing the modal
                     .on_mouse_down(MouseButton::Left, |_, _, cx| {
@@ -314,7 +314,7 @@ impl Root {
                         div()
                             .text_lg()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(rgb(TEXT))
+                            .text_color(theme().text)
                             .child(title),
                     )
                     .child(body),
@@ -336,14 +336,21 @@ fn move_dest_row(
         .px_3()
         .py_2()
         .rounded_md()
-        .bg(rgb(PANEL2))
-        .hover(|s| s.bg(rgb(PANEL2)))
+        .bg(theme().panel2)
+        .hover(|s| s.bg(theme().panel2))
         .cursor_pointer()
         .on_mouse_down(MouseButton::Left, on_click)
         .child(
             div()
-                .text_sm()
-                .text_color(rgb(TEXT))
-                .child(name.to_string()),
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(super::controls::icon_sized("folder", 13., theme().accent))
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(theme().text)
+                        .child(name.to_string()),
+                ),
         )
 }

@@ -13,22 +13,13 @@ mod controls;
 mod drive;
 mod modals;
 mod screens;
+mod theme;
 mod transfers;
 mod viewer;
 
 pub use controls::human_size;
+pub(crate) use theme::{apply_appearance, theme};
 
-// One Dark — Zed's default workbench palette.
-const BG: u32 = 0x282c34;
-const PANEL: u32 = 0x21252b;
-const PANEL2: u32 = 0x2c313a;
-const BORDER: u32 = 0x3e4451;
-const TEXT: u32 = 0xabb2bf;
-const DIM: u32 = 0x5c6370;
-const ACCENT: u32 = 0x61afef;
-const ACCENT_DARK: u32 = 0x1e222a;
-const DANGER: u32 = 0xe06c75;
-const OK: u32 = 0x98c379;
 
 #[derive(Debug, Clone, PartialEq)]
 enum Screen {
@@ -753,7 +744,7 @@ impl Render for Root {
         let content: AnyElement = match self.screen {
             Screen::Setup => self.render_setup(window, cx).into_any_element(),
             Screen::Connecting => self
-                .centered_card(div().text_color(rgb(DIM)).child("connecting to Telegram…"))
+                .centered_card(div().text_color(theme().dim).child("connecting to Telegram…"))
                 .into_any_element(),
             Screen::AuthPhone | Screen::AuthCode | Screen::AuthPassword => {
                 self.render_auth(window, cx).into_any_element()
@@ -772,8 +763,8 @@ impl Render for Root {
 
         div()
             .size_full()
-            .bg(rgb(BG))
-            .text_color(rgb(TEXT))
+            .bg(theme().bg)
+            .text_color(theme().text)
             .flex()
             .flex_col()
             .child(if self.screen != Screen::Drive {
@@ -784,19 +775,19 @@ impl Render for Root {
                     .w_full()
                     .h(px(44.))
                     .px_4()
-                    .bg(rgb(PANEL))
+                    .bg(theme().panel)
                     .border_b_1()
-                    .border_color(rgb(BORDER))
+                    .border_color(theme().border)
                     .child(
                         div()
                             .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(ACCENT))
+                            .text_color(theme().accent)
                             .child("TDrive"),
                     )
                     .child(
                         div()
                             .text_sm()
-                            .text_color(rgb(DIM))
+                            .text_color(theme().dim)
                             .child(self.status.clone()),
                     )
                     .into_any_element()

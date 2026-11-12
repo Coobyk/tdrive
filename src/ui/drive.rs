@@ -1,6 +1,6 @@
 //! Drive browser — the file listing view, selection detail,
 //! rows/cells, and the footer activity state.
-use super::controls::{Tone, tool_button};
+use super::controls::{Tone, entry_icon, icon_sized, tool_button};
 use super::*;
 
 impl Root {
@@ -81,12 +81,13 @@ impl Root {
             .items_center()
             .gap_2()
             .w_full()
-            .child(tool_button("Upload", Tone::Primary, upload))
-            .child(tool_button("New folder", Tone::Ghost, new_folder))
+            .child(tool_button("upload", "Upload", Tone::Primary, upload))
+            .child(tool_button("folder_plus", "New folder", Tone::Ghost, new_folder))
             .child(div().w(px(12.)))
-            .child(tool_button("Backup", Tone::Ghost, backup))
-            .child(tool_button("Watch", Tone::Ghost, watch))
+            .child(tool_button("camera", "Backup", Tone::Ghost, backup))
+            .child(tool_button("eye", "Watch", Tone::Ghost, watch))
             .child(tool_button(
+                "hard_drive",
                 if self.mount_dir.is_some() {
                     "Unmount"
                 } else {
@@ -96,9 +97,10 @@ impl Root {
                 mount,
             ))
             .child(div().flex_1())
-            .child(tool_button("Sync", Tone::Ghost, refresh))
-            .child(tool_button("Limit", Tone::Ghost, uplim))
+            .child(tool_button("refresh", "Sync", Tone::Ghost, refresh))
+            .child(tool_button("sliders", "Limit", Tone::Ghost, uplim))
             .child(tool_button(
+                if self.trash { "folder" } else { "trash" },
                 if self.trash { "Files" } else { "Trash" },
                 Tone::Ghost,
                 trash_toggle,
@@ -108,14 +110,14 @@ impl Root {
                 this.send(Command::EmptyTrash);
                 cx.notify();
             });
-            toolbar = toolbar.child(tool_button("Empty trash", Tone::Danger, et));
+            toolbar = toolbar.child(tool_button("trash", "Empty trash", Tone::Danger, et));
         }
         if !self.trash {
             let opt = cx.listener(|this, _: &MouseDownEvent, _, cx| {
                 this.send(Command::OptimizeDrive);
                 cx.notify();
             });
-            toolbar = toolbar.child(tool_button("Optimize", Tone::Ghost, opt));
+            toolbar = toolbar.child(tool_button("sparkles", "Optimize", Tone::Ghost, opt));
         }
         if self.channel_kind.is_personal() {
             let lock_label = if self.vault_configured {
@@ -127,7 +129,12 @@ impl Root {
             } else {
                 "Encrypt"
             };
-            toolbar = toolbar.child(tool_button(lock_label, Tone::Ghost, lock_btn));
+            toolbar = toolbar.child(tool_button(
+                if self.vault_configured && self.vault_unlocked { "unlock" } else { "lock" },
+                lock_label,
+                Tone::Ghost,
+                lock_btn,
+            ));
         }
         if !self.namespace.unadopted.is_empty() && !self.trash {
             let n = self.namespace.unadopted.len();
@@ -135,7 +142,7 @@ impl Root {
                 this.modal = Some(Modal::Adopt);
                 cx.notify();
             });
-            toolbar = toolbar.child(tool_button(&format!("Unadopted ({n})"), Tone::Ghost, ad));
+            toolbar = toolbar.child(tool_button("inbox", &format!("Unadopted ({n})"), Tone::Ghost, ad));
         }
         if !self.trash {
             let label = if self.grid { "List" } else { "Grid" };
@@ -143,7 +150,7 @@ impl Root {
                 this.grid = !this.grid;
                 cx.notify();
             });
-            toolbar = toolbar.child(tool_button(label, Tone::Ghost, gt));
+            toolbar = toolbar.child(tool_button(if self.grid { "list" } else { "grid" }, label, Tone::Ghost, gt));
         }
 
         // Breadcrumb
@@ -151,8 +158,8 @@ impl Root {
             div()
                 .id("crumb-root")
                 .cursor_pointer()
-                .text_color(rgb(DIM))
-                .hover(|s| s.text_color(rgb(ACCENT)))
+                .text_color(theme().dim)
+                .hover(|s| s.text_color(theme().accent))
                 .child("root")
                 .on_mouse_down(
                     MouseButton::Left,
@@ -164,13 +171,13 @@ impl Root {
         );
         for (id, name) in self.namespace.folder_path(&self.cwd) {
             crumbs = crumbs
-                .child(div().text_color(rgb(0x4d5666)).child(" / "))
+                .child(icon_sized("chevron_right", 10., theme().file_icon))
                 .child(
                     div()
                         .id(SharedString::from(format!("crumb-{id}")))
                         .cursor_pointer()
-                        .text_color(rgb(DIM))
-                        .hover(|s| s.text_color(rgb(ACCENT)))
+                        .text_color(theme().dim)
+                        .hover(|s| s.text_color(theme().accent))
                         .child(name)
                         .on_mouse_down(
                             MouseButton::Left,
@@ -221,7 +228,7 @@ impl Root {
                     .flex()
                     .justify_center()
                     .text_sm()
-                    .text_color(rgb(DIM))
+                    .text_color(theme().dim)
                     .child(if self.trash {
                         "trash is empty"
                     } else if !self.f_search.read(cx).text().trim().is_empty() {
@@ -253,8 +260,8 @@ impl Root {
             .h(px(44.))
             .px_3()
             .border_b_1()
-            .border_color(rgb(BORDER))
-            .bg(rgb(PANEL));
+            .border_color(theme().border)
+            .bg(theme().panel);
         if let Some(sel) = &self.selected {
             let name = self
                 .namespace
@@ -269,7 +276,7 @@ impl Root {
                 actions = actions.child(img(path.clone()).w(px(28.)).h(px(28.)));
             }
             actions = actions
-                .child(div().text_sm().text_color(rgb(TEXT)).child(name.clone()))
+                .child(div().text_sm().text_color(theme().text).child(name.clone()))
                 .child(div().flex_1());
             if self.trash {
                 let obj = sel_c.clone();
@@ -285,27 +292,27 @@ impl Root {
                     cx.notify();
                 });
                 actions = actions
-                    .child(tool_button("Restore", Tone::Ghost, rs))
-                    .child(tool_button("Delete forever", Tone::Danger, pg));
+                    .child(tool_button("restore", "Restore", Tone::Ghost, rs))
+                    .child(tool_button("trash", "Delete forever", Tone::Danger, pg));
             } else if is_file {
                 let file = self.namespace.files.get(sel).cloned();
                 if let Some(file) = file {
                     let dl = cx.listener(move |this, _: &MouseDownEvent, _, cx| {
                         this.pick_download_dest(file.id.clone(), file.name.clone(), cx)
                     });
-                    actions = actions.child(tool_button("Download", Tone::Ghost, dl));
+                    actions = actions.child(tool_button("download", "Download", Tone::Ghost, dl));
                     let id = sel_c.clone();
                     let st = cx.listener(move |this, _: &MouseDownEvent, _, cx| {
                         this.send(Command::Stream { obj: id.clone() });
                         this.status = "opening stream…".into();
                         cx.notify();
                     });
-                    actions = actions.child(tool_button("Open", Tone::Ghost, st));
+                    actions = actions.child(tool_button("external", "Open", Tone::Ghost, st));
                     let id2 = sel_c.clone();
                     let vw = cx.listener(move |this, _: &MouseDownEvent, _, cx| {
                         this.open_viewer(&id2, cx);
                     });
-                    actions = actions.child(tool_button("View", Tone::Ghost, vw));
+                    actions = actions.child(tool_button("eye", "View", Tone::Ghost, vw));
                 }
             }
             if !self.trash {
@@ -329,9 +336,9 @@ impl Root {
                     cx.notify();
                 });
                 actions = actions
-                    .child(tool_button("Rename", Tone::Ghost, rn))
-                    .child(tool_button("Move", Tone::Ghost, mv))
-                    .child(tool_button("Delete", Tone::Danger, del));
+                    .child(tool_button("pencil", "Rename", Tone::Ghost, rn))
+                    .child(tool_button("move", "Move", Tone::Ghost, mv))
+                    .child(tool_button("trash", "Delete", Tone::Danger, del));
             }
         }
 
@@ -378,7 +385,7 @@ impl Root {
                             cx.notify();
                         }),
                     )
-                    .child(div().w(px(36.)).h(px(3.)).rounded_full().bg(rgb(BORDER))),
+                    .child(div().w(px(36.)).h(px(3.)).rounded_full().bg(theme().border)),
             );
         }
         transfers = transfers.child(
@@ -393,7 +400,7 @@ impl Root {
                     div()
                         .text_xs()
                         .font_weight(FontWeight::MEDIUM)
-                        .text_color(rgb(DIM))
+                        .text_color(theme().dim)
                         .child(format!("Transfers · {active_count} active · {total} total")),
                 )
                 .child(div().flex_1())
@@ -403,8 +410,8 @@ impl Root {
                         .px_2()
                         .rounded_md()
                         .text_xs()
-                        .text_color(rgb(DIM))
-                        .hover(|s| s.bg(rgb(PANEL2)).text_color(rgb(TEXT)))
+                        .text_color(theme().dim)
+                        .hover(|s| s.bg(theme().panel2).text_color(theme().text))
                         .cursor_pointer()
                         .on_mouse_down(
                             MouseButton::Left,
@@ -413,11 +420,26 @@ impl Root {
                                 cx.notify();
                             }),
                         )
-                        .child(if self.transfers_expanded {
-                            "▾ collapse"
-                        } else {
-                            "▸ show all"
-                        })
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_1()
+                                .child(icon_sized(
+                                    if self.transfers_expanded {
+                                        "chevron_down"
+                                    } else {
+                                        "chevron_right"
+                                    },
+                                    10.,
+                                    theme().dim,
+                                ))
+                                .child(if self.transfers_expanded {
+                                    "collapse"
+                                } else {
+                                    "show all"
+                                }),
+                        )
                         .into_any_element()
                 } else {
                     div().into_any_element()
@@ -452,7 +474,7 @@ impl Root {
             .flex()
             .flex_col()
             .size_full()
-            .bg(rgb(BG))
+            .bg(theme().bg)
             .track_focus(&self.drive_focus)
             .on_mouse_down(
                 MouseButton::Navigate(NavigationDirection::Back),
@@ -564,28 +586,35 @@ impl Root {
                     .w_full()
                     .px_4()
                     .py_2()
-                    .bg(rgb(PANEL))
+                    .bg(theme().panel)
                     .border_b_1()
-                    .border_color(rgb(BORDER))
+                    .border_color(theme().border)
                     .child(
                         div()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(rgb(TEXT))
+                            .text_color(theme().text)
                             .child("TDrive"),
                     )
-                    .child(div().text_color(rgb(DIM)).child("·"))
+                    .child(div().text_color(theme().dim).child("·"))
                     .child(
                         div()
                             .font_weight(FontWeight::MEDIUM)
-                            .text_color(rgb(TEXT))
+                            .text_color(theme().text)
                             .child(channel_name),
                     )
-                    .child(div().text_color(rgb(DIM)).child("·"))
+                    .child(div().text_color(theme().dim).child("·"))
                     .child(crumbs)
                     .child(div().flex_1())
-                    .child(div().w(px(200.)).child(self.f_search.clone()))
-                    .child(tool_button("Drives", Tone::Ghost, back))
-                    .child(tool_button("Sign out", Tone::Ghost, sign_out)),
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(icon_sized("search", 13., theme().dim))
+                            .child(div().w(px(200.)).child(self.f_search.clone())),
+                    )
+                    .child(tool_button("drives", "Drives", Tone::Ghost, back))
+                    .child(tool_button("log_out", "Sign out", Tone::Ghost, sign_out)),
             )
             // Action bar — one grouped row of controls.
             .child(
@@ -593,7 +622,7 @@ impl Root {
                     .px_4()
                     .py_2()
                     .border_b_1()
-                    .border_color(rgb(BORDER))
+                    .border_color(theme().border)
                     .child(toolbar),
             )
             .child(if self.selected.is_some() {
@@ -605,8 +634,8 @@ impl Root {
             .child(
                 div()
                     .border_t_1()
-                    .border_color(rgb(BORDER))
-                    .bg(rgb(PANEL))
+                    .border_color(theme().border)
+                    .bg(theme().panel)
                     .child(transfers)
                     .child({
                         const FRAMES: [&str; 10] =
@@ -645,23 +674,23 @@ impl Root {
                                 .items_center()
                                 .gap_3()
                                 .border_t_1()
-                                .border_color(rgb(BORDER))
+                                .border_color(theme().border)
                                 .child(
                                     div()
                                         .w(px(16.))
                                         .text_sm()
-                                        .text_color(rgb(ACCENT))
+                                        .text_color(theme().accent)
                                         .child(FRAMES[(self.activity_frame % 10) as usize]),
                                 )
-                                .child(div().w(px(90.)).h(px(3.)).rounded_sm().bg(rgb(ACCENT)))
-                                .child(div().text_xs().text_color(rgb(DIM)).child(label))
+                                .child(div().w(px(90.)).h(px(3.)).rounded_sm().bg(theme().accent))
+                                .child(div().text_xs().text_color(theme().dim).child(label))
                                 .into_any_element()
                         }
                     })
                     .child(
                         div()
                             .text_xs()
-                            .text_color(rgb(DIM))
+                            .text_color(theme().dim)
                             .px_3()
                             .py_1()
                             .child(format!("{} items", self.entries_cache.len())),
@@ -671,7 +700,7 @@ impl Root {
                             .px_4()
                             .py_1()
                             .text_sm()
-                            .text_color(rgb(DIM))
+                            .text_color(theme().dim)
                             .child(self.status.clone()),
                     ),
             )
@@ -742,11 +771,11 @@ impl Root {
             .p_2()
             .rounded_lg()
             .bg(if selected {
-                rgba(0x61afef21)
+                theme().accent_soft
             } else {
-                rgba(0x00000000)
+                transparent_black()
             })
-            .hover(|s| s.bg(rgb(PANEL)))
+            .hover(|s| s.bg(theme().panel))
             .cursor_pointer()
             .on_mouse_down(
                 MouseButton::Left,
@@ -778,22 +807,18 @@ impl Root {
                             .items_center()
                             .justify_center()
                             .bg(if is_folder {
-                                rgba(0x61afef1a)
+                                theme().accent_soft
                             } else {
-                                rgb(PANEL2)
+                                theme().panel2
                             })
-                            .child(div().w(px(14.)).h(px(14.)).rounded_sm().bg(if is_folder {
-                                rgb(ACCENT)
-                            } else {
-                                rgb(0x4d5666)
-                            }))
+                            .child(entry_icon(is_folder, &name, 30.))
                             .into_any_element()
                     }),
             )
             .child(
                 div()
                     .text_xs()
-                    .text_color(rgb(TEXT))
+                    .text_color(theme().text)
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .child(name),
@@ -827,11 +852,11 @@ impl Root {
             .px_4()
             .py_2()
             .bg(if selected {
-                rgb(0x3e4452)
+                theme().selected
             } else {
-                rgba(0x00000000)
+                transparent_black()
             })
-            .hover(|s| s.bg(rgb(PANEL2)))
+            .hover(|s| s.bg(theme().panel2))
             .cursor_pointer()
             .on_mouse_down(
                 MouseButton::Left,
@@ -850,18 +875,18 @@ impl Root {
                     cx.notify();
                 }),
             )
-            .child(div().w(px(22.)).flex().items_center().child(
-                div().w(px(9.)).h(px(9.)).rounded_sm().bg(if is_folder {
-                    rgb(ACCENT)
-                } else {
-                    rgb(0x4d5666)
-                }),
-            ))
+            .child(
+                div()
+                    .w(px(22.))
+                    .flex()
+                    .items_center()
+                    .child(entry_icon(is_folder, &name, 15.)),
+            )
             .child(
                 div()
                     .flex_1()
                     .text_sm()
-                    .text_color(rgb(TEXT))
+                    .text_color(theme().text)
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .child(name),
@@ -873,7 +898,7 @@ impl Root {
                     .font_family("monospace")
                     .whitespace_nowrap()
                     .overflow_hidden()
-                    .text_color(rgb(DIM))
+                    .text_color(theme().dim)
                     .flex()
                     .justify_end()
                     .child(meta),

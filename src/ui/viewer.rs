@@ -57,7 +57,7 @@ impl Root {
                     .object_fit(gpui::ObjectFit::Contain),
             );
         } else if failed || kind == ViewKind::Other {
-            body = body.child(div().text_sm().text_color(rgb(DIM)).child(
+            body = body.child(div().text_sm().text_color(theme().dim).child(
                 if kind == ViewKind::Other {
                     "No preview for this file type"
                 } else {
@@ -68,7 +68,7 @@ impl Root {
             body = body.child(
                 div()
                     .text_sm()
-                    .text_color(rgb(DIM))
+                    .text_color(theme().dim)
                     .child("Loading preview…"),
             );
         }
@@ -85,6 +85,7 @@ impl Root {
         if kind == ViewKind::Video {
             let obj = file_id.clone();
             controls = controls.child(tool_button(
+                "play",
                 "Play in player",
                 Tone::Ghost,
                 cx.listener(move |this, _: &MouseDownEvent, _, cx| {
@@ -98,6 +99,7 @@ impl Root {
             let obj = file_id.clone();
             let nm = name.clone();
             controls = controls.child(tool_button(
+                "download",
                 "Download",
                 Tone::Ghost,
                 cx.listener(move |this, _: &MouseDownEvent, _, cx| {
@@ -106,6 +108,7 @@ impl Root {
             ));
         }
         controls = controls.child(tool_button(
+            "x",
             "Close",
             Tone::Ghost,
             cx.listener(|this, _: &MouseDownEvent, _, cx| {
@@ -141,7 +144,7 @@ impl Root {
                             .flex_1()
                             .text_sm()
                             .font_weight(FontWeight::MEDIUM)
-                            .text_color(rgb(TEXT))
+                            .text_color(theme().text)
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .child(name),

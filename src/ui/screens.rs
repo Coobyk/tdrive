@@ -17,9 +17,9 @@ impl Root {
                     .gap_4()
                     .p_6()
                     .rounded_lg()
-                    .bg(rgb(PANEL))
+                    .bg(theme().panel)
                     .border_1()
-                    .border_color(rgb(BORDER))
+                    .border_color(theme().border)
                     .shadow_lg()
                     .child(content),
             )
@@ -50,12 +50,12 @@ impl Root {
                 .child(
                     div()
                         .text_sm()
-                        .text_color(rgb(DIM))
+                        .text_color(theme().dim)
                         .child("Create an app at my.telegram.org to get an api_id and api_hash."),
                 )
                 .child(self.f_api_id.clone())
                 .child(self.f_api_hash.clone())
-                .child(button("Continue", ACCENT, save)),
+                .child(button("Continue", theme().accent, save)),
         )
     }
 
@@ -85,11 +85,11 @@ impl Root {
                     .child(
                         div()
                             .text_sm()
-                            .text_color(rgb(DIM))
+                            .text_color(theme().dim)
                             .child("Enter your phone number with country code."),
                     )
                     .child(self.f_phone.clone())
-                    .child(button("Send code", ACCENT, submit))
+                    .child(button("Send code", theme().accent, submit))
                     .into_any_element()
             }
             Screen::AuthCode => {
@@ -112,11 +112,11 @@ impl Root {
                     .child(
                         div()
                             .text_sm()
-                            .text_color(rgb(DIM))
+                            .text_color(theme().dim)
                             .child("Enter the code sent to your Telegram app."),
                     )
                     .child(self.f_code.clone())
-                    .child(button("Sign in", ACCENT, submit))
+                    .child(button("Sign in", theme().accent, submit))
                     .into_any_element()
             }
             Screen::AuthPassword => {
@@ -140,11 +140,11 @@ impl Root {
                     .child(
                         div()
                             .text_sm()
-                            .text_color(rgb(DIM))
+                            .text_color(theme().dim)
                             .child("Two-factor authentication is enabled."),
                     )
                     .child(self.f_password.clone())
-                    .child(button("Unlock", ACCENT, submit))
+                    .child(button("Unlock", theme().accent, submit))
                     .into_any_element()
             }
             // render_auth only runs for auth screens — Setup/Connecting/
@@ -174,7 +174,7 @@ impl Root {
                     .px_3()
                     .py_2()
                     .rounded_md()
-                    .hover(|s| s.bg(rgb(PANEL2)))
+                    .hover(|s| s.bg(theme().panel2))
                     .cursor_pointer()
                     .on_mouse_down(
                         MouseButton::Left,
@@ -183,15 +183,26 @@ impl Root {
                             cx.notify();
                         }),
                     )
-                    .child(div().text_color(rgb(TEXT)).child(ch.title.clone()))
-                    .child(div().text_sm().text_color(rgb(DIM)).child(ch.kind.as_str())),
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(super::controls::icon_sized(
+                                if ch.kind.is_personal() { "hard_drive" } else { "drives" },
+                                15.,
+                                theme().accent,
+                            ))
+                            .child(div().text_color(theme().text).child(ch.title.clone())),
+                    )
+                    .child(div().text_sm().text_color(theme().dim).child(ch.kind.as_str())),
             );
         }
         if self.channels.is_empty() {
             list = list.child(
                 div()
                     .text_sm()
-                    .text_color(rgb(DIM))
+                    .text_color(theme().dim)
                     .child("No channels found — create a drive below."),
             );
         }
@@ -210,7 +221,7 @@ impl Root {
                 .child(
                     div()
                         .text_sm()
-                        .text_color(rgb(DIM))
+                        .text_color(theme().dim)
                         .child("TDrive stores files in a private Telegram channel."),
                 )
                 .child(
@@ -224,7 +235,7 @@ impl Root {
                         .child(list),
                 )
                 .child(self.f_channel.clone())
-                .child(button("Create new drive", ACCENT, create))
+                .child(button("Create new drive", theme().accent, create))
                 .child(button_secondary(
                     "New shared drive",
                     cx.listener(|this, _: &MouseDownEvent, _, cx| {
@@ -239,7 +250,7 @@ impl Root {
                 .child(self.f_invite.clone())
                 .child(button(
                     "Join shared drive",
-                    ACCENT,
+                    theme().accent,
                     cx.listener(|this, _: &MouseDownEvent, _, cx| {
                         let link = this.f_invite.read(cx).text().trim().to_string();
                         if !link.is_empty() {

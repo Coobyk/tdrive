@@ -1,3 +1,4 @@
+mod assets;
 mod config;
 mod crypto;
 mod dav;
@@ -17,7 +18,7 @@ use gpui::*;
 
 fn main() {
     let handle = tg::spawn();
-    Application::new().run(move |cx: &mut App| {
+    Application::new().with_assets(assets::Assets).run(move |cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(960.), px(640.)), cx);
         cx.open_window(
             WindowOptions {
@@ -26,7 +27,16 @@ fn main() {
                 app_id: Some("tdrive-rs".into()),
                 ..Default::default()
             },
-            |_, cx| cx.new(|cx| ui::Root::new(cx, handle)),
+            |window, cx| {
+                ui::apply_appearance(window.appearance());
+                window
+                    .observe_window_appearance(|window, _| {
+                        ui::apply_appearance(window.appearance());
+                        window.refresh();
+                    })
+                    .detach();
+                cx.new(|cx| ui::Root::new(cx, handle))
+            },
         )
         .unwrap();
         cx.activate(true);

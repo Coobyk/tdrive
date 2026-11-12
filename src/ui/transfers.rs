@@ -1,4 +1,5 @@
 //! Transfer panel — rows for the pinned/expanded lists.
+use super::controls::icon_button;
 use super::*;
 
 impl Root {
@@ -14,10 +15,10 @@ impl Root {
             0.
         };
         let (state_label, color) = match t.state {
-            TransferState::Active => ("", ACCENT),
-            TransferState::Paused => ("paused", DIM),
-            TransferState::Done => ("done", OK),
-            TransferState::Failed => ("failed", DANGER),
+            TransferState::Active => ("", theme().accent),
+            TransferState::Paused => ("paused", theme().dim),
+            TransferState::Done => ("done", theme().ok),
+            TransferState::Failed => ("failed", theme().danger),
         };
         let mut row = div()
             .flex()
@@ -27,7 +28,7 @@ impl Root {
                 div()
                     .w(px(200.))
                     .text_sm()
-                    .text_color(rgb(TEXT))
+                    .text_color(theme().text)
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .child(t.label.clone()),
@@ -37,13 +38,13 @@ impl Root {
                     .flex_1()
                     .h(px(4.))
                     .rounded_full()
-                    .bg(rgb(PANEL2))
+                    .bg(theme().panel2)
                     .child(
                         div()
                             .h(px(4.))
                             .w(relative(frac))
                             .rounded_full()
-                            .bg(rgb(color)),
+                            .bg(color),
                     ),
             )
             .child(
@@ -53,7 +54,7 @@ impl Root {
                     .font_family("monospace")
                     .whitespace_nowrap()
                     .overflow_hidden()
-                    .text_color(rgb(DIM))
+                    .text_color(theme().dim)
                     .flex()
                     .justify_end()
                     .child(if state_label.is_empty() {
@@ -64,52 +65,40 @@ impl Root {
             );
         if t.state == TransferState::Active || t.state == TransferState::Paused {
             let id = t.id.clone();
-            let action = if t.state == TransferState::Active {
+            let active = t.state == TransferState::Active;
+            let (action_icon, action_id) = if active {
                 ("pause", format!("pa-{id}"))
             } else {
-                ("resume", format!("rs-{id}"))
+                ("play", format!("rs-{id}"))
             };
-            row = row.child(
-                div()
-                    .id(SharedString::from(action.1))
-                    .px_2()
-                    .rounded_md()
-                    .text_xs()
-                    .text_color(rgb(DIM))
-                    .hover(|s| s.bg(rgb(PANEL2)).text_color(rgb(TEXT)))
-                    .cursor_pointer()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _: &MouseDownEvent, _, cx| {
-                            if action.0 == "pause" {
-                                this.send(Command::Pause { id: id.clone() });
-                            } else {
-                                this.send(Command::Resume { id: id.clone() });
-                            }
-                            cx.notify();
-                        }),
-                    )
-                    .child(action.0),
-            );
+            row = row.child(icon_button(
+                action_id,
+                action_icon,
+                theme().dim,
+                theme().panel2,
+                {
+                    let id = id.clone();
+                    cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                        if active {
+                            this.send(Command::Pause { id: id.clone() });
+                        } else {
+                            this.send(Command::Resume { id: id.clone() });
+                        }
+                        cx.notify();
+                    })
+                },
+            ));
             let id = t.id.clone();
-            row = row.child(
-                div()
-                    .id(SharedString::from(format!("cx-{id}")))
-                    .px_2()
-                    .rounded_md()
-                    .text_xs()
-                    .text_color(rgb(DANGER))
-                    .hover(|s| s.bg(rgba(0xe06c751f)))
-                    .cursor_pointer()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _, _, cx| {
-                            this.send(Command::Cancel { id: id.clone() });
-                            cx.notify();
-                        }),
-                    )
-                    .child("cancel"),
-            );
+            row = row.child(icon_button(
+                format!("cx-{id}"),
+                "x",
+                theme().danger,
+                theme().danger_soft,
+                cx.listener(move |this, _, _, cx| {
+                    this.send(Command::Cancel { id: id.clone() });
+                    cx.notify();
+                }),
+            ));
         }
         row
     }
