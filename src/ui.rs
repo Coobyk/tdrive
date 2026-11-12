@@ -297,6 +297,7 @@ impl Root {
 
         match AppConfig::load() {
             Ok(Some(cfg)) => {
+                root.grid = cfg.grid_view;
                 root.config = Some(cfg.clone());
                 let _ = root.tg.send(Command::Connect {
                     api_id: cfg.api_id,
@@ -577,6 +578,7 @@ impl Root {
             last_channel_id: None,
             download_dir: None,
             upload_limit: crate::config::default_upload_limit(),
+            grid_view: false,
         };
         if let Err(e) = cfg.save() {
             self.status = format!("cannot save config: {e}");

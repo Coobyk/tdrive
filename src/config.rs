@@ -17,6 +17,9 @@ pub struct AppConfig {
     /// Max concurrent upload tasks.
     #[serde(default = "default_upload_limit")]
     pub upload_limit: usize,
+    /// Last file-browser view mode — false list, true grid.
+    #[serde(default)]
+    pub grid_view: bool,
 }
 
 /// TDrive's upload concurrency bounds — 3 concurrent, 16 max.

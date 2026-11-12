@@ -1372,6 +1372,12 @@ impl Root {
                     .child(if !self.trash {
                         let gt = cx.listener(|this, _: &MouseDownEvent, _, cx| {
                             this.grid = !this.grid;
+                            if let Some(cfg) = &mut this.config {
+                                cfg.grid_view = this.grid;
+                                if let Err(e) = cfg.save() {
+                                    this.status = format!("config save failed: {e}");
+                                }
+                            }
                             cx.notify();
                         });
                         tool_button(
