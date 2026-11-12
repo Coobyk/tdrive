@@ -7,7 +7,8 @@ use super::*;
 // instead of measuring rendered bounds.
 pub(super) const ROW_H: f32 = 38.;
 pub(super) const CELL_W: f32 = 100.;
-pub(super) const CELL_H: f32 = 104.;
+// Two name lines fit under the thumb — long names wrap then clamp.
+pub(super) const CELL_H: f32 = 118.;
 pub(super) const GRID_PAD: f32 = 4.;
 pub(super) const GRID_GAP: f32 = 8.;
 pub(super) const GRID_ROW_H: f32 = CELL_H + 2. * GRID_PAD;
@@ -1751,7 +1752,8 @@ impl Root {
                     .text_xs()
                     .text_color(theme().text)
                     .text_center()
-                    .truncate()
+                    .whitespace_normal()
+                    .line_clamp(2)
                     .child(name),
             );
         if busy {
