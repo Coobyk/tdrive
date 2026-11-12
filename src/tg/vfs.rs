@@ -22,6 +22,80 @@ impl Worker {
         self.send_and_project(&op).await
     }
 
+    /// Deep-copy `obj` under `parent`. Folders mint fresh ids and
+    /// recurse; files emit a manifest/fcommit that rebinds the existing
+    /// body — copies never re-upload bytes, they share messages with the
+    /// original (delete_body_msg_ids keeps shared bodies alive).
+    pub(super) async fn copy_obj(&mut self, obj: String, parent: String) -> Result<()> {
+        if self
+            .namespace
+            .dirent(&obj)
+            .map(|d| d.tombstoned)
+            .unwrap_or(true)
+        {
+            return Err(anyhow!("no such object"));
+        }
+        self.copy_subtree(&obj, &parent).await
+    }
+
+    fn copy_subtree<'a>(
+        &'a mut self,
+        obj: &'a str,
+        parent: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(self.copy_subtree_inner(obj, parent))
+    }
+
+    async fn copy_subtree_inner(&mut self, obj: &str, parent: &str) -> Result<()> {
+        if let Some(d) = self.namespace.folders.get(obj).cloned() {
+            let new_id = wire::new_folder_id();
+            let name = self
+                .namespace
+                .next_free_sibling_name(parent, &d.name, true);
+            let op = ops::folder_commit_with_id(new_id.clone(), parent, name);
+            self.send_and_project(&op).await?;
+            let children: Vec<String> = self
+                .namespace
+                .list(obj)
+                .iter()
+                .map(|e| e.id().to_string())
+                .collect();
+            for child in children {
+                self.copy_subtree(&child, &new_id).await?;
+            }
+            return Ok(());
+        }
+        let Some(f) = self.namespace.files.get(obj).cloned() else {
+            return Err(anyhow!("no such object"));
+        };
+        let name = self
+            .namespace
+            .next_free_sibling_name(parent, &f.name, false);
+        let op = if !f.upload_uuid.is_empty() {
+            // Multipart: a new manifest binding the same part group.
+            ops::file_manifest(
+                f.upload_uuid,
+                parent,
+                name,
+                f.part_count,
+                f.size,
+                f.upload_time,
+                f.encrypted,
+                f.plaintext_size,
+            )
+        } else {
+            // Single body: fcommit re-binding the same body message —
+            // either an explicit cmid or the upload's own message.
+            let cmid = if f.content_msg_id > 0 {
+                f.content_msg_id
+            } else {
+                f.msg_id
+            };
+            ops::file_commit(parent, name, f.size, f.encrypted, f.plaintext_size, cmid)
+        };
+        self.send_and_project(&op).await
+    }
+
     /// Move a live object to the trash — same `trash` op TDrive emits, with
     /// the deterministic op id and 30-day retention window.
     pub(super) async fn delete(&mut self, obj: String) -> Result<()> {

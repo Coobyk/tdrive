@@ -254,11 +254,21 @@ pub enum VfsOp {
 }
 
 pub fn folder_commit(parent: impl Into<String>, name: impl Into<String>) -> Op {
+    folder_commit_with_id(wire::new_folder_id(), parent, name)
+}
+
+/// `dcommit` with a caller-minted folder id — deep copies pre-mint ids
+/// so a folder's children can be committed against it in the same pass.
+pub fn folder_commit_with_id(
+    obj: impl Into<String>,
+    parent: impl Into<String>,
+    name: impl Into<String>,
+) -> Op {
     Op {
         op_type: known(OpType::FolderCommit),
         protocol_version: 1,
         op_id: versioned_op_id("dcommit"),
-        obj: wire::new_folder_id(),
+        obj: obj.into(),
         parent: parent.into(),
         name: name.into(),
         ..Default::default()

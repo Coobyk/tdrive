@@ -144,6 +144,12 @@ pub enum Command {
         obj: String,
         parent: String,
     },
+    /// Deep-copy `obj` under `parent` — folders recurse with fresh ids;
+    /// files rebind their existing bodies, nothing re-uploads.
+    Copy {
+        obj: String,
+        parent: String,
+    },
     Delete {
         obj: String,
     },
@@ -598,6 +604,7 @@ impl Worker {
             Command::Mkdir { parent, name } => self.mkdir(parent, name).await,
             Command::Rename { obj, name } => self.rename(obj, name).await,
             Command::Move { obj, parent } => self.move_obj(obj, parent).await,
+            Command::Copy { obj, parent } => self.copy_obj(obj, parent).await,
             Command::Delete { obj } => self.delete(obj).await,
             Command::Restore { obj } => self.restore(obj).await,
             Command::Purge { obj } => self.purge(obj).await,

@@ -64,6 +64,12 @@ enum Modal {
     },
 }
 
+/// Internal clipboard — cut objects move on paste, copies duplicate.
+struct Clip {
+    objs: Vec<String>,
+    cut: bool,
+}
+
 /// In-app file viewer state.
 struct Viewer {
     file_id: String,
@@ -108,6 +114,16 @@ pub struct Root {
     context_menu: Option<Point<Pixels>>,
     /// Tools dropdown position (window coords) while open.
     tools_menu: Option<Point<Pixels>>,
+    /// Internal clipboard for ctrl+c/x + Paste — cut pastes as moves.
+    clip: Option<Clip>,
+    /// Left press on an already-selected row, armed to become a
+    /// drag-move once the pointer travels past the threshold.
+    pending_move: Option<(String, Point<Pixels>)>,
+    /// Armed press has become a real drag — folders under the pointer
+    /// light up as drop targets.
+    drag_moving: bool,
+    /// Folder the drag currently hovers when it's a legal drop target.
+    drop_hover: Option<String>,
     transfers: BTreeMap<String, TransferUpdate>,
     modal: Option<Modal>,
     signed_in_as: String,
@@ -189,6 +205,10 @@ impl Root {
             drag_anchor: None,
             context_menu: None,
             tools_menu: None,
+            clip: None,
+            pending_move: None,
+            drag_moving: false,
+            drop_hover: None,
             transfers: BTreeMap::new(),
             modal: None,
             signed_in_as: String::new(),
@@ -631,6 +651,9 @@ impl Root {
             self.selected.clear();
             self.context_menu = None;
             self.tools_menu = None;
+            self.pending_move = None;
+            self.drag_moving = false;
+            self.drop_hover = None;
         }
     }
 

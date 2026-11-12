@@ -927,17 +927,11 @@ impl Namespace {
 
     /// Every body message a permanent delete must remove for `obj`:
     /// subtree bodies (or the file's own) plus each rendition bound to
-    /// any of those files. Shared by purge and mount deletes.
+    /// any of those files. Shared by purge and mount deletes. Bodies a
+    /// surviving copy still references are kept — copies rebind the
+    /// same messages instead of re-uploading.
     pub fn delete_body_msg_ids(&self, obj: &str) -> Vec<i64> {
-        let mut bodies = if wire::is_folder_id(obj) {
-            self.subtree_body_msg_ids(obj)
-        } else {
-            self.files
-                .get(obj)
-                .map(|f| self.body_msg_ids(f))
-                .unwrap_or_default()
-        };
-        let file_ids: Vec<&String> = if wire::is_folder_id(obj) {
+        let file_ids: HashSet<&String> = if wire::is_folder_id(obj) {
             self.files
                 .values()
                 .filter(|f| self.subtree_contains(obj, &f.id))
@@ -946,6 +940,23 @@ impl Namespace {
         } else {
             self.files.get(obj).map(|f| &f.id).into_iter().collect()
         };
+        let mut bodies = if wire::is_folder_id(obj) {
+            self.subtree_body_msg_ids(obj)
+        } else {
+            self.files
+                .get(obj)
+                .map(|f| self.body_msg_ids(f))
+                .unwrap_or_default()
+        };
+        // A body shared with any file outside the doomed set stays —
+        // deleting it would corrupt that copy.
+        let shared: HashSet<i64> = self
+            .files
+            .values()
+            .filter(|f| !file_ids.contains(&f.id))
+            .flat_map(|f| self.body_parts(f).into_iter().map(|(id, _)| id))
+            .collect();
+        bodies.retain(|id| !shared.contains(id));
         for fid in file_ids {
             if let Some(kinds) = self.renditions.get(fid) {
                 bodies.extend(kinds.values().map(|(id, _)| *id));
@@ -1384,6 +1395,44 @@ mod tests {
             "photo (2).jpg"
         );
         assert_eq!(ns.next_free_sibling_name("", "other", false), "other");
+    }
+
+    #[test]
+    fn copy_single_body_via_fcommit() {
+        let mut ns = Namespace::new();
+        ns.apply(10, &op("TDX1|t=f|p=|n=a.txt|sz=5"));
+        // A copy = a fresh fcommit binding the original body message.
+        ns.apply(11, &op("TDX1|t=fcommit|v=1|oid=c1|p=|n=a2.txt|sz=5|cmid=10"));
+        let items = ns.list("");
+        assert_eq!(items.len(), 2);
+        let copy = ns.files.get("f:11").unwrap();
+        assert_eq!(ns.body_msg_ids(copy), vec![10]);
+    }
+
+    #[test]
+    fn copy_multipart_rebinds_part_group() {
+        let mut ns = Namespace::new();
+        ns.apply(11, &op("TDX1|t=part|u=u1|pix=0|sz=100"));
+        ns.apply(12, &op("TDX1|t=manifest|u=u1|p=|n=big|pc=1|sz=100"));
+        // Copy = new manifest object bound to the same part group.
+        ns.apply(13, &op("TDX1|t=manifest|u=u1|p=|n=big2|pc=1|sz=100"));
+        assert_eq!(ns.body_msg_ids(ns.files.get("f:12").unwrap()), vec![11]);
+        assert_eq!(ns.body_msg_ids(ns.files.get("f:13").unwrap()), vec![11]);
+    }
+
+    #[test]
+    fn shared_body_survives_partial_purge() {
+        let mut ns = Namespace::new();
+        ns.apply(10, &op("TDX1|t=f|p=|n=a.txt|sz=5"));
+        ns.apply(11, &op("TDX1|t=fcommit|v=1|oid=c1|p=|n=a2.txt|sz=5|cmid=10"));
+        ns.apply(12, &op("TDX1|t=trash|v=1|oid=t|obj=f:10|rev=1|del=10|purge=40"));
+        // Purging the original must not list the shared body — the
+        // (still-live, or merely trashed-but-restorable) copy needs it.
+        assert!(ns.delete_body_msg_ids("f:10").is_empty());
+        // Once the copy is gone too, the body becomes collectable.
+        ns.apply(13, &op("TDX1|t=trash|v=1|oid=t2|obj=f:11|rev=1|del=10|purge=40"));
+        ns.apply(14, &op("TDX1|t=harddel|v=1|oid=p|obj=f:11|rev=2"));
+        assert_eq!(ns.delete_body_msg_ids("f:10"), vec![10]);
     }
 }
 

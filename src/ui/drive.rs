@@ -11,6 +11,9 @@ pub(super) enum SelAct {
     Open,
     View,
     Rename,
+    Copy,
+    Cut,
+    Paste,
     Move,
     Delete,
     Restore,
@@ -24,6 +27,9 @@ impl SelAct {
             SelAct::Open => ("external", "Open", Tone::Ghost),
             SelAct::View => ("eye", "View", Tone::Ghost),
             SelAct::Rename => ("pencil", "Rename", Tone::Ghost),
+            SelAct::Copy => ("copy", "Copy", Tone::Ghost),
+            SelAct::Cut => ("cut", "Cut", Tone::Ghost),
+            SelAct::Paste => ("paste", "Paste", Tone::Ghost),
             SelAct::Move => ("move", "Move", Tone::Ghost),
             SelAct::Delete => ("trash", "Delete", Tone::Danger),
             SelAct::Restore => ("restore", "Restore", Tone::Ghost),
@@ -70,7 +76,11 @@ impl Root {
         if single {
             acts.push(SelAct::Rename);
         }
-        acts.extend([SelAct::Move, SelAct::Delete]);
+        acts.extend([SelAct::Copy, SelAct::Cut, SelAct::Move]);
+        if self.clip.is_some() {
+            acts.push(SelAct::Paste);
+        }
+        acts.push(SelAct::Delete);
         acts
     }
 
@@ -115,6 +125,30 @@ impl Root {
                     "new name",
                     cx,
                 );
+            }
+            SelAct::Copy | SelAct::Cut => {
+                let n = sel.len();
+                self.clip = Some(Clip {
+                    objs: sel,
+                    cut: act == SelAct::Cut,
+                });
+                self.status = format!(
+                    "{n} item{} {}",
+                    if n == 1 { "" } else { "s" },
+                    if act == SelAct::Cut { "cut" } else { "copied" },
+                );
+            }
+            SelAct::Paste => {
+                // A lone selected folder is the drop target; anything
+                // else pastes into the current folder.
+                let dest = if self.selected.len() == 1
+                    && crate::wire::is_folder_id(&self.selected[0])
+                {
+                    self.selected[0].clone()
+                } else {
+                    self.cwd.clone()
+                };
+                self.paste_clip(dest);
             }
             SelAct::Move => {
                 self.modal = Some(Modal::Move { objs: sel });
@@ -292,6 +326,116 @@ impl Root {
                 cx.notify();
             }
         }
+    }
+
+    /// Legal move/drop target for `objs` — a folder (or root ""), never
+    /// the object itself or inside its own subtree (cycle).
+    fn can_drop_into(&self, target: &str, objs: &[String]) -> bool {
+        if self.trash || (!target.is_empty() && !crate::wire::is_folder_id(target)) {
+            return false;
+        }
+        objs.iter()
+            .all(|o| o != target && !self.namespace.subtree_contains(o, target))
+    }
+
+    /// Paste the clipboard under `dest` — cut moves, copy duplicates.
+    /// Moves that would make a cycle are skipped per object.
+    fn paste_clip(&mut self, dest: String) {
+        let Some((objs, cut)) = self
+            .clip
+            .as_ref()
+            .map(|c| (c.objs.clone(), c.cut))
+        else {
+            return;
+        };
+        let mut n = 0;
+        for obj in &objs {
+            if cut {
+                if !self.can_drop_into(&dest, std::slice::from_ref(obj)) {
+                    continue;
+                }
+                self.send(Command::Move {
+                    obj: obj.clone(),
+                    parent: dest.clone(),
+                });
+            } else {
+                self.send(Command::Copy {
+                    obj: obj.clone(),
+                    parent: dest.clone(),
+                });
+            }
+            n += 1;
+        }
+        if cut {
+            self.clip = None;
+        }
+        self.status = format!(
+            "{} {n} item{}",
+            if cut { "moving" } else { "copying" },
+            if n == 1 { "" } else { "s" },
+        );
+    }
+
+    /// Row/cell hover while the left button is held — once the armed
+    /// press travels past the threshold it becomes a drag-move and the
+    /// hovered folder lights up as a drop target; otherwise the hover
+    /// keeps range-selecting.
+    fn hover_during_drag(&mut self, id: &str, ev: &MouseMoveEvent, cx: &mut Context<Self>) {
+        if let Some((_, start)) = self.pending_move.clone() {
+            if !self.drag_moving
+                && (f32::from(ev.position.x - start.x).abs()
+                    + f32::from(ev.position.y - start.y).abs())
+                    > 6.
+            {
+                self.drag_moving = true;
+            }
+        }
+        if self.drag_moving {
+            let target = if self.can_drop_into(id, &self.selected) {
+                Some(id.to_string())
+            } else {
+                None
+            };
+            if self.drop_hover != target {
+                self.drop_hover = target;
+                cx.notify();
+            }
+        } else {
+            self.drag_select_to(id, cx);
+        }
+    }
+
+    /// Left release on a row/cell during a drag-move — ctrl held means
+    /// copy, otherwise move. The folder under the pointer is the dest.
+    fn drop_on(&mut self, id: &str, ev: &MouseUpEvent) {
+        if !self.drag_moving || !self.can_drop_into(id, &self.selected) {
+            return;
+        }
+        let objs = self.selected.clone();
+        let copy = ev.modifiers.control;
+        for obj in &objs {
+            self.send(if copy {
+                Command::Copy {
+                    obj: obj.clone(),
+                    parent: id.to_string(),
+                }
+            } else {
+                Command::Move {
+                    obj: obj.clone(),
+                    parent: id.to_string(),
+                }
+            });
+        }
+        self.status = format!(
+            "{} {} item{}",
+            if copy { "copying" } else { "moving" },
+            objs.len(),
+            if objs.len() == 1 { "" } else { "s" },
+        );
+        self.selected.clear();
+        self.drag_moving = false;
+        self.drop_hover = None;
+        self.pending_move = None;
     }
 
     pub(super) fn render_drive(
@@ -729,6 +873,21 @@ impl Root {
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
                 if ev.pressed_button.is_none() {
                     this.drag_anchor = None;
+                    this.pending_move = None;
+                    this.drag_moving = false;
+                    this.drop_hover = None;
+                } else if let Some((_, start)) = &this.pending_move {
+                    // Rows/cells only see hovers over themselves — the
+                    // threshold also needs to trip over empty space or a
+                    // release there would collapse the selection.
+                    if !this.drag_moving
+                        && (f32::from(ev.position.x - start.x).abs()
+                            + f32::from(ev.position.y - start.y).abs())
+                            > 6.
+                    {
+                        this.drag_moving = true;
+                        cx.notify();
+                    }
                 }
                 if let Some((sy, sh)) = this.transfers_drag {
                     if ev.pressed_button.is_some() {
@@ -740,6 +899,24 @@ impl Root {
                     cx.notify();
                 }
             }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                    if this.drag_moving {
+                        // Released over empty space — cancel the drag.
+                        this.drag_moving = false;
+                        this.drop_hover = None;
+                        this.pending_move = None;
+                        cx.notify();
+                    } else if let Some((id, _)) = this.pending_move.take() {
+                        // Press on a selected item that never became a
+                        // drag — plain click, collapse the selection.
+                        this.selected = vec![id.clone()];
+                        this.anchor = Some(id);
+                        cx.notify();
+                    }
+                }),
+            )
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
                 if this.modal.is_some() || this.f_search.read(cx).is_focused(window) {
                     return;
@@ -760,6 +937,38 @@ impl Root {
                     return;
                 }
                 let ids = this.visible_ids(cx);
+                if e.keystroke.modifiers.control && !this.trash {
+                    match e.keystroke.key.as_str() {
+                        "a" => {
+                            this.selected = ids;
+                            this.anchor = this.selected.first().cloned();
+                        }
+                        "c" | "x" => {
+                            if this.selected.is_empty() {
+                                return;
+                            }
+                            let cut = e.keystroke.key == "x";
+                            let n = this.selected.len();
+                            this.clip = Some(Clip {
+                                objs: this.selected.clone(),
+                                cut,
+                            });
+                            this.status = format!(
+                                "{n} item{} {}",
+                                if n == 1 { "" } else { "s" },
+                                if cut { "cut" } else { "copied" },
+                            );
+                        }
+                        "v" => {
+                            if this.clip.is_some() {
+                                this.paste_clip(this.cwd.clone());
+                            }
+                        }
+                        _ => return,
+                    }
+                    cx.notify();
+                    return;
+                }
                 match e.keystroke.key.as_str() {
                     "up" | "down" => {
                         if ids.is_empty() {
@@ -1028,9 +1237,11 @@ impl Root {
             });
         }
         let selected = self.selected.contains(&id);
+        let drop_target = self.drop_hover.as_deref() == Some(id.as_str());
         let click_id = id.clone();
         let rc_id = id.clone();
         let hover_id = id.clone();
+        let drop_id = id.clone();
         let thumb = self.thumbnails.get(&id).cloned();
         div()
             .flex()
@@ -1040,12 +1251,20 @@ impl Root {
             .w(px(100.))
             .p_2()
             .rounded_lg()
-            .bg(if selected {
+            .bg(if selected || drop_target {
                 theme().accent_soft
             } else {
                 transparent_black()
             })
-            .hover(|s| s.bg(theme().panel))
+            // A drop target stays lit — the generic hover tint would
+            // paint over it.
+            .hover(move |s| {
+                if drop_target {
+                    s.bg(theme().accent_soft)
+                } else {
+                    s.bg(theme().panel)
+                }
+            })
             .cursor_pointer()
             .on_mouse_down(
                 MouseButton::Left,
@@ -1053,6 +1272,16 @@ impl Root {
                     this.drive_focus.focus(window);
                     if ev.click_count == 2 && is_folder {
                         this.set_cwd(click_id.clone());
+                    } else if !this.trash
+                        && !ev.modifiers.control
+                        && !ev.modifiers.shift
+                        && this.selected.contains(&click_id)
+                    {
+                        // Plain press on a selected item — arm a
+                        // drag-move; releasing without a drag collapses
+                        // the selection to it.
+                        this.pending_move = Some((click_id.clone(), ev.position));
+                        this.drag_anchor = None;
                     } else {
                         this.apply_click(click_id.clone(), ev, cx);
                     }
@@ -1073,9 +1302,16 @@ impl Root {
             )
             .on_mouse_move(cx.listener(move |this, ev: &MouseMoveEvent, _, cx| {
                 if matches!(ev.pressed_button, Some(MouseButton::Left)) {
-                    this.drag_select_to(&hover_id, cx);
+                    this.hover_during_drag(&hover_id, ev, cx);
                 }
             }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(move |this, ev: &MouseUpEvent, _, cx| {
+                    this.drop_on(&drop_id, ev);
+                    cx.notify();
+                }),
+            )
             .child(
                 div()
                     .w(px(80.))
@@ -1128,10 +1364,12 @@ impl Root {
             ),
         };
         let selected = self.selected.contains(&id);
+        let drop_target = self.drop_hover.as_deref() == Some(id.as_str());
         let row_id = format!("row-{id}");
         let id_click = id.clone();
         let rc_id = id.clone();
         let hover_id = id.clone();
+        let drop_id = id.clone();
 
         div()
             .id(SharedString::from(row_id))
@@ -1141,12 +1379,22 @@ impl Root {
             .w_full()
             .px_4()
             .py_2()
-            .bg(if selected {
+            .bg(if drop_target {
+                theme().accent_soft
+            } else if selected {
                 theme().selected
             } else {
                 transparent_black()
             })
-            .hover(|s| s.bg(theme().panel2))
+            // A drop target stays lit — the generic hover tint would
+            // paint over it.
+            .hover(move |s| {
+                if drop_target {
+                    s.bg(theme().accent_soft)
+                } else {
+                    s.bg(theme().panel2)
+                }
+            })
             .cursor_pointer()
             .on_mouse_down(
                 MouseButton::Left,
@@ -1156,6 +1404,16 @@ impl Root {
                         this.set_cwd(id_click.clone());
                     } else if ev.click_count == 2 {
                         this.open_viewer(&id_click, cx);
+                    } else if !this.trash
+                        && !ev.modifiers.control
+                        && !ev.modifiers.shift
+                        && this.selected.contains(&id_click)
+                    {
+                        // Plain press on a selected item — arm a
+                        // drag-move; releasing without a drag collapses
+                        // the selection to it.
+                        this.pending_move = Some((id_click.clone(), ev.position));
+                        this.drag_anchor = None;
                     } else {
                         this.apply_click(id_click.clone(), ev, cx);
                     }
@@ -1176,9 +1434,16 @@ impl Root {
             )
             .on_mouse_move(cx.listener(move |this, ev: &MouseMoveEvent, _, cx| {
                 if matches!(ev.pressed_button, Some(MouseButton::Left)) {
-                    this.drag_select_to(&hover_id, cx);
+                    this.hover_during_drag(&hover_id, ev, cx);
                 }
             }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(move |this, ev: &MouseUpEvent, _, cx| {
+                    this.drop_on(&drop_id, ev);
+                    cx.notify();
+                }),
+            )
             .child(
                 div()
                     .w(px(22.))
