@@ -1,6 +1,6 @@
 //! Modal dialogs — every confirm routes through `modal_confirm`
 //! so Enter and click can never diverge.
-use super::controls::{Tone, button, tool_button_id};
+use super::controls::{Tone, button, human_size, icon_button, icon_sized, tool_button_id};
 use super::*;
 
 impl Root {
@@ -194,46 +194,144 @@ impl Root {
                 }
                 ("Unadopted attachments".into(), list.into_any_element())
             }
-            Modal::UploadDirs { dirs } => {
-                let label = if dirs.len() == 1 {
-                    dirs[0]
-                        .file_name()
-                        .map(|s| format!("Upload “{}” as:", s.to_string_lossy()))
-                        .unwrap_or_else(|| "Upload folder as:".into())
-                } else {
-                    format!("Upload {} folders as:", dirs.len())
+            Modal::UploadOpts => {
+                let Some(plan) = &self.upload_plan else {
+                    return div().into_any_element();
                 };
-                let dirs3 = dirs.clone();
-                (
-                    "Upload folder".into(),
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_3()
-                        .child(div().text_sm().text_color(theme().dim).child(label))
-                        .child(
-                            div()
-                                .flex()
-                                .gap_2()
-                                .child({
-                                    let ok = cx.listener(|this, _: &MouseDownEvent, _, cx| this.modal_confirm(cx));
-                                    button("As folder", theme().accent, ok)
-                                })
-                                .child({
-                                    let ok = cx.listener(move |this, _: &MouseDownEvent, _, cx| {
-                                        for dir in dirs3.clone() {
-                                            this.send(Command::UploadArchive {
-                                                dir,
-                                                parent: this.cwd.clone(),
-                                            });
-                                        }
-                                        this.modal = None;
-                                        cx.notify();
-                                    });
-                                    button(".7z archive", theme().accent, ok)
-                                }),
+                let mut list = div()
+                    .id("upload-pick-list")
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .max_h(px(220.))
+                    .overflow_y_scroll();
+                for (i, item) in plan.items.iter().enumerate() {
+                    let meta = if item.dir {
+                        format!(
+                            "{} files · {}",
+                            item.files,
+                            human_size(item.bytes as i64)
                         )
-                        .into_any_element(),
+                    } else {
+                        human_size(item.bytes as i64)
+                    };
+                    list = list.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .bg(theme().panel2)
+                            .child(icon_sized(
+                                if item.dir { "folder" } else { "file" },
+                                14.,
+                                theme().file_icon,
+                            ))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .overflow_hidden()
+                                    .text_sm()
+                                    .child(item.name.clone()),
+                            )
+                            .child(div().text_xs().text_color(theme().dim).child(meta))
+                            .child({
+                                let rm = cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                                    if let Some(p) = &mut this.upload_plan {
+                                        p.items.remove(i);
+                                        if p.items.is_empty() {
+                                            this.modal = None;
+                                        }
+                                    }
+                                    cx.notify();
+                                });
+                                icon_button(
+                                    format!("pick-rm-{i}"),
+                                    "x",
+                                    theme().dim,
+                                    theme().panel,
+                                    rm,
+                                )
+                            }),
+                    );
+                }
+
+                let mode = plan.mode;
+                let pill = |label: &'static str, m: PlanMode, cx: &mut Context<Self>| {
+                    let on = mode == m;
+                    div()
+                        .id(label)
+                        .cursor_pointer()
+                        .px_3()
+                        .py_1()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(if on { theme().accent } else { theme().border })
+                        .bg(if on { theme().accent_soft } else { theme().panel2 })
+                        .text_sm()
+                        .text_color(if on { theme().accent } else { theme().ghost })
+                        .child(label)
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, _, cx| {
+                                if let Some(p) = &mut this.upload_plan {
+                                    p.mode = m;
+                                }
+                                cx.notify();
+                            }),
+                        )
+                };
+
+                let mut body = div()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .child(list)
+                    .child(
+                        div()
+                            .flex()
+                            .gap_2()
+                            .child(pill("As files", PlanMode::Files, cx))
+                            .child(pill("As folder", PlanMode::Folder, cx))
+                            .child(pill("7z archive", PlanMode::Archive, cx)),
+                    );
+                if mode != PlanMode::Files {
+                    body = body.child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(theme().dim)
+                                    .child(if mode == PlanMode::Folder {
+                                        "Folder name — everything lands inside it"
+                                    } else {
+                                        "Archive name (.7z appended)"
+                                    }),
+                            )
+                            .child(self.f_name.clone()),
+                    );
+                } else {
+                    body = body.child(
+                        div()
+                            .text_xs()
+                            .text_color(theme().dim)
+                            .child("Files land here — picked folders keep their subfolders."),
+                    );
+                }
+                (
+                    "Upload".into(),
+                    body.child({
+                        let ok = cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                            this.modal_confirm(cx)
+                        });
+                        button("Upload", theme().accent, ok)
+                    })
+                    .into_any_element(),
                 )
             }
             Modal::UploadLimit => (

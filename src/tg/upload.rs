@@ -117,10 +117,12 @@ impl Worker {
     /// Upload a local directory tree: mkdir ops for each subdir (the obj
     /// id is client-generated so we know parents before files go up),
     /// then a spawned upload task per file.
-    pub(super) async fn upload_dir(&mut self, dir: PathBuf, parent: String) -> Result<()> {
-        if !dir.is_dir() {
-            return Err(anyhow!("not a directory"));
-        }
+    pub(super) async fn upload_items(
+        &mut self,
+        items: Vec<PathBuf>,
+        parent: String,
+        wrap: Option<String>,
+    ) -> Result<()> {
         // Walk + mkdirs + enqueues run off the command loop — otherwise
         // every folder's mkdir awaits a Telegram RTT (and flood-wait
         // sleeps) serially on the loop, starving uploads in bursts.
@@ -128,9 +130,9 @@ impl Worker {
         // the semaphore always has work while the walk continues.
         let ctx = self.transfer_ctx(CancellationToken::new())?;
         tokio::spawn(async move {
-            if let Err(e) = Self::upload_dir_task(&ctx, dir, parent).await {
+            if let Err(e) = Self::upload_items_task(&ctx, items, parent, wrap).await {
                 ctx.emit(Event::Error {
-                    context: "upload dir",
+                    context: "upload",
                     message: format!("{e:#}"),
                 });
             }
@@ -138,14 +140,19 @@ impl Worker {
         Ok(())
     }
 
-    /// Background worker for UploadDir: files stream into the upload
+    /// Background worker for UploadItems: files stream into the upload
     /// queue the moment they're discovered — parent dirs are referenced
     /// by uuid so landing before a mkdir is self-healing. mkdir ops send
     /// concurrently (bounded) so a deep tree doesn't trickle.
-    pub(super) async fn upload_dir_task(
+    ///
+    /// `wrap` nests everything under one new folder. Without it each
+    /// picked dir contributes its *contents* (not itself) — the subtree
+    /// structure below it still maps to real folders.
+    pub(super) async fn upload_items_task(
         ctx: &TransferCtx,
-        dir: PathBuf,
+        items: Vec<PathBuf>,
         parent: String,
+        wrap: Option<String>,
     ) -> Result<()> {
         // A dedicated sender drains mkdir ops off a channel — files never
         // wait on them since parents are uuids the projection resolves in
@@ -163,16 +170,24 @@ impl Worker {
             let _ = mkdir_tx.send(wire::format(&ops::mkdir_with_id(obj, parent, name)));
         };
 
-        // Create the folder itself first — contents land inside it, not
-        // scattered into the current directory.
-        let root_obj = wire::new_folder_id();
-        let name = dir
-            .file_name()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| "folder".into());
-        push_mkdir(root_obj.clone(), parent, name);
+        let mut top = parent;
+        if let Some(name) = wrap.filter(|n| !n.trim().is_empty()) {
+            let root_obj = wire::new_folder_id();
+            push_mkdir(root_obj.clone(), top, name);
+            top = root_obj;
+        }
 
-        let mut queue = vec![(dir, root_obj)];
+        let mut queue = Vec::new();
+        for item in items {
+            if item.is_dir() {
+                queue.push((item, top.clone()));
+            } else if item.is_file() {
+                ctx.journal(Command::Upload {
+                    path: item,
+                    parent: top.clone(),
+                });
+            }
+        }
         while let Some((d, pid)) = queue.pop() {
             let mut entries: Vec<_> = std::fs::read_dir(&d)?.filter_map(|e| e.ok()).collect();
             entries.sort_by_key(|e| e.file_name());
@@ -201,28 +216,42 @@ impl Worker {
         Ok(())
     }
 
-    /// `7z a` the folder to staging, then upload the archive.
-    pub(super) async fn upload_archive(&mut self, dir: PathBuf, parent: String) -> Result<()> {
-        let name = dir
-            .file_name()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| "archive".into());
+    /// `7z a` the picked items to staging, then upload the archive.
+    /// Each item is appended with cwd = its parent so archive entries
+    /// stay clean relative names instead of absolute paths.
+    pub(super) async fn upload_archive(
+        &mut self,
+        items: Vec<PathBuf>,
+        name: String,
+        parent: String,
+    ) -> Result<()> {
+        let name = name.trim().trim_end_matches(".7z").replace('/', "-");
+        let name = if name.is_empty() { "archive".into() } else { name };
         let out = config::staging_dir()
             .unwrap_or_else(|_| std::env::temp_dir())
             .join(format!("{name}.7z"));
-        let out2 = out.clone();
-        let dir2 = dir.clone();
-        let status = tokio::task::spawn_blocking(move || {
-            std::process::Command::new("7z")
-                .arg("a")
-                .arg("-t7z")
-                .arg(&out2)
-                .arg(&dir2)
-                .status()
-        })
-        .await??;
-        if !status.success() {
-            return Err(anyhow!("7z archive failed (exit {status})"));
+        for item in &items {
+            let Some(base) = item.file_name().map(|s| s.to_string_lossy().to_string()) else {
+                continue;
+            };
+            let cwd = item
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| PathBuf::from("."));
+            let out2 = out.clone();
+            let status = tokio::task::spawn_blocking(move || {
+                std::process::Command::new("7z")
+                    .arg("a")
+                    .arg("-t7z")
+                    .arg(&out2)
+                    .arg(&base)
+                    .current_dir(&cwd)
+                    .status()
+            })
+            .await??;
+            if !status.success() {
+                return Err(anyhow!("7z archive failed (exit {status})"));
+            }
         }
         self.upload(out, parent).await
     }

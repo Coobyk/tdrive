@@ -55,10 +55,9 @@ enum Modal {
     Adopt,
     WatchBackup,
     Mount,
-    /// Folders picked for upload — choose structure vs archive.
-    UploadDirs {
-        dirs: Vec<PathBuf>,
-    },
+    /// Review picked upload items — removable list + files/folder/7z
+    /// mode. The plan lives on `upload_plan`.
+    UploadOpts,
     /// Max concurrent uploads.
     UploadLimit,
     /// Confirm deleting `dead` obsolete channel messages (scanned by
@@ -72,6 +71,31 @@ enum Modal {
 struct Clip {
     objs: Vec<String>,
     cut: bool,
+}
+
+/// One picked path in the upload review — dir counts/bytes are walked
+/// once at pick time so the list can show totals without rescanning.
+struct UploadPick {
+    path: PathBuf,
+    name: String,
+    dir: bool,
+    files: u64,
+    bytes: u64,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum PlanMode {
+    /// Dump into cwd — picked dirs contribute contents with subtrees.
+    Files,
+    /// Everything nested under one new named folder.
+    Folder,
+    /// One .7z archive containing the picked items.
+    Archive,
+}
+
+struct UploadPlan {
+    items: Vec<UploadPick>,
+    mode: PlanMode,
 }
 
 /// Rubber-band selection state — corners live in file-list content
@@ -151,6 +175,8 @@ pub struct Root {
     empty_menu: Option<Point<Pixels>>,
     /// Internal clipboard for ctrl+c/x + Paste — cut pastes as moves.
     clip: Option<Clip>,
+    /// Picked paths awaiting the upload-review modal's verdict.
+    upload_plan: Option<UploadPlan>,
     /// Left press on an already-selected row, armed to become a
     /// drag-move once the pointer travels past the threshold.
     pending_move: Option<(String, Point<Pixels>)>,
@@ -256,6 +282,7 @@ impl Root {
             tools_menu: None,
             empty_menu: None,
             clip: None,
+            upload_plan: None,
             pending_move: None,
             drag_moving: false,
             drop_hover: None,
@@ -628,27 +655,20 @@ impl Root {
         self.send(Command::CreateChannel { title });
     }
 
-    /// One picker for files AND folders — files queue directly, folders
-    /// get the structure-vs-archive choice.
+    /// The pickers only differ in what they let you select — both land
+    /// in the same upload-review modal afterwards.
     fn pick_upload(&mut self, cx: &mut Context<Self>) {
-        // The portal has no "files and folders" chooser — directories:true
-        // is a folder-only picker. Files here, folders in pick_upload_dirs.
         let task = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
             multiple: true,
             prompt: Some("Select files to upload".into()),
         });
-        let cwd = self.cwd.clone();
-        let tx = self.tg.clone();
-        cx.spawn(async move |_, _| {
+        cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(paths))) = task.await {
-                for path in paths {
-                    let _ = tx.send(Command::Upload {
-                        path,
-                        parent: cwd.clone(),
-                    });
-                }
+                let _ = this.update(cx, |this, cx| {
+                    this.open_upload_review(paths, cx);
+                });
             }
         })
         .detach();
@@ -663,15 +683,48 @@ impl Root {
         });
         cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(dirs))) = task.await {
-                if !dirs.is_empty() {
-                    let _ = this.update(cx, |this, cx| {
-                        this.modal = Some(Modal::UploadDirs { dirs });
-                        cx.notify();
-                    });
-                }
+                let _ = this.update(cx, |this, cx| {
+                    this.open_upload_review(dirs, cx);
+                });
             }
         })
         .detach();
+    }
+
+    /// Build the review plan: one row per picked path, dir trees counted
+    /// once. Default mode mirrors the likely intent — any dir in the
+    /// set means "as folder", files-only means "as files".
+    fn open_upload_review(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        let mut items = Vec::new();
+        for path in paths {
+            let (dir, files, bytes) = walk_pick(&path);
+            let name = path
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| path.display().to_string());
+            items.push(UploadPick {
+                path,
+                name,
+                dir,
+                files,
+                bytes,
+            });
+        }
+        if items.is_empty() {
+            return;
+        }
+        let default_name = if items.len() == 1 {
+            items[0].name.clone()
+        } else {
+            "upload".to_string()
+        };
+        let mode = if items.iter().any(|i| i.dir) {
+            PlanMode::Folder
+        } else {
+            PlanMode::Files
+        };
+        self.upload_plan = Some(UploadPlan { items, mode });
+        self.open_modal(Modal::UploadOpts, &default_name, "name", cx);
     }
 
     fn pick_backup(&mut self, cx: &mut Context<Self>) {
@@ -879,12 +932,32 @@ impl Root {
                 }
                 self.modal = None;
             }
-            Some(Modal::UploadDirs { dirs }) => {
-                for dir in dirs.clone() {
-                    self.send(Command::UploadDir {
-                        dir,
-                        parent: self.cwd.clone(),
-                    });
+            Some(Modal::UploadOpts) => {
+                if let Some(plan) = self.upload_plan.take() {
+                    let name = self.f_name.read(cx).text().trim().to_string();
+                    let items: Vec<PathBuf> =
+                        plan.items.iter().map(|i| i.path.clone()).collect();
+                    match plan.mode {
+                        PlanMode::Files => self.send(Command::UploadItems {
+                            items,
+                            parent: self.cwd.clone(),
+                            wrap: None,
+                        }),
+                        PlanMode::Folder => self.send(Command::UploadItems {
+                            items,
+                            parent: self.cwd.clone(),
+                            wrap: Some(if name.is_empty() {
+                                "upload".into()
+                            } else {
+                                name
+                            }),
+                        }),
+                        PlanMode::Archive => self.send(Command::UploadArchive {
+                            items,
+                            name,
+                            parent: self.cwd.clone(),
+                        }),
+                    }
                 }
                 self.modal = None;
             }
@@ -971,4 +1044,36 @@ impl Render for Root {
             })
             .child(div().flex_1().flex().child(content))
     }
+}
+
+/// Count files + bytes under a picked path — a file reports (1, size),
+/// a dir walks once.
+fn walk_pick(path: &PathBuf) -> (bool, u64, u64) {
+    if path.is_file() {
+        return (
+            false,
+            1,
+            std::fs::metadata(path).map(|m| m.len()).unwrap_or(0),
+        );
+    }
+    if !path.is_dir() {
+        return (false, 0, 0);
+    }
+    let mut files = 0u64;
+    let mut bytes = 0u64;
+    let mut stack = vec![path.clone()];
+    while let Some(d) = stack.pop() {
+        if let Ok(rd) = std::fs::read_dir(&d) {
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if p.is_file() {
+                    files += 1;
+                    bytes += e.metadata().map(|m| m.len()).unwrap_or(0);
+                }
+            }
+        }
+    }
+    (true, files, bytes)
 }

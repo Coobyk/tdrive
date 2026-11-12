@@ -114,14 +114,19 @@ pub enum Command {
         path: PathBuf,
         parent: String,
     },
-    /// Upload a local folder — preserves structure via mkdir ops.
-    UploadDir {
-        dir: PathBuf,
+    /// Upload picked files/folders. `wrap = Some(name)` nests
+    /// everything in one new folder; `None` dumps each item — files
+    /// land directly, picked dirs contribute their contents while
+    /// keeping their own subtree.
+    UploadItems {
+        items: Vec<PathBuf>,
         parent: String,
+        wrap: Option<String>,
     },
-    /// 7z-archive a local folder, then upload the archive.
+    /// 7z-archive picked items, then upload the archive.
     UploadArchive {
-        dir: PathBuf,
+        items: Vec<PathBuf>,
+        name: String,
         parent: String,
     },
     SetUploadLimit {
@@ -595,8 +600,16 @@ impl Worker {
             } => self.open_channel(id, access_hash, title, kind).await,
             Command::Sync => self.sync().await,
             Command::Upload { path, parent } => self.upload(path, parent).await,
-            Command::UploadDir { dir, parent } => self.upload_dir(dir, parent).await,
-            Command::UploadArchive { dir, parent } => self.upload_archive(dir, parent).await,
+            Command::UploadItems {
+                items,
+                parent,
+                wrap,
+            } => self.upload_items(items, parent, wrap).await,
+            Command::UploadArchive {
+                items,
+                name,
+                parent,
+            } => self.upload_archive(items, name, parent).await,
             Command::SetUploadLimit { n } => {
                 let n = n.clamp(1, crate::config::MAX_UPLOAD_LIMIT);
                 self.upload_sem = Arc::new(tokio::sync::Semaphore::new(n));
