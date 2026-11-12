@@ -29,6 +29,8 @@ pub(crate) struct Theme {
     pub ok: Hsla,
     /// Inert icon color for plain files.
     pub file_icon: Hsla,
+    /// Text input background — darker than panels in dark mode.
+    pub field: Hsla,
 }
 
 fn c(v: u32) -> Hsla {
@@ -54,6 +56,7 @@ fn dark() -> Theme {
         danger_soft: rgba(0xe06c751f).into(),
         ok: c(0x98c379),
         file_icon: c(0x4d5666),
+        field: c(0x1e222a),
     }
 }
 
@@ -76,6 +79,7 @@ fn light() -> Theme {
         danger_soft: rgba(0xcf44361f).into(),
         ok: c(0x4c9e4f),
         file_icon: c(0xb0b3bc),
+        field: c(0xeaeaee),
     }
 }
 
