@@ -360,6 +360,10 @@ pub enum Event {
 /// frozen.
 struct FloodSleep {
     tx: async_channel::Sender<Event>,
+    /// The countdown emitter for the latest wait — a new flood wait
+    /// replaces it so two waiting requests never interleave stale
+    /// seconds in the status line.
+    countdown: std::sync::Mutex<Option<tokio::task::AbortHandle>>,
 }
 
 impl grammers_client::sender::RetryPolicy for FloodSleep {
@@ -371,9 +375,26 @@ impl grammers_client::sender::RetryPolicy for FloodSleep {
         match &ctx.error {
             InvocationError::Rpc(e) if e.code == 420 => {
                 let secs = (e.value.unwrap_or(60) as u64).clamp(1, 86_400);
-                let _ = self.tx.try_send(Event::Status {
-                    message: format!("rate-limited — resuming in {secs}s"),
+                if let Some(h) = self.countdown.lock().unwrap().take() {
+                    h.abort();
+                }
+                let tx = self.tx.clone();
+                let task = tokio::spawn(async move {
+                    for left in (1..=secs).rev() {
+                        let _ = tx
+                            .send(Event::Status {
+                                message: format!("rate-limited — resuming in {left}s"),
+                            })
+                            .await;
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    }
+                    let _ = tx
+                        .send(Event::Status {
+                            message: "rate limit lifted — resuming".into(),
+                        })
+                        .await;
                 });
+                *self.countdown.lock().unwrap() = Some(task.abort_handle());
                 std::ops::ControlFlow::Continue(std::time::Duration::from_secs(secs))
             }
             InvocationError::Io(_) if ctx.fail_count.get() < 120 => {

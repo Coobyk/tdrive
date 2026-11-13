@@ -17,6 +17,7 @@ impl Worker {
             grammers_client::sender::ConnectionParams {
                 retry_policy: Box::new(FloodSleep {
                     tx: self.tx.clone(),
+                    countdown: std::sync::Mutex::new(None),
                 }),
                 ..Default::default()
             },
