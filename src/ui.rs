@@ -571,7 +571,20 @@ impl Root {
             Event::Transfer(t) => {
                 self.transfers.insert(t.id.clone(), t.clone());
                 if t.state == crate::tg::TransferState::Done {
-                    notify(&format!("{} — finished", t.label));
+                    // One notification per batch — only when nothing
+                    // is still active or paused.
+                    let busy = self
+                        .transfers
+                        .values()
+                        .any(|u| matches!(u.state, crate::tg::TransferState::Active | crate::tg::TransferState::Paused));
+                    if !busy {
+                        let done = self
+                            .transfers
+                            .values()
+                            .filter(|u| u.state == crate::tg::TransferState::Done)
+                            .count();
+                        notify(&format!("{done} transfer{} finished", if done == 1 { "" } else { "s" }));
+                    }
                     // Fade out finished rows instead of pinning them forever.
                     let id = t.id.clone();
                     let timer = cx
