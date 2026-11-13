@@ -17,6 +17,7 @@ grammers-client = "0.12.0"
 grammers-session = { version = "0.12.0", features = ["sqlite-storage"] }
 hkdf = "0.13.0"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
+ksni = { version = "0.3.7", features = ["blocking"] }
 libc = "0.2.191"
 rand = "0.10.3"
 serde = { version = "1.0.229", features = ["derive"] }

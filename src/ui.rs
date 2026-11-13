@@ -414,13 +414,29 @@ impl Root {
         })
         .detach();
 
+        let tray_rx = crate::tray::spawn();
         // Activity ticker — advances the bottom-left spinner while any
-        // sync, transfer or thumbnail fetch is in flight.
+        // sync, transfer or thumbnail fetch is in flight; also drains
+        // tray-menu activations on the same cadence.
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor()
                     .timer(std::time::Duration::from_millis(120))
                     .await;
+                while let Ok(msg) = tray_rx.try_recv() {
+                    match msg {
+                        crate::tray::TrayMsg::Show => {
+                            let _ = cx.update(|cx| {
+                                if let Some(w) = cx.windows().first() {
+                                    let _ = w.update(cx, |_, w, _| w.activate_window());
+                                }
+                            });
+                        }
+                        crate::tray::TrayMsg::Quit => {
+                            let _ = cx.update(|cx| cx.quit());
+                        }
+                    }
+                }
                 if this
                     .update(cx, |this, cx| {
                         if this.activity_active() {

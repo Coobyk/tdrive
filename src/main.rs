@@ -11,6 +11,7 @@ mod project;
 mod remote;
 mod stream;
 mod tg;
+mod tray;
 mod ui;
 mod wire;
 
