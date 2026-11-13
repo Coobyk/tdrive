@@ -753,6 +753,21 @@ impl Root {
         cx.notify();
     }
 
+    /// OS drag-and-drop — the file manager selects files and folders
+    /// together, which no Linux picker dialog can do. Dropped paths
+    /// feed the same review as picked ones.
+    fn external_drop(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        let paths: Vec<PathBuf> = paths.into_iter().filter(|p| p.exists()).collect();
+        if paths.is_empty() {
+            return;
+        }
+        if matches!(self.modal, Some(Modal::UploadOpts)) {
+            self.append_upload(paths, cx);
+        } else if self.modal.is_none() {
+            self.open_upload_review(paths, cx);
+        }
+    }
+
     fn pick_backup(&mut self, cx: &mut Context<Self>) {
         let task = cx.prompt_for_paths(PathPromptOptions {
             files: true,

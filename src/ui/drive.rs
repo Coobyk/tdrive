@@ -891,7 +891,7 @@ impl Root {
                     } else if !self.f_search.read(cx).text().trim().is_empty() {
                         "no matches"
                     } else {
-                        "empty folder"
+                        "empty folder — drop files or folders to upload"
                     }),
             );
         } else if self.grid && !self.trash {
@@ -1215,6 +1215,13 @@ impl Root {
                     }
                 }),
             )
+            .can_drop(|val, _window, _cx| val.is::<ExternalPaths>())
+            .drag_over(|style, _paths: &ExternalPaths, _window, _cx| {
+                style.bg(theme().accent.opacity(0.08))
+            })
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, _window, cx| {
+                this.external_drop(paths.paths().to_vec(), cx);
+            }))
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
                 this.cursor = ev.position;
                 this.drag_copy = ev.modifiers.control;
