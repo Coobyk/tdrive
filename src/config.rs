@@ -77,6 +77,22 @@ pub fn styles_path() -> Result<PathBuf> {
     Ok(data_dir()?.join("folder_styles.json"))
 }
 
+/// Held for the process lifetime — a second instance can't start.
+/// Two apps sharing one session.db produced AUTH_KEY_DUPLICATED.
+pub struct InstanceLock(std::fs::File);
+
+pub fn instance_lock() -> Result<InstanceLock> {
+    let path = data_dir()?.join("tdrive-rs.lock");
+    let f = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(path)?;
+    f.try_lock()
+        .context("another tdrive-rs instance is already running")?;
+    Ok(InstanceLock(f))
+}
+
 /// Per-channel projected namespace snapshot (durable projection).
 pub fn namespace_path(channel_id: i64) -> Result<PathBuf> {
     let dir = data_dir()?.join("namespaces");

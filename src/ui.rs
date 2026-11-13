@@ -81,6 +81,15 @@ pub(super) struct FolderStyle {
     badge: u8,
 }
 
+/// Desktop notification through libnotify — best effort, silent if
+/// notify-send isn't installed.
+fn notify(text: &str) {
+    let _ = std::process::Command::new("notify-send")
+        .arg("TDrive")
+        .arg(text)
+        .spawn();
+}
+
 fn load_styles() -> std::collections::HashMap<String, FolderStyle> {
     crate::config::styles_path()
         .ok()
@@ -229,6 +238,8 @@ pub struct Root {
     signed_in_as: String,
     f_search: Entity<TextField>,
     f_invite: Entity<TextField>,
+    /// Optional 7z password — shown in the review's archive mode.
+    f_archpw: Entity<TextField>,
     vault_configured: bool,
     vault_unlocked: bool,
     vault_hint: String,
@@ -282,6 +293,8 @@ impl Root {
         let f_name = cx.new(|cx| TextField::new(cx, "f-name", "name"));
         let f_search = cx.new(|cx| TextField::new(cx, "f-search", "search files…"));
         let f_invite = cx.new(|cx| TextField::new(cx, "f-invite", "t.me/+… invite link"));
+        let f_archpw =
+            cx.new(|cx| TextField::new(cx, "f-archpw", "archive password (optional)").masked());
         cx.observe(&f_search, |_, _, cx| cx.notify()).detach();
 
         let mut root = Self {
@@ -322,6 +335,7 @@ impl Root {
             signed_in_as: String::new(),
             f_search,
             f_invite,
+            f_archpw,
             vault_configured: false,
             vault_unlocked: false,
             vault_hint: String::new(),
@@ -517,6 +531,7 @@ impl Root {
             Event::Transfer(t) => {
                 self.transfers.insert(t.id.clone(), t.clone());
                 if t.state == crate::tg::TransferState::Done {
+                    notify(&format!("{} — finished", t.label));
                     // Fade out finished rows instead of pinning them forever.
                     let id = t.id.clone();
                     let timer = cx
@@ -1046,6 +1061,10 @@ impl Root {
                             items,
                             name,
                             parent: self.cwd.clone(),
+                            password: {
+                                let p = self.f_archpw.read(cx).text().trim().to_string();
+                                (!p.is_empty()).then_some(p)
+                            },
                         }),
                     }
                 }

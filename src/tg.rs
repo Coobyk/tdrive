@@ -128,6 +128,9 @@ pub enum Command {
         items: Vec<PathBuf>,
         name: String,
         parent: String,
+        /// `7z -p` password — also enables header encryption
+        /// (`-mhe`) so even filenames stay hidden.
+        password: Option<String>,
     },
     SetUploadLimit {
         n: usize,
@@ -636,7 +639,8 @@ impl Worker {
                 items,
                 name,
                 parent,
-            } => self.upload_archive(items, name, parent).await,
+                password,
+            } => self.upload_archive(items, name, parent, password).await,
             Command::SetUploadLimit { n } => {
                 let n = n.clamp(1, crate::config::MAX_UPLOAD_LIMIT);
                 self.upload_sem = Arc::new(tokio::sync::Semaphore::new(n));

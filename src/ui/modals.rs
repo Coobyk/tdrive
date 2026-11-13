@@ -449,7 +449,12 @@ impl Root {
                                     }),
                             )
                             .child(self.f_name.clone()),
-                    );
+                    )
+                    .child(if mode == PlanMode::Archive {
+                        self.f_archpw.clone().into_any_element()
+                    } else {
+                        div().into_any_element()
+                    });
                 } else {
                     body = body.child(
                         div()

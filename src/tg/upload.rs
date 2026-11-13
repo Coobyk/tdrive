@@ -232,12 +232,16 @@ impl Worker {
         items: Vec<PathBuf>,
         name: String,
         parent: String,
+        password: Option<String>,
     ) -> Result<()> {
         let name = name.trim().trim_end_matches(".7z").replace('/', "-");
         let name = if name.is_empty() { "archive".into() } else { name };
         let out = config::staging_dir()
             .unwrap_or_else(|_| std::env::temp_dir())
             .join(format!("{name}.7z"));
+        // Password goes as its own arg pair — never spliced into a
+        // flag — so spaces/metachars can't break the command.
+        let pw = password.filter(|p| !p.is_empty());
         for item in &items {
             let Some(base) = item.file_name().map(|s| s.to_string_lossy().to_string()) else {
                 continue;
@@ -247,14 +251,14 @@ impl Worker {
                 .map(|p| p.to_path_buf())
                 .unwrap_or_else(|| PathBuf::from("."));
             let out2 = out.clone();
+            let pw2 = pw.clone();
             let status = tokio::task::spawn_blocking(move || {
-                std::process::Command::new("7z")
-                    .arg("a")
-                    .arg("-t7z")
-                    .arg(&out2)
-                    .arg(&base)
-                    .current_dir(&cwd)
-                    .status()
+                let mut c = std::process::Command::new("7z");
+                c.arg("a").arg("-t7z").arg(&out2).arg(&base);
+                if let Some(p) = &pw2 {
+                    c.arg(format!("-p{p}")).arg("-mhe=on");
+                }
+                c.current_dir(&cwd).status()
             })
             .await??;
             if !status.success() {

@@ -158,27 +158,36 @@ pub(super) fn folder_color(idx: u8) -> Hsla {
         .unwrap_or_else(|| theme().accent)
 }
 
-/// Folder glyph honoring its local style: palette tint + a small
-/// badge glyph nested in the folder's interior.
+/// Folder glyph honoring its local style: a filled silhouette tinted
+/// by the palette color + a badge glyph knocked out in the window
+/// background so it reads on any color.
 pub(super) fn folder_icon(style: Option<FolderStyle>, size: f32) -> impl IntoElement {
     let st = style.unwrap_or_default();
     let mut el = div()
         .relative()
         .w(px(size))
         .h(px(size))
-        .child(icon_sized("folder", size, folder_color(st.color)));
+        .child(icon_sized("folder_fill", size, folder_color(st.color)));
     if st.badge > 0 {
         if let Some(&badge) = FOLDER_BADGES.get(st.badge as usize - 1) {
             el = el.child(
                 div()
                     .absolute()
-                    .left(px(size * 0.28))
-                    .top(px(size * 0.44))
-                    .child(icon_sized(badge, size * 0.44, theme().text)),
+                    .left(px(size * 0.30))
+                    .top(px(size * 0.46))
+                    .child(icon_sized(badge, size * 0.40, theme().bg)),
             );
         }
     }
     el
+}
+
+/// Tile/chip background behind a styled folder icon.
+pub(super) fn folder_bg(style: Option<FolderStyle>, fallback: Hsla) -> Hsla {
+    match style {
+        Some(st) if st.color > 0 => folder_color(st.color).opacity(0.18),
+        _ => fallback,
+    }
 }
 
 /// Per-entry row/cell icon — folder vs file, with media-type variants.

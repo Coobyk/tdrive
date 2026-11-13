@@ -1,6 +1,8 @@
 //! Drive browser — the file listing view, selection detail,
 //! rows/cells, and the footer activity state.
-use super::controls::{Tone, entry_icon, folder_icon, icon_sized, tool_button};
+use super::controls::{
+    Tone, entry_icon, folder_bg, folder_icon, icon_button, icon_sized, tool_button,
+};
 use super::*;
 
 // Fixed geometry so the rubber band can hit-test items by index math
@@ -1126,6 +1128,45 @@ impl Root {
                         .child(format!("Transfers · {active_count} active · {total} total")),
                 )
                 .child(div().flex_1())
+                .child(if active_count > 0 {
+                    // Pause-all flips to resume-all once nothing's moving.
+                    let any_active = self
+                        .transfers
+                        .values()
+                        .any(|t| t.state == TransferState::Active);
+                    let ids: Vec<String> = self
+                        .transfers
+                        .values()
+                        .filter(|t| {
+                            t.state
+                                == if any_active {
+                                    TransferState::Active
+                                } else {
+                                    TransferState::Paused
+                                }
+                        })
+                        .map(|t| t.id.clone())
+                        .collect();
+                    icon_button(
+                        "transfers-pp".to_string(),
+                        if any_active { "pause" } else { "play" },
+                        theme().dim,
+                        theme().panel2,
+                        cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                            for id in &ids {
+                                this.send(if any_active {
+                                    Command::Pause { id: id.clone() }
+                                } else {
+                                    Command::Resume { id: id.clone() }
+                                });
+                            }
+                            cx.notify();
+                        }),
+                    )
+                    .into_any_element()
+                } else {
+                    div().into_any_element()
+                })
                 .child(if total > limit {
                     div()
                         .id("transfers-toggle")
@@ -1756,7 +1797,10 @@ impl Root {
                             .items_center()
                             .justify_center()
                             .bg(if is_folder {
-                                theme().accent_soft
+                                folder_bg(
+                                    self.styles.get(&id).copied(),
+                                    theme().accent_soft,
+                                )
                             } else {
                                 theme().panel2
                             })
@@ -1902,8 +1946,16 @@ impl Root {
             .child(
                 div()
                     .w(px(22.))
+                    .h(px(22.))
+                    .rounded_md()
                     .flex()
                     .items_center()
+                    .justify_center()
+                    .bg(if is_folder {
+                        folder_bg(self.styles.get(&id).copied(), transparent_black())
+                    } else {
+                        transparent_black()
+                    })
                     .child(if is_folder {
                         folder_icon(self.styles.get(&id).copied(), 15.).into_any_element()
                     } else {

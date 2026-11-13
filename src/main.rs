@@ -17,6 +17,15 @@ mod wire;
 use gpui::*;
 
 fn main() {
+    // One instance per session.db — a second process sharing the
+    // Telegram auth key gets AUTH_KEY_DUPLICATED from the server.
+    let _instance = match config::instance_lock() {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("tdrive-rs: {e}");
+            std::process::exit(1);
+        }
+    };
     let handle = tg::spawn();
     Application::new().with_assets(assets::Assets).run(move |cx: &mut App| {
 
