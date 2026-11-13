@@ -286,6 +286,53 @@ impl Root {
                         .child(swatches)
                         .child(badges)
                         .child({
+                            let oid = obj.clone();
+                            let pinned = cur.fav;
+                            div()
+                                .id("fav-toggle")
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .gap_2()
+                                .h(px(30.))
+                                .rounded_md()
+                                .border_1()
+                                .border_color(if pinned {
+                                    theme().accent
+                                } else {
+                                    theme().border
+                                })
+                                .text_sm()
+                                .text_color(if pinned {
+                                    theme().accent
+                                } else {
+                                    theme().dim
+                                })
+                                .hover(|s| s.bg(theme().panel2))
+                                .cursor_pointer()
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                                        this.set_style(&oid, |s| s.fav = !s.fav);
+                                        cx.notify();
+                                    }),
+                                )
+                                .child(icon_sized(
+                                    "star",
+                                    13.,
+                                    if pinned {
+                                        theme().accent
+                                    } else {
+                                        theme().dim
+                                    },
+                                ))
+                                .child(if pinned {
+                                    "Pinned to path bar"
+                                } else {
+                                    "Pin to path bar"
+                                })
+                        })
+                        .child({
                             let ok = cx.listener(|this, _: &MouseDownEvent, _, cx| {
                                 this.modal_confirm(cx)
                             });

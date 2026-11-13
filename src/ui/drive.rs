@@ -1,7 +1,7 @@
 //! Drive browser — the file listing view, selection detail,
 //! rows/cells, and the footer activity state.
 use super::controls::{
-    Tone, entry_icon, folder_bg, folder_icon, icon_button, icon_sized, tool_button,
+    Tone, entry_icon, folder_bg, folder_color, folder_icon, icon_button, icon_sized, tool_button,
 };
 use super::*;
 
@@ -800,6 +800,46 @@ impl Root {
             }
         }
 
+        // Pinned folders — star chips left of the crumbs. A fav whose
+        // folder is gone silently drops out of the strip.
+        let mut fav_list: Vec<(String, String)> = self
+            .namespace
+            .folders
+            .values()
+            .filter(|d| self.styles.get(&d.id).is_some_and(|s| s.fav))
+            .map(|d| (d.id.clone(), d.name.clone()))
+            .collect();
+        fav_list.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+        let mut favs = div().flex().items_center().gap_1();
+        for (id, name) in fav_list {
+            let color = folder_color(
+                self.styles.get(&id).map(|s| s.color).unwrap_or(0),
+            );
+            let cid = id.clone();
+            favs = favs.child(
+                div()
+                    .id(SharedString::from(format!("fav-{id}")))
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .px_2()
+                    .rounded_md()
+                    .text_xs()
+                    .text_color(theme().dim)
+                    .hover(|s| s.bg(theme().panel2).text_color(theme().text))
+                    .cursor_pointer()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                            this.set_cwd(cid.clone());
+                            cx.notify();
+                        }),
+                    )
+                    .child(icon_sized("star", 10., color))
+                    .child(name),
+            );
+        }
+
         // File rows — trash view, search results, or folder listing.
         let view_key = format!(
             "{}|{}|{}|{}|{}",
@@ -949,6 +989,7 @@ impl Root {
             .px_3()
             .border_b_1()
             .border_color(theme().border)
+            .child(favs)
             .child(crumbs)
             .child(div().flex_1());
         if !self.selected.is_empty() {
@@ -1849,6 +1890,13 @@ impl Root {
                 },
                 false,
             ),
+        };
+        // Whole-drive results all share this view — the row must say
+        // which folder each hit lives in.
+        let meta = if !self.trash && !self.f_search.read(cx).text().trim().is_empty() {
+            format!("{meta} · {}", self.namespace.parent_path(&id))
+        } else {
+            meta
         };
         let selected = self.selected.contains(&id);
         let drop_target = self.drop_hover.as_deref() == Some(id.as_str());

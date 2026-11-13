@@ -1028,6 +1028,36 @@ impl Namespace {
         out
     }
 
+    /// "/a/b" path of the folder containing `id` — whole-drive search
+    /// results need to say where they live.
+    pub fn parent_path(&self, id: &str) -> String {
+        let mut cur = match self
+            .files
+            .get(id)
+            .map(|f| f.parent.clone())
+            .or_else(|| self.folders.get(id).map(|f| f.parent.clone()))
+        {
+            Some(p) => p,
+            None => return String::new(),
+        };
+        let mut parts = Vec::new();
+        while !cur.is_empty() {
+            match self.folders.get(&cur) {
+                Some(d) => {
+                    parts.push(d.name.clone());
+                    cur = d.parent.clone();
+                }
+                None => break,
+            }
+        }
+        parts.reverse();
+        if parts.is_empty() {
+            "/".into()
+        } else {
+            format!("/{}", parts.join("/"))
+        }
+    }
+
     /// Trash rows as view entries — the real entry where the object still
     /// exists, a thin shell (name, kind, delete time) where it doesn't.
     pub fn trash_entries(&self) -> Vec<Entry> {

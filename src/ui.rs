@@ -79,6 +79,9 @@ pub(super) struct FolderStyle {
     color: u8,
     /// Index into FOLDER_BADGES +1, 0 = no badge.
     badge: u8,
+    /// Pinned to the path bar. serde default keeps pre-fav files valid.
+    #[serde(default)]
+    fav: bool,
 }
 
 /// Desktop notification through libnotify — best effort, silent if
@@ -814,7 +817,7 @@ impl Root {
     fn set_style(&mut self, obj: &str, f: impl FnOnce(&mut FolderStyle)) {
         let st = self.styles.entry(obj.to_string()).or_default();
         f(st);
-        if st.color == 0 && st.badge == 0 {
+        if st.color == 0 && st.badge == 0 && !st.fav {
             self.styles.remove(obj);
         }
         if let (Ok(p), Ok(j)) = (
