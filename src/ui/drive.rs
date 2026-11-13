@@ -39,6 +39,7 @@ pub(super) enum SelAct {
     Move,
     MoveToNew,
     Style,
+    Info,
     Delete,
     Restore,
     Purge,
@@ -57,6 +58,7 @@ impl SelAct {
             SelAct::Move => ("move", "Move", Tone::Ghost),
             SelAct::MoveToNew => ("folder_up", "Move to new folder", Tone::Ghost),
             SelAct::Style => ("sliders", "Style", Tone::Ghost),
+            SelAct::Info => ("inbox", "Properties", Tone::Ghost),
             SelAct::Delete => ("trash", "Delete", Tone::Danger),
             SelAct::Restore => ("restore", "Restore", Tone::Ghost),
             SelAct::Purge => ("trash", "Delete forever", Tone::Danger),
@@ -110,6 +112,7 @@ impl Root {
         }
         if single {
             acts.push(SelAct::Rename);
+            acts.push(SelAct::Info);
             if !crate::wire::is_file_id(&self.selected[0]) {
                 acts.push(SelAct::Style);
             }
@@ -211,6 +214,11 @@ impl Root {
             }
             SelAct::Style => {
                 self.modal = Some(Modal::Style {
+                    obj: sel[0].clone(),
+                });
+            }
+            SelAct::Info => {
+                self.modal = Some(Modal::Info {
                     obj: sel[0].clone(),
                 });
             }
@@ -1530,6 +1538,58 @@ impl Root {
                             .child(div().w(px(200.)).child(self.f_search.clone())),
                     )
                     .child(if !self.trash {
+                        let mut sorts = div().flex().items_center().gap_1();
+                        for k in [SortKey::Name, SortKey::Size] {
+                            let active = self.sort_key == k;
+                            let arrow = if !active {
+                                ""
+                            } else if self.sort_desc {
+                                " ↓"
+                            } else {
+                                " ↑"
+                            };
+                            let label = format!(
+                                "{}{arrow}",
+                                match k {
+                                    SortKey::Name => "name",
+                                    SortKey::Size => "size",
+                                }
+                            );
+                            sorts = sorts.child(
+                                div()
+                                    .id(SharedString::from(format!("sort-{label}")))
+                                    .px_2()
+                                    .rounded_md()
+                                    .text_xs()
+                                    .text_color(if active {
+                                        theme().accent
+                                    } else {
+                                        theme().dim
+                                    })
+                                    .hover(|s| {
+                                        s.bg(theme().panel2).text_color(theme().text)
+                                    })
+                                    .cursor_pointer()
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                                            if this.sort_key == k {
+                                                this.sort_desc = !this.sort_desc;
+                                            } else {
+                                                this.sort_key = k;
+                                                this.sort_desc = false;
+                                            }
+                                            cx.notify();
+                                        }),
+                                    )
+                                    .child(label),
+                            );
+                        }
+                        sorts.into_any_element()
+                    } else {
+                        div().into_any_element()
+                    })
+                    .child(if !self.trash {
                         let gt = cx.listener(|this, _: &MouseDownEvent, _, cx| {
                             this.grid = !this.grid;
                             if let Some(cfg) = &mut this.config {
@@ -1710,7 +1770,36 @@ impl Root {
         if !search.is_empty() {
             return self.namespace.search(&search);
         }
-        self.namespace.list(&self.cwd)
+        let mut entries = self.namespace.list(&self.cwd);
+        let (key, desc) = (self.sort_key, self.sort_desc);
+        entries.sort_by(|a, b| {
+            match (a.is_folder(), b.is_folder()) {
+                // Folders stay grouped above files regardless of key.
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => {
+                    let ord = match key {
+                        SortKey::Name => a
+                            .name()
+                            .to_lowercase()
+                            .cmp(&b.name().to_lowercase()),
+                        SortKey::Size => {
+                            let sa = match a {
+                                Entry::File(f) => f.size,
+                                _ => 0,
+                            };
+                            let sb = match b {
+                                Entry::File(f) => f.size,
+                                _ => 0,
+                            };
+                            sa.cmp(&sb)
+                        }
+                    };
+                    if desc { ord.reverse() } else { ord }
+                }
+            }
+        });
+        entries
     }
 
     /// Gallery-style cell: thumbnail (fetched on demand) or type icon.

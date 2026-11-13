@@ -1,8 +1,8 @@
 //! Modal dialogs — every confirm routes through `modal_confirm`
 //! so Enter and click can never diverge.
 use super::controls::{
-    Tone, button, folder_color, folder_icon, human_size, icon_button, icon_sized, tool_button,
-    tool_button_id,
+    Tone, button, fmt_ts, folder_color, folder_icon, human_size, icon_button, icon_sized,
+    tool_button, tool_button_id,
 };
 use super::*;
 
@@ -340,6 +340,52 @@ impl Root {
                         })
                         .into_any_element(),
                 )
+            }
+            Modal::Info { obj } => {
+                let obj = obj.clone();
+                let mut rows: Vec<(String, String)> = Vec::new();
+                if let Some(f) = self.namespace.files.get(&obj) {
+                    rows.push(("type".into(), if f.encrypted { "file (encrypted)".into() } else { "file".into() }));
+                    rows.push(("name".into(), f.name.clone()));
+                    rows.push(("size".into(), format!("{} ({} B)", human_size(f.plaintext_size), f.plaintext_size)));
+                    if f.encrypted {
+                        rows.push(("stored".into(), format!("{} ciphertext", human_size(f.size))));
+                    }
+                    rows.push(("uploaded".into(), fmt_ts(f.upload_time)));
+                    if f.part_count > 1 {
+                        rows.push(("parts".into(), format!("{} chunks", f.part_count)));
+                    }
+                    rows.push(("location".into(), self.namespace.parent_path(&f.id)));
+                    rows.push(("object id".into(), f.id.clone()));
+                } else if let Some(d) = self.namespace.folders.get(&obj) {
+                    rows.push(("type".into(), "folder".into()));
+                    rows.push(("name".into(), d.name.clone()));
+                    rows.push(("location".into(), self.namespace.parent_path(&d.id)));
+                    rows.push(("object id".into(), d.id.clone()));
+                }
+                let mut body = div().flex().flex_col().gap_2();
+                for (k, v) in rows {
+                    body = body.child(
+                        div()
+                            .flex()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .w(px(80.))
+                                    .text_xs()
+                                    .text_color(theme().dim)
+                                    .child(k),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_sm()
+                                    .text_color(theme().text)
+                                    .child(v),
+                            ),
+                    );
+                }
+                ("Properties".into(), body.into_any_element())
             }
             Modal::UploadOpts => {
                 let Some(plan) = &self.upload_plan else {

@@ -69,6 +69,10 @@ enum Modal {
     Style {
         obj: String,
     },
+    /// Read-only object details.
+    Info {
+        obj: String,
+    },
 }
 
 /// Per-folder cosmetics kept locally (never in remote metadata, or
@@ -115,6 +119,12 @@ struct UploadPick {
     dir: bool,
     files: u64,
     bytes: u64,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum SortKey {
+    Name,
+    Size,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -217,6 +227,9 @@ pub struct Root {
     /// Folder cosmetics by object id — local-only, persists to
     /// `folder_styles.json` under the data dir.
     styles: std::collections::HashMap<String, FolderStyle>,
+    /// File listing order — folders stay grouped above files.
+    sort_key: SortKey,
+    sort_desc: bool,
     /// Left press on an already-selected row, armed to become a
     /// drag-move once the pointer travels past the threshold.
     pending_move: Option<(String, Point<Pixels>)>,
@@ -328,6 +341,8 @@ impl Root {
             clip: None,
             upload_plan: None,
             styles: load_styles(),
+            sort_key: SortKey::Name,
+            sort_desc: false,
             pending_move: None,
             drag_moving: false,
             drop_hover: None,

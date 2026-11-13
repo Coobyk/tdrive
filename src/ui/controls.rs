@@ -204,6 +204,28 @@ pub(super) fn entry_icon(is_folder: bool, name: &str, size: f32) -> impl IntoEle
     }
 }
 
+/// Unix epoch → "YYYY-MM-DD HH:MM" (no chrono dep — civil-from-days).
+pub fn fmt_ts(t: i64) -> String {
+    if t <= 0 {
+        return "—".into();
+    }
+    let days = t.div_euclid(86400);
+    let secs = t.rem_euclid(86400);
+    let z = days + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z.rem_euclid(146097);
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let mut y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    if m <= 2 {
+        y += 1;
+    }
+    format!("{y:04}-{m:02}-{d:02} {:02}:{:02}", secs / 3600, secs % 3600 / 60)
+}
+
 pub fn human_size(n: i64) -> String {
     const UNIT: i64 = 1024;
     if n < UNIT {
