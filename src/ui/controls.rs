@@ -142,6 +142,45 @@ pub(super) fn icon_button(
         .child(icon_sized(icon_name, 13., color))
 }
 
+/// Folder swatch palette — index 0 means "theme accent" (no style).
+pub(super) const FOLDER_COLORS: [u32; 8] = [
+    0x8b93a0, 0xe05d5d, 0xe08f45, 0xd9b43c, 0x4fae62, 0x3fa8a0, 0x5591e0, 0x9a6fd8,
+];
+
+/// Optional glyphs layered inside the folder icon — index 0 = none.
+pub(super) const FOLDER_BADGES: [&str; 5] = ["star", "heart", "music", "code", "book"];
+
+pub(super) fn folder_color(idx: u8) -> Hsla {
+    FOLDER_COLORS
+        .get(idx.wrapping_sub(1) as usize)
+        .filter(|_| idx > 0)
+        .map(|&c| rgb(c).into())
+        .unwrap_or_else(|| theme().accent)
+}
+
+/// Folder glyph honoring its local style: palette tint + a small
+/// badge glyph nested in the folder's interior.
+pub(super) fn folder_icon(style: Option<FolderStyle>, size: f32) -> impl IntoElement {
+    let st = style.unwrap_or_default();
+    let mut el = div()
+        .relative()
+        .w(px(size))
+        .h(px(size))
+        .child(icon_sized("folder", size, folder_color(st.color)));
+    if st.badge > 0 {
+        if let Some(&badge) = FOLDER_BADGES.get(st.badge as usize - 1) {
+            el = el.child(
+                div()
+                    .absolute()
+                    .left(px(size * 0.28))
+                    .top(px(size * 0.44))
+                    .child(icon_sized(badge, size * 0.44, theme().text)),
+            );
+        }
+    }
+    el
+}
+
 /// Per-entry row/cell icon — folder vs file, with media-type variants.
 pub(super) fn entry_icon(is_folder: bool, name: &str, size: f32) -> impl IntoElement {
     let t = theme();

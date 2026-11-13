@@ -71,6 +71,12 @@ pub fn session_path() -> Result<PathBuf> {
     Ok(data_dir()?.join("session.db"))
 }
 
+/// Local folder cosmetics (color/badge) — kept out of the remote
+/// namespace so styling never leaks into TDrive metadata.
+pub fn styles_path() -> Result<PathBuf> {
+    Ok(data_dir()?.join("folder_styles.json"))
+}
+
 /// Per-channel projected namespace snapshot (durable projection).
 pub fn namespace_path(channel_id: i64) -> Result<PathBuf> {
     let dir = data_dir()?.join("namespaces");

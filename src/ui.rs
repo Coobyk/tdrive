@@ -65,6 +65,28 @@ enum Modal {
     Optimize {
         dead: usize,
     },
+    /// Folder cosmetics — color + badge picker for one folder id.
+    Style {
+        obj: String,
+    },
+}
+
+/// Per-folder cosmetics kept locally (never in remote metadata, or
+/// other TDrive clients would see unknown fields). 0 = unset.
+#[derive(Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
+pub(super) struct FolderStyle {
+    /// Index into FOLDER_COLORS +1, 0 = theme accent.
+    color: u8,
+    /// Index into FOLDER_BADGES +1, 0 = no badge.
+    badge: u8,
+}
+
+fn load_styles() -> std::collections::HashMap<String, FolderStyle> {
+    crate::config::styles_path()
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
 }
 
 /// Internal clipboard — cut objects move on paste, copies duplicate.
@@ -177,6 +199,9 @@ pub struct Root {
     clip: Option<Clip>,
     /// Picked paths awaiting the upload-review modal's verdict.
     upload_plan: Option<UploadPlan>,
+    /// Folder cosmetics by object id — local-only, persists to
+    /// `folder_styles.json` under the data dir.
+    styles: std::collections::HashMap<String, FolderStyle>,
     /// Left press on an already-selected row, armed to become a
     /// drag-move once the pointer travels past the threshold.
     pending_move: Option<(String, Point<Pixels>)>,
@@ -283,6 +308,7 @@ impl Root {
             empty_menu: None,
             clip: None,
             upload_plan: None,
+            styles: load_styles(),
             pending_move: None,
             drag_moving: false,
             drop_hover: None,
@@ -768,6 +794,22 @@ impl Root {
         }
     }
 
+    /// Apply one cosmetic change to a folder, drop the entry when it
+    /// returns to defaults, and persist the map.
+    fn set_style(&mut self, obj: &str, f: impl FnOnce(&mut FolderStyle)) {
+        let st = self.styles.entry(obj.to_string()).or_default();
+        f(st);
+        if st.color == 0 && st.badge == 0 {
+            self.styles.remove(obj);
+        }
+        if let (Ok(p), Ok(j)) = (
+            crate::config::styles_path(),
+            serde_json::to_string_pretty(&self.styles),
+        ) {
+            let _ = std::fs::write(p, j);
+        }
+    }
+
     fn pick_backup(&mut self, cx: &mut Context<Self>) {
         let task = cx.prompt_for_paths(PathPromptOptions {
             files: true,
@@ -1018,6 +1060,8 @@ impl Root {
                 self.send(Command::OptimizeApply);
                 self.modal = None;
             }
+            // Swatch/badge clicks apply live — confirm just dismisses.
+            Some(Modal::Style { .. }) => self.modal = None,
             _ => {}
         }
         cx.notify();

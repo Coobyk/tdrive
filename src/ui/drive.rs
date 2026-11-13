@@ -1,6 +1,6 @@
 //! Drive browser — the file listing view, selection detail,
 //! rows/cells, and the footer activity state.
-use super::controls::{Tone, entry_icon, icon_sized, tool_button};
+use super::controls::{Tone, entry_icon, folder_icon, icon_sized, tool_button};
 use super::*;
 
 // Fixed geometry so the rubber band can hit-test items by index math
@@ -8,7 +8,8 @@ use super::*;
 pub(super) const ROW_H: f32 = 38.;
 pub(super) const CELL_W: f32 = 100.;
 // Two name lines fit under the thumb — long names wrap then clamp.
-pub(super) const CELL_H: f32 = 118.;
+// The label's explicit line height leaves room for descenders.
+pub(super) const CELL_H: f32 = 124.;
 pub(super) const GRID_PAD: f32 = 4.;
 pub(super) const GRID_GAP: f32 = 8.;
 pub(super) const GRID_ROW_H: f32 = CELL_H + 2. * GRID_PAD;
@@ -35,6 +36,7 @@ pub(super) enum SelAct {
     Paste,
     Move,
     MoveToNew,
+    Style,
     Delete,
     Restore,
     Purge,
@@ -52,6 +54,7 @@ impl SelAct {
             SelAct::Paste => ("paste", "Paste", Tone::Ghost),
             SelAct::Move => ("move", "Move", Tone::Ghost),
             SelAct::MoveToNew => ("folder_up", "Move to new folder", Tone::Ghost),
+            SelAct::Style => ("sliders", "Style", Tone::Ghost),
             SelAct::Delete => ("trash", "Delete", Tone::Danger),
             SelAct::Restore => ("restore", "Restore", Tone::Ghost),
             SelAct::Purge => ("trash", "Delete forever", Tone::Danger),
@@ -105,6 +108,9 @@ impl Root {
         }
         if single {
             acts.push(SelAct::Rename);
+            if !crate::wire::is_file_id(&self.selected[0]) {
+                acts.push(SelAct::Style);
+            }
         }
         acts.extend([SelAct::Copy, SelAct::Cut, SelAct::Move, SelAct::MoveToNew]);
         if self.clip.is_some() {
@@ -200,6 +206,11 @@ impl Root {
                     "new folder name",
                     cx,
                 );
+            }
+            SelAct::Style => {
+                self.modal = Some(Modal::Style {
+                    obj: sel[0].clone(),
+                });
             }
             SelAct::Delete => {
                 self.modal = Some(Modal::Delete {
@@ -1749,7 +1760,12 @@ impl Root {
                             } else {
                                 theme().panel2
                             })
-                            .child(entry_icon(is_folder, &name, 30.))
+                            .child(if is_folder {
+                                folder_icon(self.styles.get(&id).copied(), 30.)
+                                    .into_any_element()
+                            } else {
+                                entry_icon(false, &name, 30.).into_any_element()
+                            })
                             .into_any_element()
                     }),
             )
@@ -1757,6 +1773,7 @@ impl Root {
                 div()
                     .w_full()
                     .text_xs()
+                    .line_height(px(16.))
                     .text_color(theme().text)
                     .text_center()
                     .whitespace_normal()
@@ -1887,7 +1904,11 @@ impl Root {
                     .w(px(22.))
                     .flex()
                     .items_center()
-                    .child(entry_icon(is_folder, &name, 15.)),
+                    .child(if is_folder {
+                        folder_icon(self.styles.get(&id).copied(), 15.).into_any_element()
+                    } else {
+                        entry_icon(false, &name, 15.).into_any_element()
+                    }),
             )
             .child(
                 div()
