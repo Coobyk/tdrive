@@ -72,6 +72,7 @@ impl SelAct {
 enum ToolAct {
     Backup,
     Watch,
+    SyncPair,
     Mount,
     Limit,
     Optimize,
@@ -263,6 +264,9 @@ impl Root {
         match act {
             ToolAct::Backup => self.pick_backup(cx),
             ToolAct::Watch => self.open_modal(Modal::WatchBackup, "", "/path/to/photos", cx),
+            ToolAct::SyncPair => {
+                self.open_modal(Modal::SyncPair, "", "/path/to/local/folder", cx)
+            }
             ToolAct::Mount => {
                 if self.mount_dir.is_some() {
                     self.send(Command::Unmount);
@@ -1089,6 +1093,7 @@ impl Root {
             let mut items: Vec<(&'static str, String, Tone, MenuAct)> = vec![
                 ("camera", "Photo backup".into(), Tone::Ghost, MenuAct::Tool(ToolAct::Backup)),
                 ("eye", "Watch folder".into(), Tone::Ghost, MenuAct::Tool(ToolAct::Watch)),
+                ("move", "Sync folder here".into(), Tone::Ghost, MenuAct::Tool(ToolAct::SyncPair)),
                 (
                     "hard_drive",
                     (if self.mount_dir.is_some() { "Unmount" } else { "Mount" }).into(),

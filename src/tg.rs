@@ -226,6 +226,8 @@ pub enum Command {
         dir: PathBuf,
     },
     BackupTick,
+    /// Register local↔remote sync pair and upload what's new.
+    AddSyncPair { local: PathBuf, remote: String },
     LiveSync,
     SignOut,
     // Internal task→worker messages — spawned transfers report journal
@@ -696,7 +698,13 @@ impl Worker {
                 )
                 .await
             }
-            Command::BackupTick => self.backup_tick().await,
+            Command::BackupTick => {
+                self.backup_tick().await?;
+                self.sync_tick().await
+            }
+            Command::AddSyncPair { local, remote } => {
+                self.add_sync_pair(local, remote).await
+            }
             Command::Mount { dir } => self.mount_drive(dir).await,
             Command::Unmount => {
                 self.fuse_session = None;

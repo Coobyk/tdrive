@@ -176,6 +176,24 @@ impl Root {
                         .into_any_element(),
                 )
             }
+            Modal::SyncPair => {
+                (
+                    "Sync folder here".into(),
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_3()
+                        .child(div().text_sm().text_color(theme().dim).child(
+                            "New files in this local folder upload into the folder you have open.",
+                        ))
+                        .child(self.f_name.clone())
+                        .child({
+                            let ok = cx.listener(|this, _: &MouseDownEvent, _, cx| this.modal_confirm(cx));
+                            button("Sync", theme().accent, ok)
+                        })
+                        .into_any_element(),
+                )
+            }
             Modal::Adopt => {
                 let mut list = div().flex().flex_col().gap_1();
                 for e in self.namespace.unadopted.iter() {
@@ -512,6 +530,37 @@ impl Root {
                                 Tone::Ghost,
                                 add_dirs,
                             )),
+                    )
+                    // TDrive parity — vault unlocked means every
+                    // upload lands encrypted; make that visible.
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .child(icon_sized(
+                                if self.vault_unlocked { "lock" } else { "unlock" },
+                                12.,
+                                if self.vault_unlocked {
+                                    theme().accent
+                                } else {
+                                    theme().dim
+                                },
+                            ))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(if self.vault_unlocked {
+                                        theme().accent
+                                    } else {
+                                        theme().dim
+                                    })
+                                    .child(if self.vault_unlocked {
+                                        "files will be encrypted with your vault"
+                                    } else {
+                                        "vault locked — uploads will be stored unencrypted"
+                                    }),
+                            ),
                     );
                 if !empty {
                     body = body.child(

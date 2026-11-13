@@ -54,6 +54,9 @@ enum Modal {
     Encrypt,
     Adopt,
     WatchBackup,
+    /// Pair a local dir with the open remote folder — new files
+    /// upload here on each sync tick.
+    SyncPair,
     Mount,
     /// Review picked upload items — removable list + files/folder/7z
     /// mode. The plan lives on `upload_plan`.
@@ -1094,6 +1097,14 @@ impl Root {
             Some(Modal::WatchBackup) => {
                 let dir = std::path::PathBuf::from(self.f_name.read(cx).text().trim().to_string());
                 self.send(Command::WatchBackup { dir });
+                self.modal = None;
+            }
+            Some(Modal::SyncPair) => {
+                let local = std::path::PathBuf::from(self.f_name.read(cx).text().trim().to_string());
+                self.send(Command::AddSyncPair {
+                    local,
+                    remote: self.cwd.clone(),
+                });
                 self.modal = None;
             }
             Some(Modal::Optimize { .. }) => {
