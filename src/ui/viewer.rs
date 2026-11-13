@@ -23,6 +23,7 @@ impl Root {
             kind,
             path: None,
             failed: false,
+            zoom: 1.,
         });
         if kind != ViewKind::Other {
             self.send(Command::FetchPreview {
@@ -49,13 +50,31 @@ impl Root {
             .items_center()
             .justify_center()
             .overflow_hidden();
+        let zoom = v.zoom;
         if let Some(p) = path {
-            body = body.child(
-                img(p)
-                    .max_w_full()
-                    .max_h_full()
-                    .object_fit(gpui::ObjectFit::Contain),
-            );
+            // Zoom scales the image past the container; the scroll
+            // surface doubles as pan.
+            body = if kind == ViewKind::Image && zoom != 1. {
+                body.child(
+                    div()
+                        .id("viewer-zoom")
+                        .size_full()
+                        .overflow_x_scroll()
+                        .overflow_y_scroll()
+                        .child(
+                            img(p)
+                                .w(relative(zoom))
+                                .object_fit(gpui::ObjectFit::Contain),
+                        ),
+                )
+            } else {
+                body.child(
+                    img(p)
+                        .max_w_full()
+                        .max_h_full()
+                        .object_fit(gpui::ObjectFit::Contain),
+                )
+            };
         } else if failed || kind == ViewKind::Other {
             body = body.child(div().text_sm().text_color(theme().dim).child(
                 if kind == ViewKind::Other {
@@ -106,6 +125,70 @@ impl Root {
                     this.pick_download_dest(obj.clone(), nm.clone(), cx);
                 }),
             ));
+        }
+        // ‹ › walk through the current view's viewable entries.
+        let siblings: Vec<String> = self
+            .entries_cache
+            .iter()
+            .filter(|e| {
+                !e.is_folder()
+                    && (crate::tg::is_image_name(e.name())
+                        || crate::tg::is_video_name(e.name()))
+            })
+            .map(|e| e.id().to_string())
+            .collect();
+        if let Some(pos) = siblings.iter().position(|id| *id == file_id) {
+            for (delta, glyph) in [(-1i32, "‹"), (1i32, "›")] {
+                let target = pos as i32 + delta;
+                if target >= 0 && target < siblings.len() as i32 {
+                    let next_id = siblings[target as usize].clone();
+                    controls = controls.child(
+                        div()
+                            .id(SharedString::from(format!("nav-{glyph}")))
+                            .px_2()
+                            .rounded_md()
+                            .text_sm()
+                            .text_color(theme().dim)
+                            .hover(|s| s.bg(theme().panel2).text_color(theme().text))
+                            .cursor_pointer()
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                                    this.open_viewer(&next_id, cx);
+                                }),
+                            )
+                            .child(glyph),
+                    );
+                }
+            }
+        }
+        if kind == ViewKind::Image {
+            for (label, factor) in [("−", 0.75f32), ("+", 1.25f32), ("1:1", 0.)] {
+                controls = controls.child(
+                    div()
+                        .id(SharedString::from(format!("zoom-{label}")))
+                        .px_2()
+                        .rounded_md()
+                        .text_sm()
+                        .text_color(theme().dim)
+                        .hover(|s| s.bg(theme().panel2).text_color(theme().text))
+                        .cursor_pointer()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                                if let Some(v) = &mut this.viewer {
+                                    v.zoom = if factor == 0. {
+                                        1.
+                                    } else {
+                                        (v.zoom * factor).clamp(0.25, 8.)
+                                    };
+                                }
+                                cx.notify();
+                            }),
+                        )
+                        .child(label),
+                );
+            }
         }
         controls = controls.child(tool_button(
             "x",

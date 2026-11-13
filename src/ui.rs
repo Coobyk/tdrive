@@ -168,6 +168,9 @@ struct Viewer {
     kind: ViewKind,
     path: Option<PathBuf>,
     failed: bool,
+    /// Image zoom — 1.0 = fit window; >1 overflows the scroll area
+    /// into a pan surface.
+    zoom: f32,
 }
 
 #[derive(Clone, Copy, PartialEq)]

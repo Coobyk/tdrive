@@ -459,6 +459,7 @@ pub fn spawn() -> Handle {
                 paused_downloads: std::collections::HashSet::new(),
                 cancelled: std::collections::HashSet::new(),
                 pending_optimize: Vec::new(),
+                reserved_names: std::collections::HashSet::new(),
                 live_sync_queued: Default::default(),
                 ns_shared: Arc::new(Mutex::new(Arc::new(Namespace::new()))),
                 fuse_session: None,
@@ -557,6 +558,9 @@ struct Worker {
     /// Message ids the optimize scan marked for deletion — apply only
     /// runs after the UI confirms this plan.
     pending_optimize: Vec<i64>,
+    /// "parent\0name" already claimed this session — same-batch uploads
+    /// would all pass a namespace check before the projection catches up.
+    reserved_names: std::collections::HashSet<String>,
     live_sync_queued: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Latest namespace snapshot shared with the WebDAV server.
     ns_shared: Arc<Mutex<Arc<Namespace>>>,
