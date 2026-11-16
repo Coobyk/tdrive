@@ -10,28 +10,86 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Apps
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DeleteForever
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.FolderOff
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Undo
+import androidx.compose.material.icons.filled.Upload
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilledTonalIconButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
-import androidx.lifecycle.lifecycleScope
 import java.io.File
 import java.io.FileOutputStream
 
@@ -49,10 +107,10 @@ class MainActivity : ComponentActivity() {
             requestNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
         setContent {
-            MaterialTheme(
-                colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()
-            ) {
-                Surface(Modifier.fillMaxSize()) { App(core, applicationContext) }
+            TDriveTheme {
+                Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surfaceContainerLowest) {
+                    App(core, applicationContext)
+                }
             }
         }
     }
@@ -63,46 +121,80 @@ fun App(core: Core, ctx: Context) {
     val screen by core.screen.collectAsState()
     val status by core.status.collectAsState()
 
-    Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
-        Box(Modifier.weight(1f)) {
-            when (val s = screen) {
-                Screen.Setup -> SetupScreen(core, ctx)
-                Screen.Phone -> PhoneScreen(core)
-                Screen.Code -> CodeScreen(core)
-                is Screen.Password -> PasswordScreen(core, s.hint)
-                Screen.Channels -> ChannelsScreen(core)
-                Screen.Browser -> BrowserScreen(core, ctx)
-            }
+    Box(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
+        when (val s = screen) {
+            Screen.Setup -> SetupScreen(core, ctx)
+            Screen.Phone -> PhoneScreen(core)
+            Screen.Code -> CodeScreen(core)
+            is Screen.Password -> PasswordScreen(core, s.hint)
+            Screen.Channels -> ChannelsScreen(core)
+            Screen.Browser -> BrowserScreen(core, ctx)
         }
         if (status.isNotEmpty()) {
-            Text(
-                status,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 6.dp),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-            )
+            Surface(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(horizontal = 20.dp, vertical = 88.dp)
+                    .clip(RoundedCornerShape(16.dp)),
+                color = MaterialTheme.colorScheme.inverseSurface,
+                shadowElevation = 8.dp,
+            ) {
+                Text(
+                    status,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.inverseOnSurface,
+                )
+            }
         }
     }
 }
 
 @Composable
-private fun Field(value: String, onChange: (String) -> Unit, label: String, password: Boolean = false, keyboard: KeyboardType = KeyboardType.Text) {
-    OutlinedTextField(
+private fun Field(
+    value: String,
+    onChange: (String) -> Unit,
+    label: String,
+    password: Boolean = false,
+    keyboard: KeyboardType = KeyboardType.Text,
+) {
+    TextField(
         value = value,
         onValueChange = onChange,
         label = { Text(label) },
         singleLine = true,
-        visualTransformation = if (password) PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None,
+        shape = RoundedCornerShape(16.dp),
+        visualTransformation = if (password) PasswordVisualTransformation()
+        else androidx.compose.ui.text.input.VisualTransformation.None,
         keyboardOptions = if (password)
             KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false)
         else
             KeyboardOptions(keyboardType = keyboard),
+        colors = TextFieldDefaults.colors(
+            focusedIndicatorColor = Color.Transparent,
+            unfocusedIndicatorColor = Color.Transparent,
+            disabledIndicatorColor = Color.Transparent,
+            errorIndicatorColor = Color.Transparent,
+        ),
         modifier = Modifier.fillMaxWidth(),
     )
 }
+
+@Composable
+private fun PrimaryButton(text: String, enabled: Boolean, onClick: () -> Unit) {
+    FilledTonalButton(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = Modifier.fillMaxWidth().height(52.dp),
+        shape = RoundedCornerShape(18.dp),
+    ) {
+        Text(text, style = MaterialTheme.typography.titleMedium)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Auth screens
+// ---------------------------------------------------------------------------
 
 @Composable
 fun SetupScreen(core: Core, ctx: Context) {
@@ -110,61 +202,49 @@ fun SetupScreen(core: Core, ctx: Context) {
     var apiId by remember { mutableStateOf(prefs.getString("api_id", "") ?: "") }
     var apiHash by remember { mutableStateOf(prefs.getString("api_hash", "") ?: "") }
 
-    Column(
-        Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+    AuthScaffold(
+        title = "Connect your account",
+        subtitle = "Grab your API ID and hash from my.telegram.org, then sign in with your phone number.",
     ) {
-        Text("TDrive", style = MaterialTheme.typography.headlineMedium)
-        Text("Telegram API credentials — get them at my.telegram.org", style = MaterialTheme.typography.bodyMedium)
         Field(apiId, { apiId = it }, "API ID", keyboard = KeyboardType.Number)
         Field(apiHash, { apiHash = it }, "API Hash")
-        Button(
-            onClick = {
-                prefs.edit().putString("api_id", apiId).putString("api_hash", apiHash).apply()
-                core.connect(apiId.toIntOrNull() ?: 0, apiHash)
-            },
-            enabled = apiId.isNotBlank() && apiHash.isNotBlank(),
-            modifier = Modifier.fillMaxWidth(),
-        ) { Text("Connect") }
+        PrimaryButton("Continue", apiId.isNotBlank() && apiHash.isNotBlank()) {
+            prefs.edit().putString("api_id", apiId).putString("api_hash", apiHash).apply()
+            core.connect(apiId.toIntOrNull() ?: 0, apiHash)
+        }
     }
 }
 
 @Composable
 fun PhoneScreen(core: Core) {
     var phone by remember { mutableStateOf("") }
-    Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("Sign in", style = MaterialTheme.typography.headlineMedium)
+    AuthScaffold(title = "Welcome back", subtitle = "Enter the phone number on your Telegram account.") {
         Field(phone, { phone = it }, "Phone number (+1…)", keyboard = KeyboardType.Phone)
-        Button(onClick = { core.requestCode(phone) }, enabled = phone.isNotBlank(), modifier = Modifier.fillMaxWidth()) {
-            Text("Send code")
-        }
+        PrimaryButton("Send code", phone.isNotBlank()) { core.requestCode(phone) }
     }
 }
 
 @Composable
 fun CodeScreen(core: Core) {
     var code by remember { mutableStateOf("") }
-    Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("Enter the code", style = MaterialTheme.typography.headlineMedium)
+    AuthScaffold(title = "Check your messages", subtitle = "We sent a login code to your Telegram app.") {
         Field(code, { code = it }, "Login code", keyboard = KeyboardType.Number)
-        Button(onClick = { core.submitCode(code) }, enabled = code.isNotBlank(), modifier = Modifier.fillMaxWidth()) {
-            Text("Sign in")
-        }
+        PrimaryButton("Sign in", code.isNotBlank()) { core.submitCode(code) }
     }
 }
 
 @Composable
 fun PasswordScreen(core: Core, hint: String) {
     var pw by remember { mutableStateOf("") }
-    Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("Two-factor password", style = MaterialTheme.typography.headlineMedium)
-        if (hint.isNotEmpty()) Text("Hint: $hint", style = MaterialTheme.typography.bodySmall)
+    AuthScaffold(title = "Two-factor password", subtitle = hint.ifEmpty { "Enter your Telegram cloud password." }) {
         Field(pw, { pw = it }, "Password", password = true)
-        Button(onClick = { core.submitPassword(pw) }, enabled = pw.isNotBlank(), modifier = Modifier.fillMaxWidth()) {
-            Text("Unlock")
-        }
+        PrimaryButton("Unlock", pw.isNotBlank()) { core.submitPassword(pw) }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Drive list
+// ---------------------------------------------------------------------------
 
 @Composable
 fun ChannelsScreen(core: Core) {
@@ -172,33 +252,83 @@ fun ChannelsScreen(core: Core) {
     var newTitle by remember { mutableStateOf("") }
     var newSharedTitle by remember { mutableStateOf("") }
 
-    Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text("Your drives", style = MaterialTheme.typography.headlineSmall)
-            TextButton(onClick = { core.signOut() }) { Text("Sign out") }
-        }
+    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerLowest)) {
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+            BrandHeader(
+                overline = "YOUR SPACE",
+                title = "Your drives",
+                subtitle = "${channels.size} drive${if (channels.size == 1) "" else "s"} ready to explore",
+                actions = {
+                    HeaderAction(Icons.Default.MoreVert, "Sign out") { core.signOut() }
+                },
+            )
+            Column(Modifier.padding(horizontal = 16.dp, vertical = 20.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
+                Card(
+                    shape = RoundedCornerShape(28.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                ) {
+                    Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                        Text("Create a drive", style = MaterialTheme.typography.titleLarge)
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                Modifier.size(46.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer),
+                                contentAlignment = Alignment.Center,
+                            ) { Icon(Icons.Default.Add, null, tint = MaterialTheme.colorScheme.onPrimaryContainer) }
+                            TextField(
+                                newTitle, { newTitle = it },
+                                label = { Text("Personal drive") },
+                                singleLine = true,
+                                shape = RoundedCornerShape(16.dp),
+                                colors = TextFieldDefaults.colors(
+                                    focusedIndicatorColor = Color.Transparent,
+                                    unfocusedIndicatorColor = Color.Transparent,
+                                ),
+                                modifier = Modifier.weight(1f),
+                            )
+                            FilledTonalIconButton(onClick = { core.createChannel(newTitle); newTitle = "" }, enabled = newTitle.isNotBlank()) {
+                                Icon(Icons.Default.Add, "Create personal drive")
+                            }
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                Modifier.size(46.dp).clip(CircleShape).background(MaterialTheme.colorScheme.tertiaryContainer),
+                                contentAlignment = Alignment.Center,
+                            ) { Icon(Icons.Default.Apps, null, tint = MaterialTheme.colorScheme.onTertiaryContainer) }
+                            TextField(
+                                newSharedTitle, { newSharedTitle = it },
+                                label = { Text("Shared drive") },
+                                singleLine = true,
+                                shape = RoundedCornerShape(16.dp),
+                                colors = TextFieldDefaults.colors(
+                                    focusedIndicatorColor = Color.Transparent,
+                                    unfocusedIndicatorColor = Color.Transparent,
+                                ),
+                                modifier = Modifier.weight(1f),
+                            )
+                            FilledTonalIconButton(onClick = { core.createSharedChannel(newSharedTitle); newSharedTitle = "" }, enabled = newSharedTitle.isNotBlank()) {
+                                Icon(Icons.Default.Add, "Create shared drive")
+                            }
+                        }
+                    }
+                }
 
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(newTitle, { newTitle = it }, label = { Text("New personal drive") }, singleLine = true, modifier = Modifier.weight(1f))
-            Button(onClick = { core.createChannel(newTitle); newTitle = "" }, enabled = newTitle.isNotBlank()) { Text("Create") }
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(newSharedTitle, { newSharedTitle = it }, label = { Text("New shared drive") }, singleLine = true, modifier = Modifier.weight(1f))
-            Button(onClick = { core.createSharedChannel(newSharedTitle); newSharedTitle = "" }, enabled = newSharedTitle.isNotBlank()) { Text("Create") }
-        }
-
-        LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            items(channels, key = { it.id }) { c ->
-                ListItem(
-                    headlineContent = { Text(c.title) },
-                    supportingContent = { Text(if (c.kind == "Personal") "personal" else "shared") },
-                    leadingContent = { Icon(Icons.Default.Folder, null) },
-                    modifier = Modifier.clickable { core.openChannel(c) },
-                )
+                Text("Open a drive", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(top = 4.dp))
+                if (channels.isEmpty()) {
+                    EmptyState(Icons.Default.Folder, "No drives yet", "Create a personal or shared drive above to get started.")
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        channels.forEach { c -> DriveCard(c.title, c.kind, onClick = { core.openChannel(c) }) }
+                    }
+                }
             }
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Browser
+// ---------------------------------------------------------------------------
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -223,7 +353,7 @@ fun BrowserScreen(core: Core, ctx: Context) {
     var query by remember { mutableStateOf("") }
     var sortSize by remember { mutableStateOf(false) }
     var sortDesc by remember { mutableStateOf(false) }
-    var sortMenu by remember { mutableStateOf(false) }
+    var toolsMenu by remember { mutableStateOf(false) }
 
     val crumbs = remember(entries, cwd) {
         val path = mutableListOf<Pair<String, String>>()
@@ -239,15 +369,11 @@ fun BrowserScreen(core: Core, ctx: Context) {
     val visible = remember(entries, cwd, trashMode, query, searchActive, sortSize, sortDesc) {
         val q = query.trim().lowercase()
         if (searchActive && q.isNotEmpty()) {
-            // Whole-drive search — same projected-namespace index as
-            // desktop; results carry their containing folder's name.
             entries.filter { !it.trashed && it.name.lowercase().contains(q) }
                 .sortedBy { it.name.lowercase() }
         } else {
             val scoped = if (trashMode) entries.filter { it.trashed }
             else entries.filter { it.parent == cwd && !it.trashed }
-            // Folders stay grouped above files; the chosen key sorts
-            // within each group.
             val byKey: Comparator<NsEntry> = if (sortSize)
                 Comparator { a, b -> if (sortDesc) b.size.compareTo(a.size) else a.size.compareTo(b.size) }
             else
@@ -258,8 +384,6 @@ fun BrowserScreen(core: Core, ctx: Context) {
 
     val activeTransfers = transfers.values.filter { it.state == "Active" || it.state == "Paused" }
 
-    // Back unwinds UI state first, then directory depth, then leaves
-    // the browser for the drive list — never exits mid-drive.
     BackHandler(enabled = selected != null || searchActive || trashMode || cwd.isNotEmpty()) {
         when {
             selected != null -> selected = null
@@ -272,193 +396,221 @@ fun BrowserScreen(core: Core, ctx: Context) {
         core.listChannels()
     }
 
-    Column(Modifier.fillMaxSize()) {
-        // Titlebar — app wordmark left; view/session controls right.
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text("TDrive", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-            IconButton(onClick = {
-                searchActive = !searchActive
-                if (!searchActive) query = ""
-            }) { Icon(Icons.Default.Search, "Search") }
-            IconButton(onClick = { core.setTrashMode(!trashMode); selected = null }) {
-                Icon(if (trashMode) Icons.Default.Folder else Icons.Default.Delete, if (trashMode) "Files" else "Trash")
-            }
-            IconButton(onClick = { core.listChannels() }) { Icon(Icons.Default.Apps, "Drives") }
-        }
-        HorizontalDivider()
+    val headerTitle = when {
+        trashMode -> "Trash"
+        searchActive -> "Search"
+        cwd.isEmpty() -> title.ifEmpty { "Your files" }
+        else -> entries.find { it.id == cwd }?.name ?: title
+    }
+    val headerSubtitle = when {
+        trashMode -> "Deleted items — restore or remove forever"
+        searchActive -> "Find anything across all your drives"
+        cwd.isEmpty() -> "Everything in this drive, all in one place"
+        else -> "${visible.size} item${if (visible.size == 1) "" else "s"} here"
+    }
 
-        // Working bar — where you are (path) + how much is here.
-        // The drive name is the root crumb; the terminal crumb is
-        // emphasized; trash gets a terminal crumb of its own.
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .height(48.dp)
-                .padding(horizontal = 16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            val atRoot = !trashMode && cwd.isEmpty()
-            Row(Modifier.weight(1f).horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.Folder, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    title,
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = if (atRoot) FontWeight.SemiBold else FontWeight.Normal,
-                    color = if (atRoot) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.clickable { core.setTrashMode(false); core.setCwd("") },
+    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerLowest)) {
+        BrandHeader(
+            overline = if (trashMode) "TRASH" else if (searchActive) "SEARCH" else "BROWSING",
+            title = headerTitle,
+            subtitle = headerSubtitle,
+            actions = {
+                HeaderAction(Icons.Default.Search, "Search", searchActive) {
+                    searchActive = !searchActive
+                    if (!searchActive) query = ""
+                }
+                HeaderAction(if (trashMode) Icons.Default.Folder else Icons.Default.Delete, "Trash") {
+                    core.setTrashMode(!trashMode); selected = null
+                }
+                HeaderAction(Icons.Default.Apps, "Drives") { core.listChannels() }
+            },
+            footer = if (!searchActive && !trashMode && cwd.isNotEmpty()) {
+                {
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        crumbs.forEachIndexed { i, (id, name) ->
+                            val last = i == crumbs.lastIndex
+                            Surface(
+                                shape = RoundedCornerShape(50),
+                                color = Color.White.copy(alpha = if (last) 0.30f else 0.14f),
+                                modifier = Modifier.clickable(enabled = !last) { core.setCwd(id) },
+                            ) {
+                                Text(
+                                    name,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = Color.White,
+                                    maxLines = 1,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                )
+                            }
+                        }
+                    }
+                }
+            } else null,
+        )
+
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (searchActive) {
+                TextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    placeholder = { Text("Search your whole drive…") },
+                    leadingIcon = { Icon(Icons.Default.Search, null) },
+                    trailingIcon = {
+                        if (query.isNotEmpty()) IconButton(onClick = { query = "" }) { Icon(Icons.Default.Close, "Clear") }
+                    },
+                    singleLine = true,
+                    shape = RoundedCornerShape(50),
+                    colors = TextFieldDefaults.colors(
+                        focusedIndicatorColor = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent,
+                        focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
                 )
-                val tail = if (trashMode) listOf("" to "Trash") else crumbs
-                tail.forEachIndexed { i, (id, name) ->
-                    Icon(Icons.Default.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(14.dp))
-                    if (id.isEmpty() || i == tail.lastIndex) {
-                        Text(name, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-                    } else {
-                        Text(name, style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.clickable { core.setCwd(id) })
-                    }
-                }
             }
-            Spacer(Modifier.width(8.dp))
-            Text("${visible.size} items", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Box {
-                IconButton(onClick = { sortMenu = true }) { Icon(Icons.Default.List, "Sort") }
-                DropdownMenu(expanded = sortMenu, onDismissRequest = { sortMenu = false }) {
-                    listOf(
-                        Triple("Name A→Z", false, false),
-                        Triple("Name Z→A", false, true),
-                        Triple("Smallest first", true, false),
-                        Triple("Largest first", true, true),
-                    ).forEach { (label, sz, desc) ->
-                        DropdownMenuItem(
-                            text = { Text(label) },
-                            onClick = { sortSize = sz; sortDesc = desc; sortMenu = false },
-                        )
-                    }
-                }
-            }
-        }
-        if (searchActive) {
-            OutlinedTextField(
-                value = query,
-                onValueChange = { query = it },
-                placeholder = { Text("Search whole drive…") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-            )
-        }
-        HorizontalDivider()
-
-        // Listing
-        LazyColumn(Modifier.weight(1f)) {
-            if (cwd.isNotEmpty() && !trashMode && !searchActive) {
-                item {
-                    ListItem(
-                        headlineContent = { Text("..") },
-                        leadingContent = { Icon(Icons.Default.ArrowBack, null) },
-                        modifier = Modifier.clickable {
-                            val parent = entries.find { it.id == cwd }?.parent ?: ""
-                            core.setCwd(parent)
-                        },
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TonalChip("Name", selected = !sortSize, onClick = { sortSize = false })
+                TonalChip("Size", selected = sortSize, onClick = { sortSize = true })
+                Spacer(Modifier.weight(1f))
+                FilledTonalIconButton(onClick = { sortDesc = !sortDesc }) {
+                    Icon(
+                        if (sortDesc) Icons.Default.ArrowDownward else Icons.Default.ArrowUpward,
+                        if (sortDesc) "Descending" else "Ascending",
                     )
                 }
             }
-            items(visible, key = { it.id }) { e ->
-                ListItem(
-                    headlineContent = { Text(e.name, maxLines = 1) },
-                    supportingContent = {
-                        val bits = mutableListOf<String>()
-                        if (e.kind == "file") bits.add(humanSize(e.size))
-                        if (e.encrypted) bits.add("encrypted")
-                        if (searchActive && e.kind != "dir") {
-                            bits.add("in ${entries.find { it.id == e.parent }?.name ?: "root"}")
+        }
+
+        LazyColumn(
+            Modifier.weight(1f),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            if (cwd.isNotEmpty() && !trashMode && !searchActive) {
+                item(key = "__parent") {
+                    Card(
+                        shape = RoundedCornerShape(20.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                    ) {
+                        Row(
+                            Modifier.fillMaxWidth().clickable {
+                                core.setCwd(entries.find { it.id == cwd }?.parent ?: "")
+                            }.padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        ) {
+                            Icon(Icons.Default.ArrowBack, null, tint = MaterialTheme.colorScheme.onSecondaryContainer)
+                            Text("Up one folder", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSecondaryContainer)
                         }
-                        if (bits.isNotEmpty()) Text(bits.joinToString(" · "), style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+            items(visible, key = { it.id }) { e ->
+                val bits = mutableListOf<String>()
+                if (e.kind == "file") bits.add(humanSize(e.size))
+                if (e.encrypted) bits.add("encrypted")
+                if (searchActive && e.kind != "dir") {
+                    bits.add("in ${entries.find { it.id == e.parent }?.name ?: "root"}")
+                }
+                DriveItemCard(
+                    entry = e,
+                    selected = selected?.id == e.id,
+                    subtitle = if (bits.isEmpty()) null else bits.joinToString(" · "),
+                    trailing = if (e.kind == "file") humanSize(e.size) else null,
+                    onClick = {
+                        if (e.kind == "dir" && !trashMode) core.setCwd(e.id)
+                        else selected = if (selected?.id == e.id) null else e
                     },
-                    leadingContent = {
-                        Icon(if (e.kind == "dir") Icons.Default.Folder else Icons.Default.InsertDriveFile, null)
-                    },
-                    modifier = Modifier.combinedClickable(
-                        onClick = {
-                            if (e.kind == "dir" && !trashMode) core.setCwd(e.id)
-                            else selected = if (selected?.id == e.id) null else e
-                        },
-                        onLongClick = { selected = e },
-                    ),
+                    onLongClick = { selected = e },
+                    modifier = Modifier.animateItem(),
                 )
+            }
+            if (visible.isEmpty()) {
+                item {
+                    EmptyState(
+                        icon = if (searchActive) Icons.Default.Search else if (trashMode) Icons.Default.Delete else Icons.Default.FolderOff,
+                        title = if (searchActive) "No matches" else if (trashMode) "Trash is empty" else "Nothing here yet",
+                        subtitle = if (searchActive) "Try a different search term." else "Files you add will show up here.",
+                    )
+                }
             }
         }
 
-        // Transfers
         if (activeTransfers.isNotEmpty()) {
-            HorizontalDivider()
-            Column(Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
-                activeTransfers.take(3).forEach { t ->
+            Card(
+                Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                shape = RoundedCornerShape(22.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer),
+                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+            ) {
+                Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(t.label, Modifier.weight(1f), maxLines = 1, style = MaterialTheme.typography.bodySmall)
-                        LinearProgressIndicator(
-                            progress = { if (t.total > 0) (t.sent.toFloat() / t.total).coerceIn(0f, 1f) else 0f },
-                            modifier = Modifier.width(100.dp),
-                        )
-                        IconButton(onClick = { core.cancelTransfer(t.id) }) {
-                            Icon(Icons.Default.Close, null, modifier = Modifier.size(16.dp))
+                        Icon(Icons.Default.CloudUpload, null, tint = MaterialTheme.colorScheme.onTertiaryContainer, modifier = Modifier.size(18.dp))
+                        Text("${activeTransfers.size} transfer${if (activeTransfers.size == 1) "" else "s"}", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onTertiaryContainer)
+                    }
+                    activeTransfers.take(3).forEach { t ->
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(t.label, Modifier.weight(1f), maxLines = 1, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onTertiaryContainer)
+                            LinearProgressIndicator(
+                                progress = { if (t.total > 0) (t.sent.toFloat() / t.total).coerceIn(0f, 1f) else 0f },
+                                modifier = Modifier.width(90.dp).clip(RoundedCornerShape(50)),
+                            )
+                            IconButton(onClick = { core.cancelTransfer(t.id) }, modifier = Modifier.size(32.dp)) {
+                                Icon(Icons.Default.Close, "Cancel", modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onTertiaryContainer)
+                            }
                         }
                     }
                 }
             }
         }
 
-        // Contextual bar — one persistent slot at the bottom. Selection
-        // actions when something's selected, create/ops otherwise.
-        HorizontalDivider()
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .height(56.dp)
-                .padding(horizontal = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            val sel = selected
+        val sel = selected
+        ActionDock {
             if (sel != null) {
-                Text(sel.name, Modifier.weight(1f).padding(start = 8.dp), maxLines = 1, style = MaterialTheme.typography.bodySmall)
+                Text(sel.name, Modifier.weight(1f).padding(start = 8.dp), maxLines = 1, style = MaterialTheme.typography.titleSmall)
                 if (trashMode) {
-                    IconButton(onClick = { core.restore(sel.id); selected = null }) { Icon(Icons.Default.Undo, "Restore") }
-                    IconButton(onClick = { core.purge(sel.id); selected = null }) { Icon(Icons.Default.DeleteForever, "Purge") }
+                    FilledTonalIconButton(onClick = { core.restore(sel.id); selected = null }) { Icon(Icons.Default.Undo, "Restore") }
+                    FilledTonalIconButton(onClick = { core.purge(sel.id); selected = null }) { Icon(Icons.Default.DeleteForever, "Delete forever") }
                 } else {
-                    if (sel.kind == "file") IconButton(onClick = { downloadFor = sel }) { Icon(Icons.Default.Download, "Get") }
+                    if (sel.kind == "file") FilledTonalIconButton(onClick = { downloadFor = sel }) { Icon(Icons.Default.Download, "Download") }
                     IconButton(onClick = { showInfo = sel }) { Icon(Icons.Default.Info, "Properties") }
                     IconButton(onClick = { showRename = sel }) { Icon(Icons.Default.Edit, "Rename") }
-                    IconButton(onClick = { showMove = sel }) { Icon(Icons.Default.DriveFileMove, "Move") }
+                    IconButton(onClick = { showMove = sel }) { Icon(Icons.Default.Folder, "Move") }
                     IconButton(onClick = { core.delete(sel.id); selected = null }) { Icon(Icons.Default.Delete, "Delete") }
                 }
                 IconButton(onClick = { selected = null }) { Icon(Icons.Default.Close, "Deselect") }
             } else {
-                var menu by remember { mutableStateOf(false) }
                 if (!trashMode) {
                     UploadButton(core, ctx)
+                    FilledTonalButton(onClick = { showMkdir = true }, modifier = Modifier.height(44.dp)) {
+                        Icon(Icons.Default.Add, null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("New folder")
+                    }
                     if (vault.unlocked) {
-                        Icon(Icons.Default.Lock, "uploads encrypted", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                        Icon(Icons.Default.Lock, "Encrypted", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
                     }
-                    TextButton(onClick = { showMkdir = true }) { Text("New folder") }
+                    Spacer(Modifier.weight(1f))
                     IconButton(onClick = { core.sync() }) { Icon(Icons.Default.Refresh, "Sync") }
-                } else {
-                    TextButton(onClick = { core.emptyTrash() }) { Text("Empty trash") }
-                }
-                Spacer(Modifier.weight(1f))
-                IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "Tools") }
-                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                    if (vault.configured) {
-                        DropdownMenuItem(text = { Text(if (vault.unlocked) "Lock vault" else "Unlock vault") },
-                            onClick = { menu = false; if (vault.unlocked) core.lock() else showUnlock = true })
-                    } else {
-                        DropdownMenuItem(text = { Text("Enable encryption") }, onClick = { menu = false; showEnable = true })
+                    IconButton(onClick = { toolsMenu = true }) { Icon(Icons.Default.MoreVert, "Tools") }
+                    DropdownMenu(expanded = toolsMenu, onDismissRequest = { toolsMenu = false }) {
+                        if (vault.configured) {
+                            DropdownMenuItem(
+                                text = { Text(if (vault.unlocked) "Lock vault" else "Unlock vault") },
+                                onClick = { toolsMenu = false; if (vault.unlocked) core.lock() else showUnlock = true },
+                            )
+                        } else {
+                            DropdownMenuItem(text = { Text("Enable encryption") }, onClick = { toolsMenu = false; showEnable = true })
+                        }
+                        DropdownMenuItem(text = { Text("Optimize drive") }, onClick = { toolsMenu = false; showOptimize = true })
+                        DropdownMenuItem(text = { Text("Resume uploads") }, onClick = { toolsMenu = false; core.resumeUploads() })
                     }
-                    DropdownMenuItem(text = { Text("Optimize drive") }, onClick = { menu = false; showOptimize = true })
-                    DropdownMenuItem(text = { Text("Resume uploads") }, onClick = { menu = false; core.resumeUploads() })
+                } else {
+                    FilledTonalButton(onClick = { core.emptyTrash() }) { Text("Empty trash") }
+                    Spacer(Modifier.weight(1f))
+                    IconButton(onClick = { toolsMenu = true }) { Icon(Icons.Default.MoreVert, "Tools") }
                 }
             }
         }
@@ -478,10 +630,11 @@ fun BrowserScreen(core: Core, ctx: Context) {
     showMove?.let { e ->
         val folders = entries.filter { it.kind == "dir" && !it.trashed && it.id != e.id }
         Dialog(onDismissRequest = { showMove = null }) {
-            Surface(shape = MaterialTheme.shapes.medium) {
-                Column(Modifier.padding(16.dp)) {
-                    Text("Move “${e.name}” to", style = MaterialTheme.typography.titleMedium)
-                    LazyColumn(Modifier.heightIn(max = 300.dp)) {
+            Surface(shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+                Column(Modifier.padding(20.dp)) {
+                    Text("Move “${e.name}” to", style = MaterialTheme.typography.titleLarge)
+                    Spacer(Modifier.height(12.dp))
+                    LazyColumn(Modifier.heightIn(max = 300.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         item { ListItem(headlineContent = { Text("root") }, modifier = Modifier.clickable { core.move(e.id, ""); showMove = null }) }
                         items(folders, key = { it.id }) { f ->
                             ListItem(headlineContent = { Text(f.name) }, modifier = Modifier.clickable { core.move(e.id, f.id); showMove = null })
@@ -494,14 +647,11 @@ fun BrowserScreen(core: Core, ctx: Context) {
     downloadFor?.let { e ->
         AlertDialog(
             onDismissRequest = { downloadFor = null },
+            shape = RoundedCornerShape(28.dp),
+            icon = { Icon(Icons.Default.Download, null) },
             title = { Text("Download ${e.name}") },
             text = { Text("Save to the app files dir (${humanSize(e.size)}).") },
-            confirmButton = {
-                TextButton(onClick = {
-                    core.download(e.id, e.name)
-                    downloadFor = null
-                }) { Text("Download") }
-            },
+            confirmButton = { TextButton(onClick = { core.download(e.id, e.name); downloadFor = null }) { Text("Download") } },
             dismissButton = { TextButton(onClick = { downloadFor = null }) { Text("Cancel") } },
         )
     }
@@ -517,6 +667,8 @@ fun BrowserScreen(core: Core, ctx: Context) {
         rows.add("location" to (entries.find { it.id == e.parent }?.name ?: "root"))
         AlertDialog(
             onDismissRequest = { showInfo = null },
+            shape = RoundedCornerShape(28.dp),
+            icon = { Icon(Icons.Default.Info, null) },
             title = { Text("Properties") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -540,6 +692,7 @@ fun BrowserScreen(core: Core, ctx: Context) {
         var hint by remember { mutableStateOf("") }
         AlertDialog(
             onDismissRequest = { showEnable = false },
+            shape = RoundedCornerShape(28.dp),
             title = { Text("Enable encryption") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -547,22 +700,32 @@ fun BrowserScreen(core: Core, ctx: Context) {
                     Field(hint, { hint = it }, "Hint (optional)")
                 }
             },
-            confirmButton = {
-                TextButton(onClick = { showEnable = false; core.enableEncryption(pw, hint) }, enabled = pw.isNotBlank()) { Text("Enable") }
-            },
+            confirmButton = { TextButton(onClick = { showEnable = false; core.enableEncryption(pw, hint) }, enabled = pw.isNotBlank()) { Text("Enable") } },
             dismissButton = { TextButton(onClick = { showEnable = false }) { Text("Cancel") } },
         )
     }
     if (showOptimize) {
         AlertDialog(
             onDismissRequest = { showOptimize = false },
+            shape = RoundedCornerShape(28.dp),
             title = { Text("Optimize drive") },
             text = { Text("Scan the channel and delete messages belonging to objects that were created and later removed.") },
-            confirmButton = {
-                TextButton(onClick = { showOptimize = false; core.optimize() }) { Text("Scan") }
-            },
+            confirmButton = { TextButton(onClick = { showOptimize = false; core.optimize() }) { Text("Scan") } },
             dismissButton = { TextButton(onClick = { showOptimize = false }) { Text("Cancel") } },
         )
+    }
+}
+
+@Composable
+private fun RowScope.HeaderAction(icon: ImageVector, desc: String, active: Boolean = false, onClick: () -> Unit) {
+    IconButton(
+        onClick = onClick,
+        modifier = Modifier
+            .size(44.dp)
+            .clip(CircleShape)
+            .background(Color.White.copy(alpha = if (active) 0.32f else 0.16f)),
+    ) {
+        Icon(icon, desc, tint = Color.White)
     }
 }
 
@@ -584,7 +747,11 @@ fun UploadButton(core: Core, ctx: Context) {
         } catch (_: Exception) {
         }
     }
-    TextButton(onClick = { launcher.launch("*/*") }) { Text("Upload") }
+    FilledTonalButton(onClick = { launcher.launch("*/*") }, modifier = Modifier.height(44.dp)) {
+        Icon(Icons.Default.Upload, null, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(6.dp))
+        Text("Upload")
+    }
 }
 
 @Composable
@@ -592,6 +759,7 @@ fun InputDialog(title: String, label: String, initial: String = "", password: Bo
     var text by remember { mutableStateOf(initial) }
     AlertDialog(
         onDismissRequest = { onDone("") },
+        shape = RoundedCornerShape(28.dp),
         title = { Text(title) },
         text = { Field(text, { text = it }, label, password = password) },
         confirmButton = { TextButton(onClick = { onDone(text) }) { Text("OK") } },
