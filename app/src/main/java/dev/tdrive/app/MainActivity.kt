@@ -1,6 +1,8 @@
 package dev.tdrive.app
 
+import android.Manifest
 import android.content.Context
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -37,9 +39,15 @@ class MainActivity : ComponentActivity() {
 
     private val core get() = Core.get()
 
+    private val requestNotifications =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* best effort */ }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        core.start(filesDir.absolutePath)
+        core.start(applicationContext, filesDir.absolutePath)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            requestNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
         setContent {
             MaterialTheme(
                 colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()

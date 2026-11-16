@@ -1,5 +1,6 @@
 package dev.tdrive.app
 
+import android.content.Context
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -88,9 +89,12 @@ class Core private constructor(private val scope: CoroutineScope) {
     private var running = true
 
     private lateinit var dataDir: String
+    private lateinit var appContext: Context
 
-    fun start(dataDir: String) {
+    fun start(context: Context, dataDir: String) {
         this.dataDir = dataDir
+        this.appContext = context.applicationContext
+        Notifications.ensureChannel(appContext)
         NativeCore.nativeInit(dataDir)
         NativeCore.nativeSpawn()
         scope.launch(Dispatchers.IO) { pollLoop() }
@@ -203,6 +207,16 @@ class Core private constructor(private val scope: CoroutineScope) {
                 val t = ev.getJSONObject("args")
                 val tr = Transfer(t.getString("id"), t.getString("label"), t.getLong("sent"), t.getLong("total"), t.getString("state"))
                 _transfers.value = _transfers.value.toMutableMap().apply { put(tr.id, tr) }
+                if (tr.state == "Done") {
+                    // One notification per batch — only when nothing is still
+                    // Active or Paused, reporting the done count.
+                    val busy = _transfers.value.values.any { it.state == "Active" || it.state == "Paused" }
+                    if (!busy) {
+                        val done = _transfers.value.values.count { it.state == "Done" }
+                        val text = "$done transfer${if (done == 1) "" else "s"} finished"
+                        Notifications.post(appContext, "TDrive", text)
+                    }
+                }
             }
             "VaultState" -> {
                 val v = ev.getJSONObject("args")
