@@ -6,6 +6,7 @@ import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.PredictiveBackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -81,6 +82,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -89,6 +91,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -417,16 +420,32 @@ fun BrowserScreen(core: Core, ctx: Context) {
 
     val activeTransfers = transfers.values.filter { it.state == "Active" || it.state == "Paused" }
 
-    BackHandler(enabled = selected != null || searchActive || trashMode || cwd.isNotEmpty()) {
-        when {
-            selected != null -> selected = null
-            searchActive -> { searchActive = false; query = "" }
-            trashMode -> core.setTrashMode(false)
-            else -> core.setCwd(entries.find { it.id == cwd }?.parent ?: "")
+    // Predictive back — the gesture's progress shrinks/slides the
+    // content as you drag; commit past the edge and the unwind runs,
+    // cancel and it springs back.
+    var backProgress by remember { mutableFloatStateOf(0f) }
+    PredictiveBackHandler(enabled = selected != null || searchActive || trashMode || cwd.isNotEmpty()) { progress ->
+        try {
+            progress.collect { backProgress = it.progress }
+            backProgress = 0f
+            when {
+                selected != null -> selected = null
+                searchActive -> { searchActive = false; query = "" }
+                trashMode -> core.setTrashMode(false)
+                else -> core.setCwd(entries.find { it.id == cwd }?.parent ?: "")
+            }
+        } catch (_: kotlinx.coroutines.CancellationException) {
+            backProgress = 0f
         }
     }
-    BackHandler(enabled = selected == null && !searchActive && !trashMode && cwd.isEmpty()) {
-        core.listChannels()
+    PredictiveBackHandler(enabled = selected == null && !searchActive && !trashMode && cwd.isEmpty()) { progress ->
+        try {
+            progress.collect { backProgress = it.progress }
+            backProgress = 0f
+            core.listChannels()
+        } catch (_: kotlinx.coroutines.CancellationException) {
+            backProgress = 0f
+        }
     }
 
     val headerTitle = when {
@@ -436,13 +455,25 @@ fun BrowserScreen(core: Core, ctx: Context) {
         else -> entries.find { it.id == cwd }?.name ?: title
     }
     val headerSubtitle = when {
-        trashMode -> "Deleted items — restore or remove forever"
-        searchActive -> "Find anything across all your drives"
-        cwd.isEmpty() -> "Everything in this drive, all in one place"
-        else -> "${visible.size} item${if (visible.size == 1) "" else "s"} here"
+        trashMode -> "Deleted items"
+        searchActive -> "Whole-drive results"
+        else -> "${visible.size} item${if (visible.size == 1) "" else "s"}"
     }
 
-    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerLowest)) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .graphicsLayer {
+                // Predictive-back feedback: a slight shrink + slide as
+                // the gesture drags, so the unwind reads as a preview.
+                val p = backProgress
+                scaleX = 1f - p * 0.08f
+                scaleY = 1f - p * 0.08f
+                translationX = p * size.width * 0.06f
+                alpha = 1f - p * 0.2f
+            }
+            .background(MaterialTheme.colorScheme.surfaceContainerLowest),
+    ) {
         // Slim M3 top bar — one 64dp row: up affordance when nested,
         // title+context inline, actions right. Breadcrumbs collapse to
         // a thin text row only when deep in the tree.
@@ -458,7 +489,7 @@ fun BrowserScreen(core: Core, ctx: Context) {
                             core.setCwd(entries.find { it.id == cwd }?.parent ?: "")
                         }) { Icon(Icons.Default.ArrowBack, "Up one folder") }
                     } else {
-                        BrandMark(size = 36.dp)
+                        Spacer(Modifier.width(8.dp))
                     }
                     Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
                         Text(
