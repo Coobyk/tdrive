@@ -43,10 +43,12 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.DriveFolderUpload
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOff
@@ -76,10 +78,12 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -88,6 +92,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.documentfile.provider.DocumentFile
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import java.io.File
@@ -120,6 +129,17 @@ class MainActivity : ComponentActivity() {
 fun App(core: Core, ctx: Context) {
     val screen by core.screen.collectAsState()
     val status by core.status.collectAsState()
+
+    // Cached API creds mean we've connected before — reconnect right
+    // away so a returning user lands on sign-in/drives, not Setup.
+    LaunchedEffect(Unit) {
+        val prefs = ctx.getSharedPreferences("tdrive", Context.MODE_PRIVATE)
+        val id = prefs.getString("api_id", "") ?: ""
+        val hash = prefs.getString("api_hash", "") ?: ""
+        if (id.isNotBlank() && hash.isNotBlank()) {
+            core.connect(id.toIntOrNull() ?: 0, hash)
+        }
+    }
 
     Box(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
         when (val s = screen) {
@@ -206,9 +226,22 @@ fun SetupScreen(core: Core, ctx: Context) {
         title = "Connect your account",
         subtitle = "Grab your API ID and hash from my.telegram.org, then sign in with your phone number.",
     ) {
-        Field(apiId, { apiId = it }, "API ID", keyboard = KeyboardType.Number)
-        Field(apiHash, { apiHash = it }, "API Hash")
-        PrimaryButton("Continue", apiId.isNotBlank() && apiHash.isNotBlank()) {
+        val connecting by core.connecting.collectAsState()
+        if (connecting) {
+            Row(
+                Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                Spacer(Modifier.width(10.dp))
+                Text("Connecting…", style = MaterialTheme.typography.bodyMedium)
+            }
+        } else {
+            Field(apiId, { apiId = it }, "API ID", keyboard = KeyboardType.Number)
+            Field(apiHash, { apiHash = it }, "API Hash")
+        }
+        PrimaryButton("Continue", apiId.isNotBlank() && apiHash.isNotBlank() && !connecting) {
             prefs.edit().putString("api_id", apiId).putString("api_hash", apiHash).apply()
             core.connect(apiId.toIntOrNull() ?: 0, apiHash)
         }
@@ -410,43 +443,82 @@ fun BrowserScreen(core: Core, ctx: Context) {
     }
 
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerLowest)) {
-        BrandHeader(
-            overline = if (trashMode) "TRASH" else if (searchActive) "SEARCH" else "BROWSING",
-            title = headerTitle,
-            subtitle = headerSubtitle,
-            actions = {
-                HeaderAction(Icons.Default.Search, "Search", searchActive) {
-                    searchActive = !searchActive
-                    if (!searchActive) query = ""
+        // Slim M3 top bar — one 64dp row: up affordance when nested,
+        // title+context inline, actions right. Breadcrumbs collapse to
+        // a thin text row only when deep in the tree.
+        val nested = !searchActive && !trashMode && cwd.isNotEmpty()
+        Surface(color = MaterialTheme.colorScheme.surfaceContainerLow) {
+            Column {
+                Row(
+                    Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (nested) {
+                        IconButton(onClick = {
+                            core.setCwd(entries.find { it.id == cwd }?.parent ?: "")
+                        }) { Icon(Icons.Default.ArrowBack, "Up one folder") }
+                    } else {
+                        BrandMark(size = 36.dp)
+                    }
+                    Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
+                        Text(
+                            headerTitle,
+                            style = MaterialTheme.typography.titleMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            headerSubtitle,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    IconButton(onClick = {
+                        searchActive = !searchActive
+                        if (!searchActive) query = ""
+                    }) {
+                        Icon(
+                            Icons.Default.Search, "Search",
+                            tint = if (searchActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    IconButton(onClick = { core.setTrashMode(!trashMode); selected = null }) {
+                        Icon(if (trashMode) Icons.Default.Folder else Icons.Default.Delete, "Trash")
+                    }
+                    IconButton(onClick = { core.listChannels() }) {
+                        Icon(Icons.Default.Apps, "Drives")
+                    }
                 }
-                HeaderAction(if (trashMode) Icons.Default.Folder else Icons.Default.Delete, "Trash") {
-                    core.setTrashMode(!trashMode); selected = null
-                }
-                HeaderAction(Icons.Default.Apps, "Drives") { core.listChannels() }
-            },
-            footer = if (!searchActive && !trashMode && cwd.isNotEmpty()) {
-                {
-                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (nested) {
+                    Row(
+                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
                         crumbs.forEachIndexed { i, (id, name) ->
                             val last = i == crumbs.lastIndex
-                            Surface(
-                                shape = RoundedCornerShape(50),
-                                color = Color.White.copy(alpha = if (last) 0.30f else 0.14f),
-                                modifier = Modifier.clickable(enabled = !last) { core.setCwd(id) },
-                            ) {
-                                Text(
-                                    name,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = Color.White,
-                                    maxLines = 1,
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            if (i > 0) {
+                                Icon(
+                                    Icons.Default.ChevronRight, null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(14.dp),
                                 )
                             }
+                            Text(
+                                name,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = if (last) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                modifier = Modifier
+                                    .clickable(enabled = !last) { core.setCwd(id) }
+                                    .padding(vertical = 8.dp, horizontal = 2.dp),
+                            )
                         }
                     }
                 }
-            } else null,
-        )
+            }
+        }
 
         Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             if (searchActive) {
@@ -487,26 +559,6 @@ fun BrowserScreen(core: Core, ctx: Context) {
             contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 4.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            if (cwd.isNotEmpty() && !trashMode && !searchActive) {
-                item(key = "__parent") {
-                    Card(
-                        shape = RoundedCornerShape(20.dp),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
-                        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-                    ) {
-                        Row(
-                            Modifier.fillMaxWidth().clickable {
-                                core.setCwd(entries.find { it.id == cwd }?.parent ?: "")
-                            }.padding(14.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(14.dp),
-                        ) {
-                            Icon(Icons.Default.ArrowBack, null, tint = MaterialTheme.colorScheme.onSecondaryContainer)
-                            Text("Up one folder", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSecondaryContainer)
-                        }
-                    }
-                }
-            }
             items(visible, key = { it.id }) { e ->
                 val bits = mutableListOf<String>()
                 if (e.kind == "file") bits.add(humanSize(e.size))
@@ -729,28 +781,82 @@ private fun RowScope.HeaderAction(icon: ImageVector, desc: String, active: Boole
     }
 }
 
-@Composable
-fun UploadButton(core: Core, ctx: Context) {
-    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        uri ?: return@rememberLauncherForActivityResult
-        val name = ctx.contentResolver.query(uri, null, null, null, null)?.use { c ->
-            val i = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
-            if (c.moveToFirst() && i >= 0) c.getString(i) else null
-        } ?: uri.lastPathSegment?.substringAfterLast('/') ?: "upload"
-        val dst = File(ctx.cacheDir, "inbox/${System.currentTimeMillis()}-$name")
-        dst.parentFile?.mkdirs()
-        try {
-            ctx.contentResolver.openInputStream(uri)?.use { inp ->
-                FileOutputStream(dst).use { out -> inp.copyTo(out) }
-            }
-            core.upload(dst.absolutePath)
-        } catch (_: Exception) {
+private fun uriName(ctx: Context, uri: android.net.Uri): String =
+    ctx.contentResolver.query(uri, null, null, null, null)?.use { c ->
+        val i = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+        if (c.moveToFirst() && i >= 0) c.getString(i) else null
+    } ?: uri.lastPathSegment?.substringAfterLast('/') ?: "upload"
+
+private fun copyUri(ctx: Context, uri: android.net.Uri, dst: File): Boolean =
+    try {
+        ctx.contentResolver.openInputStream(uri)?.use { inp ->
+            FileOutputStream(dst).use { out -> inp.copyTo(out) }
+        }
+        true
+    } catch (_: Exception) {
+        false
+    }
+
+/// Recursively mirror a SAF document tree into `dst` so the upload
+/// sees real files in a real directory structure.
+private fun copyTree(ctx: Context, node: DocumentFile, dst: File) {
+    for (child in node.listFiles()) {
+        val name = child.name ?: continue
+        if (child.isDirectory) {
+            val sub = File(dst, name)
+            if (sub.mkdirs() || sub.isDirectory) copyTree(ctx, child, sub)
+        } else {
+            copyUri(ctx, child.uri, File(dst, name))
         }
     }
-    FilledTonalButton(onClick = { launcher.launch("*/*") }, modifier = Modifier.height(44.dp)) {
-        Icon(Icons.Default.Upload, null, modifier = Modifier.size(18.dp))
-        Spacer(Modifier.width(6.dp))
-        Text("Upload")
+}
+
+@Composable
+fun UploadButton(core: Core, ctx: Context) {
+    val scope = rememberCoroutineScope()
+    val filesLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        scope.launch {
+            withContext(Dispatchers.IO) {
+                uris.forEach { uri ->
+                    val dst = File(
+                        ctx.cacheDir,
+                        "inbox/${System.currentTimeMillis()}-${uriName(ctx, uri)}",
+                    )
+                    dst.parentFile?.mkdirs()
+                    if (copyUri(ctx, uri, dst)) core.upload(dst.absolutePath)
+                }
+            }
+        }
+    }
+    val dirLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        uri ?: return@rememberLauncherForActivityResult
+        scope.launch {
+            withContext(Dispatchers.IO) {
+                val root = DocumentFile.fromTreeUri(ctx, uri) ?: return@withContext
+                val dst = File(
+                    ctx.cacheDir,
+                    "inbox/${System.currentTimeMillis()}-${root.name ?: "folder"}",
+                )
+                dst.mkdirs()
+                copyTree(ctx, root, dst)
+                core.uploadDir(dst.absolutePath)
+            }
+        }
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        FilledTonalButton(onClick = { filesLauncher.launch(arrayOf("*/*")) }, modifier = Modifier.height(44.dp)) {
+            Icon(Icons.Default.Upload, null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(6.dp))
+            Text("Files")
+        }
+        FilledTonalIconButton(onClick = { dirLauncher.launch(null) }, modifier = Modifier.size(44.dp)) {
+            Icon(Icons.Default.DriveFolderUpload, "Upload folder", modifier = Modifier.size(20.dp))
+        }
     }
 }
 

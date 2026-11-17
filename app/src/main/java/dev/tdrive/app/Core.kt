@@ -85,6 +85,9 @@ class Core private constructor(private val scope: CoroutineScope) {
     private val _trashMode = MutableStateFlow(false)
     val trashMode = _trashMode.asStateFlow()
 
+    private val _connecting = MutableStateFlow(false)
+    val connecting = _connecting.asStateFlow()
+
     @Volatile
     private var running = true
 
@@ -109,8 +112,10 @@ class Core private constructor(private val scope: CoroutineScope) {
         }
     }
 
-    fun connect(apiId: Int, apiHash: String) =
+    fun connect(apiId: Int, apiHash: String) {
+        _connecting.value = true
         send("Connect", JSONObject().put("api_id", apiId).put("api_hash", apiHash))
+    }
 
     fun requestCode(phone: String) = send("RequestCode", JSONObject().put("phone", phone))
     fun submitCode(code: String) = send("SubmitCode", JSONObject().put("code", code))
@@ -124,6 +129,8 @@ class Core private constructor(private val scope: CoroutineScope) {
     fun sync() = send("Sync")
     fun upload(path: String, parent: String = _cwd.value) =
         send("Upload", JSONObject().put("path", path).put("parent", parent))
+    fun uploadDir(dir: String, parent: String = _cwd.value) =
+        send("UploadDir", JSONObject().put("dir", dir).put("parent", parent))
     fun download(fileId: String, name: String) {
         val dir = java.io.File(dataDir, "downloads").apply { mkdirs() }
         send("Download", JSONObject().put("file_id", fileId).put("dest", java.io.File(dir, name).absolutePath))
@@ -171,6 +178,7 @@ class Core private constructor(private val scope: CoroutineScope) {
     private fun handle(ev: JSONObject) {
         when (ev.getString("ev")) {
             "Connected" -> {
+                _connecting.value = false
                 val authorized = ev.getJSONObject("args").getBoolean("authorized")
                 _screen.value = if (authorized) Screen.Channels else Screen.Phone
                 if (authorized) listChannels()
