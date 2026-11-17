@@ -1105,7 +1105,7 @@ impl Root {
                     self.expected_uploads = if plan.mode == PlanMode::Archive {
                         1
                     } else {
-                        plan.files as usize
+                        plan.items.iter().map(|i| i.files as usize).sum()
                     };
                     match plan.mode {
                         PlanMode::Files => self.send(Command::UploadItems {
