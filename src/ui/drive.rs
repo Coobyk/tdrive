@@ -1179,7 +1179,14 @@ impl Root {
                         .text_xs()
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(theme().dim)
-                        .child(format!("Transfers · {active_count} active · {total} total")),
+                        .child(format!(
+                            "Transfers · {active_count} active · {}",
+                            if self.expected_uploads > total {
+                                format!("{total} of ~{} planned", self.expected_uploads)
+                            } else {
+                                format!("{total} total")
+                            }
+                        )),
                 )
                 .child(div().flex_1())
                 .child(if active_count > 0 {

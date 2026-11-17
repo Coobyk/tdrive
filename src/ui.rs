@@ -233,6 +233,10 @@ pub struct Root {
     /// File listing order — folders stay grouped above files.
     sort_key: SortKey,
     sort_desc: bool,
+    /// Files the last upload batch will produce — the picker counts
+    /// them up front so the pane can show "x of ~N" instead of a
+    /// total that grows as the walker discovers entries.
+    expected_uploads: usize,
     /// Left press on an already-selected row, armed to become a
     /// drag-move once the pointer travels past the threshold.
     pending_move: Option<(String, Point<Pixels>)>,
@@ -346,6 +350,7 @@ impl Root {
             styles: load_styles(),
             sort_key: SortKey::Name,
             sort_desc: false,
+            expected_uploads: 0,
             pending_move: None,
             drag_moving: false,
             drop_hover: None,
@@ -1095,6 +1100,13 @@ impl Root {
                     let name = self.f_name.read(cx).text().trim().to_string();
                     let items: Vec<PathBuf> =
                         plan.items.iter().map(|i| i.path.clone()).collect();
+                    // An archive is one transfer; the other modes make
+                    // one per walked file.
+                    self.expected_uploads = if plan.mode == PlanMode::Archive {
+                        1
+                    } else {
+                        plan.files as usize
+                    };
                     match plan.mode {
                         PlanMode::Files => self.send(Command::UploadItems {
                             items,
