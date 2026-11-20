@@ -2,6 +2,7 @@ mod assets;
 mod config;
 mod crypto;
 mod dav;
+#[cfg(unix)]
 mod fusefs;
 mod http;
 mod input;
@@ -11,6 +12,7 @@ mod project;
 mod remote;
 mod stream;
 mod tg;
+#[cfg(target_os = "linux")]
 mod tray;
 mod ui;
 mod wire;

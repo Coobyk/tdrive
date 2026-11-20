@@ -419,6 +419,7 @@ impl Root {
         })
         .detach();
 
+        #[cfg(target_os = "linux")]
         let tray_rx = crate::tray::spawn();
         // Activity ticker — advances the bottom-left spinner while any
         // sync, transfer or thumbnail fetch is in flight; also drains
@@ -428,6 +429,7 @@ impl Root {
                 cx.background_executor()
                     .timer(std::time::Duration::from_millis(120))
                     .await;
+                #[cfg(target_os = "linux")]
                 while let Ok(msg) = tray_rx.try_recv() {
                     match msg {
                         crate::tray::TrayMsg::Show => {

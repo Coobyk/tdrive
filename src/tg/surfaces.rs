@@ -100,6 +100,7 @@ impl Worker {
 
     /// Mount the drive read-write at `dir` via FUSE — TDrive's mount surface
     /// for Linux file managers. Writes emit durable mount-write ops.
+    #[cfg(unix)]
     pub(super) async fn mount_drive(&mut self, dir: PathBuf) -> Result<()> {
         let fs = fusefs::TdFs::new(
             self.remote()?,
@@ -110,6 +111,11 @@ impl Worker {
         self.fuse_session = Some(session);
         self.emit(Event::MountState { dir: Some(dir) });
         Ok(())
+    }
+
+    #[cfg(not(unix))]
+    pub(super) async fn mount_drive(&mut self, _dir: PathBuf) -> Result<()> {
+        anyhow::bail!("mount requires FUSE (unix only)")
     }
 
     /// Open a tokenized stream session for a file and hand the URL to the

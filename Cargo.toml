@@ -10,14 +10,12 @@ async-channel = "2.5.0"
 base64 = "0.23.1"
 chacha20poly1305 = "0.11.0"
 dirs = "7.0.0"
-fuser = "0.18.0"
 futures-util = "0.3.34"
 gpui = "0.2.2"
 grammers-client = "0.12.0"
 grammers-session = { version = "0.12.0", features = ["sqlite-storage"] }
 hkdf = "0.13.0"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
-ksni = { version = "0.3.7", features = ["blocking"] }
 libc = "0.2.191"
 rand = "0.10.3"
 serde = { version = "1.0.229", features = ["derive"] }
@@ -35,3 +33,9 @@ uuid = { version = "1.29.2", features = ["v4"] }
 # ENODATA is the same constant (61). Patched locally until zed-async-tar
 # relaxes its pin.
 xattr = { path = "vendor/xattr" }
+
+[target.'cfg(unix)'.dependencies]
+fuser = "0.18.0"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni = { version = "0.3.7", features = ["blocking"] }

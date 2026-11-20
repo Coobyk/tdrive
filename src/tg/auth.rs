@@ -159,7 +159,10 @@ impl Worker {
             token.cancel();
         }
         self.paused_downloads.clear();
-        self.fuse_session = None;
+        #[cfg(unix)]
+        {
+            self.fuse_session = None;
+        }
         *self.peer_cell.lock().unwrap() = None;
         *self.ns_shared.lock().unwrap() = Arc::new(Namespace::new());
         self.channel_id = 0;

@@ -4,6 +4,7 @@
 use crate::config;
 use crate::crypto::{self, VaultConfig};
 use crate::dav;
+#[cfg(unix)]
 use crate::fusefs;
 use crate::journal::{DownloadJob, Journal, PartReceipt, UploadJob};
 use crate::ops::{self, VfsOp};
@@ -464,6 +465,7 @@ pub fn spawn() -> Handle {
                 reserved_names: std::collections::HashSet::new(),
                 live_sync_queued: Default::default(),
                 ns_shared: Arc::new(Mutex::new(Arc::new(Namespace::new()))),
+                #[cfg(unix)]
                 fuse_session: None,
                 thumb_sem: Arc::new(tokio::sync::Semaphore::new(8)),
                 upload_sem: Arc::new(tokio::sync::Semaphore::new(
@@ -567,6 +569,7 @@ struct Worker {
     /// Latest namespace snapshot shared with the WebDAV server.
     ns_shared: Arc<Mutex<Arc<Namespace>>>,
     /// Live FUSE mount session — dropping it unmounts.
+    #[cfg(unix)]
     fuse_session: Option<fuser::BackgroundSession>,
     /// Bounds concurrent thumbnail fetches — they spawn as tasks so the
     /// command loop stays free instead of serializing RTTs.
@@ -707,8 +710,11 @@ impl Worker {
             }
             Command::Mount { dir } => self.mount_drive(dir).await,
             Command::Unmount => {
-                self.fuse_session = None;
-                self.emit(Event::MountState { dir: None });
+                #[cfg(unix)]
+                {
+                    self.fuse_session = None;
+                    self.emit(Event::MountState { dir: None });
+                }
                 Ok(())
             }
             Command::LiveSync => self.live_sync().await,

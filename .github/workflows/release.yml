@@ -1,0 +1,130 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (must exist)"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  BIN: tdrive-rs
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: tdrive-rs-linux-x86_64.tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: tdrive-rs-windows-x86_64.zip
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: tdrive-rs-macos-aarch64.tar.gz
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact: tdrive-rs-macos-x86_64.tar.gz
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Linux build deps
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libfuse3-dev libfontconfig-dev
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/${BIN}" dist/
+          tar -czf "${{ matrix.artifact }}" -C dist "${BIN}"
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/${BIN}.exe" dist/
+          (cd dist && 7z a "../${{ matrix.artifact }}" "${BIN}.exe")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: tdrive-rs-*
+          merge-multiple: true
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ inputs.tag || github.ref_name }}"
+          gh release create "$TAG" tdrive-rs-* \
+            --repo "${{ github.repository }}" \
+            --title "tdrive-rs $TAG" --generate-notes --verify-tag || \
+          gh release upload "$TAG" tdrive-rs-* --clobber --repo "${{ github.repository }}"
+
+  aur:
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: AUR SSH setup
+        run: |
+          install -d -m700 ~/.ssh
+          printf '%s\n' '${{ secrets.AUR_SSH_KEY }}' > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts
+          cat >> ~/.ssh/config <<'CFG'
+          Host aur.archlinux.org
+            IdentityFile ~/.ssh/aur
+            IdentitiesOnly yes
+          CFG
+          git config --global user.name "Coobyk"
+          git config --global user.email "mail@coobyk.com"
+      - name: Publish tdrive + tdrive-bin
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VER="${{ inputs.tag || github.ref_name }}"; VER="${VER#v}"
+          SHA_SRC=$(curl -sL "https://github.com/${{ github.repository }}/archive/v$VER.tar.gz" | sha256sum | cut -d' ' -f1)
+          SHA_BIN=$(gh release download "v$VER" -p 'tdrive-rs-linux-x86_64.tar.gz' --repo "${{ github.repository }}" -O- --clobber 2>/dev/null | sha256sum | cut -d' ' -f1)
+          publish_pkg() {
+            pkg=$1 sha=$2
+            work=$(mktemp -d)
+            # Clone existing pkgbase or init — first push creates the package.
+            if git clone -q "ssh://aur@aur.archlinux.org/$pkg.git" "$work/$pkg"; then
+              git -C "$work/$pkg" checkout -q master
+            else
+              mkdir "$work/$pkg"
+              git -C "$work/$pkg" init -qb master
+              git -C "$work/$pkg" remote add origin "ssh://aur@aur.archlinux.org/$pkg.git"
+            fi
+            sed -e "s/@PKGVER@/$VER/" -e "s/@SHA256@/$sha/" \
+              "aur/$pkg/PKGBUILD" > "$work/$pkg/PKGBUILD"
+            python3 aur/mk_srcinfo.py "$work/$pkg/PKGBUILD" > "$work/$pkg/.SRCINFO"
+            git -C "$work/$pkg" add -A
+            git -C "$work/$pkg" commit -qm "$pkg $VER" || echo "no changes"
+            git -C "$work/$pkg" push -q origin master
+          }
+          publish_pkg tdrive "$SHA_SRC"
+          publish_pkg tdrive-bin "$SHA_BIN"
