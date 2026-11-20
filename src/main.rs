@@ -2,7 +2,7 @@ mod assets;
 mod config;
 mod crypto;
 mod dav;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 mod fusefs;
 mod http;
 mod input;

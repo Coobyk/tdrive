@@ -34,8 +34,6 @@ uuid = { version = "1.29.2", features = ["v4"] }
 # relaxes its pin.
 xattr = { path = "vendor/xattr" }
 
-[target.'cfg(unix)'.dependencies]
-fuser = "0.18.0"
-
 [target.'cfg(target_os = "linux")'.dependencies]
+fuser = "0.18.0"
 ksni = { version = "0.3.7", features = ["blocking"] }

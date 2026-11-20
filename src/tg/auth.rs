@@ -159,7 +159,7 @@ impl Worker {
             token.cancel();
         }
         self.paused_downloads.clear();
-        #[cfg(unix)]
+        #[cfg(target_os = "linux")]
         {
             self.fuse_session = None;
         }
