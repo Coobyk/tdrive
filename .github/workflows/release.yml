@@ -113,7 +113,8 @@ jobs:
             work=$(mktemp -d)
             # Clone existing pkgbase or init — first push creates the package.
             if git clone -q "ssh://aur@aur.archlinux.org/$pkg.git" "$work/$pkg"; then
-              git -C "$work/$pkg" checkout -q master
+              # Fresh pkgbase clones are empty — HEAD is unborn master.
+              git -C "$work/$pkg" checkout -qb master 2>/dev/null || true
             else
               mkdir "$work/$pkg"
               git -C "$work/$pkg" init -qb master
