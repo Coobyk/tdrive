@@ -16,6 +16,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   bump:
@@ -23,6 +24,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           fetch-tags: true
       - name: Bump, tag, release
         env:
@@ -32,7 +34,7 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          LATEST=$(git tag -l 'v*' --sort=-v:refname | head -1); LATEST=${LATEST:-v0.0.0}
+          LATEST=$(git tag -l 'v*' | sort -V | tail -1); LATEST=${LATEST:-v0.0.0}
           IFS=. read -r MA MI PA <<< "${LATEST#v}"
           case "$PART" in
             patch) PA=$((PA+1));;
