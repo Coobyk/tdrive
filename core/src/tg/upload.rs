@@ -347,27 +347,29 @@ impl Worker {
         encrypted: bool,
         plaintext_size: i64,
     ) -> Result<(i64, String)> {
-        let file = tokio::fs::File::open(path).await?;
-        let progress = ProgressReader::new(file, {
+        let uploaded = {
             let tx = ctx.tx.clone();
             let id = id.to_string();
             let label = name.to_string();
-            move |sent| {
-                let _ = tx.try_send(Event::Transfer(TransferUpdate {
-                    id: id.clone(),
-                    label: label.clone(),
-                    sent,
-                    total: size,
-                    state: TransferState::Active,
-                }));
-            }
-        });
-        let mut reader = progress;
-        let uploaded = ctx
-            .remote
-            .client
-            .upload_stream(&mut reader, size as usize, name.to_string())
-            .await?;
+            crate::remote::upload_parallel(
+                &ctx.remote.client,
+                path,
+                0,
+                size as u64,
+                name.to_string(),
+                6,
+                move |sent| {
+                    let _ = tx.try_send(Event::Transfer(TransferUpdate {
+                        id: id.clone(),
+                        label: label.clone(),
+                        sent,
+                        total: size,
+                        state: TransferState::Active,
+                    }));
+                },
+            )
+            .await?
+        };
         let caption = wire::format(&ops::file_upload(
             parent.to_string(),
             name.to_string(),
@@ -521,14 +523,8 @@ impl Worker {
         offset: i64,
         size: i64,
     ) -> Result<i64> {
-        let file = tokio::fs::File::open(&job.local_path).await?;
-        let mut limited = file;
-        use tokio::io::{AsyncReadExt, AsyncSeekExt};
-        limited
-            .seek(std::io::SeekFrom::Start(offset as u64))
-            .await?;
-        let take = limited.take(size as u64);
-        let progress = ProgressReader::new(take, {
+        let part_name = part_attachment_name(&job.name, index, job.parts.len() as i32);
+        let uploaded = {
             let tx = ctx.tx.clone();
             let id = upload_transfer_id(&job.upload_uuid);
             let label = job.name.clone();
@@ -539,23 +535,25 @@ impl Worker {
                 .filter(|p| p.msg_id.is_some())
                 .map(|p| p.size)
                 .sum();
-            move |sent| {
-                let _ = tx.try_send(Event::Transfer(TransferUpdate {
-                    id: id.clone(),
-                    label: label.clone(),
-                    sent: base + sent,
-                    total,
-                    state: TransferState::Active,
-                }));
-            }
-        });
-        let mut reader = progress;
-        let part_name = part_attachment_name(&job.name, index, job.parts.len() as i32);
-        let uploaded = ctx
-            .remote
-            .client
-            .upload_stream(&mut reader, size as usize, part_name)
-            .await?;
+            crate::remote::upload_parallel(
+                &ctx.remote.client,
+                &job.local_path,
+                offset as u64,
+                size as u64,
+                part_name,
+                6,
+                move |sent| {
+                    let _ = tx.try_send(Event::Transfer(TransferUpdate {
+                        id: id.clone(),
+                        label: label.clone(),
+                        sent: base + sent,
+                        total,
+                        state: TransferState::Active,
+                    }));
+                },
+            )
+            .await?
+        };
         let caption = wire::format(&ops::file_part(job.upload_uuid.clone(), index, size));
         let msg = ctx
             .remote
