@@ -14,8 +14,8 @@ android {
         applicationId = "dev.tdrive.app"
         minSdk = 26
         targetSdk = 37
-        versionCode = 102
-        versionName = "0.1.2"
+        versionCode = 103
+        versionName = "0.1.3"
     }
 
     signingConfigs {
