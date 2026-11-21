@@ -105,11 +105,14 @@ jobs:
           printf 'tdrive.storeFile=tdrive-release.keystore\ntdrive.storePassword=%s\ntdrive.keyAlias=%s\ntdrive.keyPassword=%s\n' \
             "$KS_PASS" "$KS_ALIAS" "$KS_ALIAS_PASS" > local.properties
       - name: Assemble APK
-        run: ./gradlew :app:assembleRelease
+        run: |
+          ./gradlew :app:assembleRelease
+          VER="${{ inputs.tag || github.ref_name }}"
+          cp app/build/outputs/apk/release/app-release.apk "tdrive-android-${VER#v}.apk"
       - uses: actions/upload-artifact@v4
         with:
-          name: tdrive-android-release.apk
-          path: android/app/build/outputs/apk/release/app-release.apk
+          name: tdrive-android-apk
+          path: android/tdrive-android-*.apk
 
   publish:
     needs: [build, android]
