@@ -216,3 +216,119 @@ async fn recover_msg_id(client: &Client, peer: PeerRef, header: &str) -> i64 {
     }
     0
 }
+
+/// Parallel chunked upload — grammers' `upload_stream` only fans out
+/// above its 10MB BIG_FILE threshold, so every smaller file pays one
+/// 512KB SaveFilePart per RTT, which is a crawl on mobile links. This
+/// runs `workers` parallel part uploads for any size (small files just
+/// have few parts) and returns the same `Uploaded` `send_message`
+/// accepts. Flood-wait retries ride on `client.invoke`'s RetryPolicy.
+///
+/// Chunks are read per-part via seek+take on one `tokio::fs::File` per
+/// worker — the drive's resumable-part boundary (offset) is preserved
+/// so TDX1 parts map 1:1 onto Telegram files as before.
+pub async fn upload_parallel(
+    client: &Client,
+    path: &std::path::Path,
+    offset: u64,
+    size: u64,
+    name: String,
+    workers: usize,
+    progress: impl Fn(i64) + Send + Sync + 'static,
+) -> Result<grammers_client::media::Uploaded> {
+    use grammers_client::tl;
+    use std::sync::atomic::{AtomicI64, AtomicU32, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
+    const BIG: u64 = 10 * 1024 * 1024;
+    let chunk = BODY_CHUNK as u64;
+    let total_parts = ((size + chunk - 1) / chunk) as i32;
+    let file_id: i64 = rand::random();
+    let big = size > BIG;
+
+    // Small files need an md5 in the final InputFile — compute it
+    // upfront; a local read pass is free next to network RTTs.
+    let md5_checksum = if big {
+        String::new()
+    } else {
+        let mut f = tokio::fs::File::open(path).await?;
+        f.seek(std::io::SeekFrom::Start(offset)).await?;
+        let mut take = f.take(size);
+        let mut ctx = md5::Context::new();
+        let mut buf = [0u8; 64 * 1024];
+        loop {
+            let n = take.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            ctx.consume(&buf[..n]);
+        }
+        format!("{:x}", ctx.finalize())
+    };
+
+    let next = Arc::new(AtomicU32::new(0));
+    let sent = Arc::new(AtomicI64::new(0));
+    let progress = Arc::new(progress);
+    let mut set = tokio::task::JoinSet::new();
+    for _ in 0..workers.max(1).min(total_parts.max(1) as usize) {
+        let client = client.clone();
+        let path = path.to_path_buf();
+        let (next, sent, progress) = (next.clone(), sent.clone(), progress.clone());
+        set.spawn(async move {
+            let mut file = tokio::fs::File::open(&path).await?;
+            loop {
+                let part = next.fetch_add(1, Ordering::Relaxed) as i32;
+                if part >= total_parts {
+                    return Ok(());
+                }
+                let pos = offset + part as u64 * chunk;
+                let len = ((size - part as u64 * chunk).min(chunk)) as usize;
+                file.seek(std::io::SeekFrom::Start(pos)).await?;
+                let mut bytes = vec![0u8; len];
+                file.read_exact(&mut bytes).await?;
+                let ok: bool = if big {
+                    client
+                        .invoke(&tl::functions::upload::SaveBigFilePart {
+                            file_id,
+                            file_part: part,
+                            file_total_parts: total_parts,
+                            bytes,
+                        })
+                        .await?
+                } else {
+                    client
+                        .invoke(&tl::functions::upload::SaveFilePart {
+                            file_id,
+                            file_part: part,
+                            bytes,
+                        })
+                        .await?
+                };
+                if !ok {
+                    anyhow::bail!("server failed to store uploaded part {part}");
+                }
+                progress(sent.fetch_add(len as i64, Ordering::Relaxed) + len as i64);
+            }
+        });
+    }
+    while let Some(res) = set.join_next().await {
+        res??;
+    }
+    let raw: tl::enums::InputFile = if big {
+        tl::types::InputFileBig {
+            id: file_id,
+            parts: total_parts,
+            name,
+        }
+        .into()
+    } else {
+        tl::types::InputFile {
+            id: file_id,
+            parts: total_parts,
+            name,
+            md5_checksum,
+        }
+        .into()
+    };
+    Ok(grammers_client::media::Uploaded::from_raw(raw))
+}
