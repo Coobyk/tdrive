@@ -19,21 +19,22 @@ android {
     }
 
     signingConfigs {
-        create("release") {
-            val props = Properties().apply {
-                load(rootProject.file("local.properties").inputStream())
+        val propsFile = rootProject.file("local.properties")
+        if (propsFile.exists()) {
+            create("release") {
+                val props = Properties().apply { load(propsFile.inputStream()) }
+                storeFile = rootProject.file(props.getProperty("tdrive.storeFile"))
+                storePassword = props.getProperty("tdrive.storePassword")
+                keyAlias = props.getProperty("tdrive.keyAlias")
+                keyPassword = props.getProperty("tdrive.keyPassword")
             }
-            storeFile = rootProject.file(props.getProperty("tdrive.storeFile"))
-            storePassword = props.getProperty("tdrive.storePassword")
-            keyAlias = props.getProperty("tdrive.keyAlias")
-            keyPassword = props.getProperty("tdrive.keyPassword")
         }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("release")
+            signingConfig = signingConfigs.findByName("release")
         }
     }
     compileOptions {

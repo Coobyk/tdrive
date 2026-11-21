@@ -64,24 +64,65 @@ jobs:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}
 
+  android:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android, armv7-linux-androideabi
+      - uses: android-actions/setup-android@v3
+      - name: NDK + cargo-ndk
+        run: |
+          sdkmanager "ndk;27.2.12479018"
+          cargo install cargo-ndk
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
+      - name: Build native core
+        working-directory: android/core
+        run: cargo ndk -t arm64-v8a -t armeabi-v7a build --release
+      - name: Signing material (optional)
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KS_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KS_ALIAS_PASS: ${{ secrets.ANDROID_KEY_ALIAS_PASSWORD }}
+        run: |
+          if [ -z "$KS_B64" ]; then echo "::warning::no signing secrets — unsigned APK"; exit 0; fi
+          echo "$KS_B64" | base64 -d > tdrive-release.keystore
+          printf 'tdrive.storeFile=tdrive-release.keystore\ntdrive.storePassword=%s\ntdrive.keyAlias=%s\ntdrive.keyPassword=%s\n' \
+            "$KS_PASS" "$KS_ALIAS" "$KS_ALIAS_PASS" > local.properties
+      - name: Assemble APK
+        run: ./gradlew :app:assembleRelease
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tdrive-android-release.apk
+          path: android/app/build/outputs/apk/release/app-release.apk
+
   publish:
-    needs: build
+    needs: [build, android]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          pattern: tdrive-rs-*
+          pattern: tdrive-*
           merge-multiple: true
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${{ inputs.tag || github.ref_name }}"
-          gh release create "$TAG" tdrive-rs-* \
+          gh release create "$TAG" tdrive-* \
             --repo "${{ github.repository }}" \
             --title "tdrive-rs $TAG" --generate-notes --verify-tag || \
-          gh release upload "$TAG" tdrive-rs-* --clobber --repo "${{ github.repository }}"
+          gh release upload "$TAG" tdrive-* --clobber --repo "${{ github.repository }}"
 
   aur:
     needs: publish
