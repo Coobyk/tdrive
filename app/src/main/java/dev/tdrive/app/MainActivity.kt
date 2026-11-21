@@ -59,6 +59,7 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Undo
+import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
@@ -376,14 +377,13 @@ fun BrowserScreen(core: Core, ctx: Context) {
     val trashMode by core.trashMode.collectAsState()
     val vault by core.vault.collectAsState()
 
-    var selected by remember { mutableStateOf<NsEntry?>(null) }
+    var selected by remember { mutableStateOf(setOf<String>()) }
     var showMkdir by remember { mutableStateOf(false) }
     var showRename by remember { mutableStateOf<NsEntry?>(null) }
-    var showMove by remember { mutableStateOf<NsEntry?>(null) }
+    var moveFor by remember { mutableStateOf(setOf<String>()) }
     var showUnlock by remember { mutableStateOf(false) }
     var showEnable by remember { mutableStateOf(false) }
     var showOptimize by remember { mutableStateOf(false) }
-    var downloadFor by remember { mutableStateOf<NsEntry?>(null) }
     var showInfo by remember { mutableStateOf<NsEntry?>(null) }
     var searchActive by remember { mutableStateOf(false) }
     var query by remember { mutableStateOf("") }
@@ -424,12 +424,12 @@ fun BrowserScreen(core: Core, ctx: Context) {
     // content as you drag; commit past the edge and the unwind runs,
     // cancel and it springs back.
     var backProgress by remember { mutableFloatStateOf(0f) }
-    PredictiveBackHandler(enabled = selected != null || searchActive || trashMode || cwd.isNotEmpty()) { progress ->
+    PredictiveBackHandler(enabled = selected.isNotEmpty() || searchActive || trashMode || cwd.isNotEmpty()) { progress ->
         try {
             progress.collect { backProgress = it.progress }
             backProgress = 0f
             when {
-                selected != null -> selected = null
+                selected.isNotEmpty() -> selected = emptySet()
                 searchActive -> { searchActive = false; query = "" }
                 trashMode -> core.setTrashMode(false)
                 else -> core.setCwd(entries.find { it.id == cwd }?.parent ?: "")
@@ -438,7 +438,7 @@ fun BrowserScreen(core: Core, ctx: Context) {
             backProgress = 0f
         }
     }
-    PredictiveBackHandler(enabled = selected == null && !searchActive && !trashMode && cwd.isEmpty()) { progress ->
+    PredictiveBackHandler(enabled = selected.isEmpty() && !searchActive && !trashMode && cwd.isEmpty()) { progress ->
         try {
             progress.collect { backProgress = it.progress }
             backProgress = 0f
@@ -515,7 +515,7 @@ fun BrowserScreen(core: Core, ctx: Context) {
                             tint = if (searchActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    IconButton(onClick = { core.setTrashMode(!trashMode); selected = null }) {
+                    IconButton(onClick = { core.setTrashMode(!trashMode); selected = emptySet() }) {
                         Icon(if (trashMode) Icons.Default.Folder else Icons.Default.Delete, "Trash")
                     }
                     IconButton(onClick = { core.listChannels() }) {
@@ -599,14 +599,21 @@ fun BrowserScreen(core: Core, ctx: Context) {
                 }
                 DriveItemCard(
                     entry = e,
-                    selected = selected?.id == e.id,
+                    selected = e.id in selected,
                     subtitle = if (bits.isEmpty()) null else bits.joinToString(" · "),
                     trailing = if (e.kind == "file") humanSize(e.size) else null,
                     onClick = {
-                        if (e.kind == "dir" && !trashMode) core.setCwd(e.id)
-                        else selected = if (selected?.id == e.id) null else e
+                        // Selection mode: any tap toggles — dirs too.
+                        // With an empty selection taps behave normally.
+                        if (e.kind == "dir" && !trashMode && selected.isEmpty()) {
+                            core.setCwd(e.id)
+                        } else {
+                            selected = if (e.id in selected) selected - e.id else selected + e.id
+                        }
                     },
-                    onLongClick = { selected = e },
+                    onLongClick = {
+                        selected = if (e.id in selected) selected - e.id else selected + e.id
+                    },
                     modifier = Modifier.animateItem(),
                 )
             }
@@ -649,21 +656,31 @@ fun BrowserScreen(core: Core, ctx: Context) {
             }
         }
 
-        val sel = selected
+        val selEntries = entries.filter { it.id in selected }
+        val single = selEntries.singleOrNull()
         ActionDock {
-            if (sel != null) {
-                Text(sel.name, Modifier.weight(1f).padding(start = 8.dp), maxLines = 1, style = MaterialTheme.typography.titleSmall)
+            if (selEntries.isNotEmpty()) {
+                Text(
+                    single?.name ?: "${selEntries.size} selected",
+                    Modifier.weight(1f).padding(start = 8.dp), maxLines = 1,
+                    style = MaterialTheme.typography.titleSmall,
+                )
                 if (trashMode) {
-                    FilledTonalIconButton(onClick = { core.restore(sel.id); selected = null }) { Icon(Icons.Default.Undo, "Restore") }
-                    FilledTonalIconButton(onClick = { core.purge(sel.id); selected = null }) { Icon(Icons.Default.DeleteForever, "Delete forever") }
+                    FilledTonalIconButton(onClick = { selEntries.forEach { core.restore(it.id) }; selected = emptySet() }) { Icon(Icons.Default.Undo, "Restore") }
+                    FilledTonalIconButton(onClick = { selEntries.forEach { core.purge(it.id) }; selected = emptySet() }) { Icon(Icons.Default.DeleteForever, "Delete forever") }
                 } else {
-                    if (sel.kind == "file") FilledTonalIconButton(onClick = { downloadFor = sel }) { Icon(Icons.Default.Download, "Download") }
-                    IconButton(onClick = { showInfo = sel }) { Icon(Icons.Default.Info, "Properties") }
-                    IconButton(onClick = { showRename = sel }) { Icon(Icons.Default.Edit, "Rename") }
-                    IconButton(onClick = { showMove = sel }) { Icon(Icons.Default.Folder, "Move") }
-                    IconButton(onClick = { core.delete(sel.id); selected = null }) { Icon(Icons.Default.Delete, "Delete") }
+                    if (selEntries.all { it.kind == "file" }) {
+                        FilledTonalIconButton(onClick = { selEntries.forEach { core.download(it.id, it.name) }; selected = emptySet() }) { Icon(Icons.Default.Download, "Download") }
+                    }
+                    single?.let { s ->
+                        IconButton(onClick = { showInfo = s }) { Icon(Icons.Default.Info, "Properties") }
+                        IconButton(onClick = { showRename = s }) { Icon(Icons.Default.Edit, "Rename") }
+                    }
+                    IconButton(onClick = { moveFor = selEntries.map { it.id }.toSet() }) { Icon(Icons.Default.Folder, "Move") }
+                    IconButton(onClick = { selEntries.forEach { core.delete(it.id) }; selected = emptySet() }) { Icon(Icons.Default.Delete, "Delete") }
+                    IconButton(onClick = { selected = visible.map { it.id }.toSet() }) { Icon(Icons.Default.DoneAll, "Select all") }
                 }
-                IconButton(onClick = { selected = null }) { Icon(Icons.Default.Close, "Deselect") }
+                IconButton(onClick = { selected = emptySet() }) { Icon(Icons.Default.Close, "Deselect") }
             } else {
                 if (!trashMode) {
                     UploadButton(core, ctx)
@@ -710,33 +727,26 @@ fun BrowserScreen(core: Core, ctx: Context) {
             if (name.isNotBlank()) core.rename(e.id, name)
         }
     }
-    showMove?.let { e ->
-        val folders = entries.filter { it.kind == "dir" && !it.trashed && it.id != e.id }
-        Dialog(onDismissRequest = { showMove = null }) {
+    if (moveFor.isNotEmpty()) {
+        val moveEntries = entries.filter { it.id in moveFor }
+        val folders = entries.filter { it.kind == "dir" && !it.trashed && it.id !in moveFor }
+        Dialog(onDismissRequest = { moveFor = emptySet() }) {
             Surface(shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh) {
                 Column(Modifier.padding(20.dp)) {
-                    Text("Move “${e.name}” to", style = MaterialTheme.typography.titleLarge)
+                    Text(
+                        moveEntries.singleOrNull()?.let { "Move “${it.name}” to" } ?: "Move ${moveFor.size} items to",
+                        style = MaterialTheme.typography.titleLarge,
+                    )
                     Spacer(Modifier.height(12.dp))
                     LazyColumn(Modifier.heightIn(max = 300.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        item { ListItem(headlineContent = { Text("root") }, modifier = Modifier.clickable { core.move(e.id, ""); showMove = null }) }
+                        item { ListItem(headlineContent = { Text("root") }, modifier = Modifier.clickable { moveFor.forEach { core.move(it, "") }; moveFor = emptySet(); selected = emptySet() }) }
                         items(folders, key = { it.id }) { f ->
-                            ListItem(headlineContent = { Text(f.name) }, modifier = Modifier.clickable { core.move(e.id, f.id); showMove = null })
+                            ListItem(headlineContent = { Text(f.name) }, modifier = Modifier.clickable { moveFor.forEach { core.move(it, f.id) }; moveFor = emptySet(); selected = emptySet() })
                         }
                     }
                 }
             }
         }
-    }
-    downloadFor?.let { e ->
-        AlertDialog(
-            onDismissRequest = { downloadFor = null },
-            shape = RoundedCornerShape(28.dp),
-            icon = { Icon(Icons.Default.Download, null) },
-            title = { Text("Download ${e.name}") },
-            text = { Text("Save to the app files dir (${humanSize(e.size)}).") },
-            confirmButton = { TextButton(onClick = { core.download(e.id, e.name); downloadFor = null }) { Text("Download") } },
-            dismissButton = { TextButton(onClick = { downloadFor = null }) { Text("Cancel") } },
-        )
     }
     showInfo?.let { e ->
         val rows = mutableListOf<Pair<String, String>>()
