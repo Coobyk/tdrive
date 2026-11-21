@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=TDrive
+GenericName=Cloud Drive
+Comment=Telegram-backed cloud drive, TDrive-compatible
+Exec=tdrive
+Icon=tdrive
+Terminal=false
+Categories=Network;FileTransfer;
+Keywords=cloud;drive;telegram;backup;sync;
+StartupNotify=true
+StartupWMClass=tdrive-rs
+SingleMainWindow=true

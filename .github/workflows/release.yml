@@ -50,7 +50,8 @@ jobs:
         run: |
           mkdir -p dist
           cp "target/${{ matrix.target }}/release/${BIN}" dist/
-          tar -czf "${{ matrix.artifact }}" -C dist "${BIN}"
+          if [ "${{ matrix.target }}" = "x86_64-unknown-linux-gnu" ]; then cp -r packaging dist/; fi
+          tar -czf "${{ matrix.artifact }}" -C dist .
       - name: Package (windows)
         if: runner.os == 'Windows'
         shell: bash
