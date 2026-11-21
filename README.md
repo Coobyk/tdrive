@@ -2,7 +2,8 @@
 
 # tdrive-rs
 
-An alternative desktop client for [TDrive](https://github.com/jeetrex17/TDrive),
+An alternative client for [TDrive](https://github.com/jeetrex17/TDrive) —
+desktop in the root crate, Android in [`android/`](android).
 written in Rust and [GPUI](https://gpui.rs) (Zed's UI framework).
 
 Like TDrive, it stores your files in a private Telegram channel: file contents
