@@ -1,0 +1,54 @@
+name: bump
+
+# One click in Actions → bumps semver, syncs Cargo.toml + gradle
+# versionCode/versionName, tags, and fires the release workflow.
+# (Tag pushes made with GITHUB_TOKEN don't trigger workflows, so the
+# release run is dispatched explicitly with the new tag.)
+on:
+  workflow_dispatch:
+    inputs:
+      part:
+        description: "Which version component to bump"
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-tags: true
+      - name: Bump, tag, release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PART: ${{ inputs.part }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          LATEST=$(git tag -l 'v*' --sort=-v:refname | head -1); LATEST=${LATEST:-v0.0.0}
+          IFS=. read -r MA MI PA <<< "${LATEST#v}"
+          case "$PART" in
+            patch) PA=$((PA+1));;
+            minor) MI=$((MI+1)); PA=0;;
+            major) MA=$((MA+1)); MI=0; PA=0;;
+          esac
+          NEW="$MA.$MI.$PA"
+          echo "Bumping $LATEST -> v$NEW"
+          sed -i "s/^version = \".*\"/version = \"$NEW\"/" Cargo.toml
+          # Cargo.lock carries the root package's own version — keep
+          # it in step or --locked builds fail.
+          sed -i "/^name = \"tdrive-rs\"/,/^version = /s/^version = \".*\"/version = \"$NEW\"/" Cargo.lock
+          VC=$((MA * 10000 + MI * 100 + PA))
+          sed -i "s/versionCode = .*/versionCode = $VC/; s/versionName = \".*\"/versionName = \"$NEW\"/" android/app/build.gradle.kts
+          git add Cargo.toml Cargo.lock android/app/build.gradle.kts
+          git commit -qm "v$NEW"
+          git tag "v$NEW"
+          git push origin main "v$NEW"
+          gh workflow run release.yml -f "tag=v$NEW" --repo "${{ github.repository }}"

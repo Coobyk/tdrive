@@ -9,7 +9,7 @@ license=('MIT')
 depends=('fuse3' 'openssl' 'fontconfig' 'libxcb' 'libxkbcommon' 'wayland')
 provides=('tdrive')
 conflicts=('tdrive')
-source=("tdrive-linux-x86_64-$pkgver.tar.gz::https://github.com/Coobyk/tdrive-rs/releases/download/v$pkgver/tdrive-rs-linux-x86_64.tar.gz")
+source=("tdrive-rs-linux-x86_64-$pkgver.tar.gz::https://github.com/Coobyk/tdrive-rs/releases/download/v$pkgver/tdrive-rs-linux-x86_64-$pkgver.tar.gz")
 sha256sums=('@SHA256@')
 
 package() {

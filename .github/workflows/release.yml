@@ -23,16 +23,16 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact: tdrive-rs-linux-x86_64.tar.gz
+            artifact: tdrive-rs-linux-x86_64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact: tdrive-rs-windows-x86_64.zip
+            artifact: tdrive-rs-windows-x86_64
           - os: macos-latest
             target: aarch64-apple-darwin
-            artifact: tdrive-rs-macos-aarch64.tar.gz
+            artifact: tdrive-rs-macos-aarch64
           - os: macos-latest
             target: x86_64-apple-darwin
-            artifact: tdrive-rs-macos-x86_64.tar.gz
+            artifact: tdrive-rs-macos-x86_64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -51,18 +51,24 @@ jobs:
           mkdir -p dist
           cp "target/${{ matrix.target }}/release/${BIN}" dist/
           if [ "${{ matrix.target }}" = "x86_64-unknown-linux-gnu" ]; then cp -r packaging dist/; fi
-          tar -czf "${{ matrix.artifact }}" -C dist .
+          VER="${{ inputs.tag || github.ref_name }}"; VER="${VER#v}"
+          ART="${{ matrix.artifact }}-$VER.tar.gz"
+          echo "ART=$ART" >> "$GITHUB_ENV"
+          tar -czf "$ART" -C dist .
       - name: Package (windows)
         if: runner.os == 'Windows'
         shell: bash
         run: |
           mkdir -p dist
           cp "target/${{ matrix.target }}/release/${BIN}.exe" dist/
-          (cd dist && 7z a "../${{ matrix.artifact }}" "${BIN}.exe")
+          VER="${{ inputs.tag || github.ref_name }}"; VER="${VER#v}"
+          ART="${{ matrix.artifact }}-$VER.zip"
+          echo "ART=$ART" >> "$GITHUB_ENV"
+          (cd dist && 7z a "../$ART" "${BIN}.exe")
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: ${{ matrix.artifact }}
+          name: ${{ env.ART }}
+          path: ${{ env.ART }}
 
   android:
     runs-on: ubuntu-latest
@@ -149,7 +155,7 @@ jobs:
           set -euo pipefail
           VER="${{ inputs.tag || github.ref_name }}"; VER="${VER#v}"
           SHA_SRC=$(curl -sL "https://github.com/${{ github.repository }}/archive/v$VER.tar.gz" | sha256sum | cut -d' ' -f1)
-          SHA_BIN=$(gh release download "v$VER" -p 'tdrive-rs-linux-x86_64.tar.gz' --repo "${{ github.repository }}" -O- --clobber 2>/dev/null | sha256sum | cut -d' ' -f1)
+          SHA_BIN=$(gh release download "v$VER" -p 'tdrive-rs-linux-x86_64-*' --repo "${{ github.repository }}" -O- --clobber 2>/dev/null | sha256sum | cut -d' ' -f1)
           publish_pkg() {
             pkg=$1 sha=$2
             work=$(mktemp -d)
