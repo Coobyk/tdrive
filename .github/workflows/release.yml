@@ -84,10 +84,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android, armv7-linux-androideabi
-      - uses: android-actions/setup-android@v3
       - name: NDK + cargo-ndk
         run: |
-          sdkmanager "ndk;27.2.12479018"
+          # ubuntu-latest ships the SDK + cmdline-tools already.
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;27.2.12479018" > /dev/null
           cargo install cargo-ndk
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
       - name: Build native core
