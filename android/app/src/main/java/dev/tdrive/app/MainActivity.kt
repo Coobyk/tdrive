@@ -45,6 +45,7 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
@@ -52,6 +53,7 @@ import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.DriveFolderUpload
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.ExitToApp
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Folder
@@ -59,6 +61,8 @@ import androidx.compose.material.icons.filled.FolderOff
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Undo
@@ -70,6 +74,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
@@ -259,7 +264,11 @@ fun SetupScreen(core: Core, ctx: Context) {
 @Composable
 fun PhoneScreen(core: Core) {
     var phone by remember { mutableStateOf("") }
-    AuthScaffold(title = "Welcome back", subtitle = "Enter the phone number on your Telegram account.") {
+    AuthScaffold(
+        title = "Welcome back",
+        subtitle = "Enter the phone number on your Telegram account.",
+        actions = { AccountMenu(core, onGradient = true) },
+    ) {
         Field(phone, { phone = it }, "Phone number (+1…)", keyboard = KeyboardType.Phone)
         PrimaryButton("Send code", phone.isNotBlank()) { core.requestCode(phone) }
     }
@@ -268,7 +277,11 @@ fun PhoneScreen(core: Core) {
 @Composable
 fun CodeScreen(core: Core) {
     var code by remember { mutableStateOf("") }
-    AuthScaffold(title = "Check your messages", subtitle = "We sent a login code to your Telegram app.") {
+    AuthScaffold(
+        title = "Check your messages",
+        subtitle = "We sent a login code to your Telegram app.",
+        actions = { AccountMenu(core, onGradient = true) },
+    ) {
         Field(code, { code = it }, "Login code", keyboard = KeyboardType.Number)
         PrimaryButton("Sign in", code.isNotBlank()) { core.submitCode(code) }
     }
@@ -277,7 +290,11 @@ fun CodeScreen(core: Core) {
 @Composable
 fun PasswordScreen(core: Core, hint: String) {
     var pw by remember { mutableStateOf("") }
-    AuthScaffold(title = "Two-factor password", subtitle = hint.ifEmpty { "Enter your Telegram cloud password." }) {
+    AuthScaffold(
+        title = "Two-factor password",
+        subtitle = hint.ifEmpty { "Enter your Telegram cloud password." },
+        actions = { AccountMenu(core, onGradient = true) },
+    ) {
         Field(pw, { pw = it }, "Password", password = true)
         PrimaryButton("Unlock", pw.isNotBlank()) { core.submitPassword(pw) }
     }
@@ -300,7 +317,7 @@ fun ChannelsScreen(core: Core) {
                 title = "Your drives",
                 subtitle = "${channels.size} drive${if (channels.size == 1) "" else "s"} ready to explore",
                 actions = {
-                    HeaderAction(Icons.Default.MoreVert, "Sign out") { core.signOut() }
+                    AccountMenu(core, onGradient = true)
                 },
             )
             Column(Modifier.padding(horizontal = 16.dp, vertical = 20.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
@@ -525,6 +542,7 @@ fun BrowserScreen(core: Core, ctx: Context) {
                     IconButton(onClick = { core.listChannels() }) {
                         Icon(Icons.Default.Apps, "Drives")
                     }
+                    AccountMenu(core)
                 }
                 if (nested) {
                     Row(
@@ -845,6 +863,70 @@ private fun RowScope.HeaderAction(icon: ImageVector, desc: String, active: Boole
             .background(Color.White.copy(alpha = if (active) 0.32f else 0.16f)),
     ) {
         Icon(icon, desc, tint = Color.White)
+    }
+}
+
+/// Account switcher — person icon opening the account registry.
+/// `onGradient` styles the trigger for the gradient header; plain
+/// IconButton otherwise (slim top bar).
+@Composable
+fun AccountMenu(core: Core, onGradient: Boolean = false) {
+    val accounts by core.accounts.collectAsState()
+    var open by remember { mutableStateOf(false) }
+    Box {
+        if (onGradient) {
+            IconButton(
+                onClick = { open = true },
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .background(Color.White.copy(alpha = 0.16f)),
+            ) { Icon(Icons.Default.Person, "Accounts", tint = Color.White) }
+        } else {
+            IconButton(onClick = { open = true }) { Icon(Icons.Default.Person, "Accounts") }
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            accounts.forEach { a ->
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            open = false
+                            if (!a.active) core.switchAccount(a.id)
+                        }
+                        .padding(start = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (a.active) {
+                        Icon(Icons.Default.Check, null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                    } else {
+                        Spacer(Modifier.width(18.dp))
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Text(
+                        a.label,
+                        Modifier.weight(1f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                    IconButton(onClick = { core.removeAccount(a.id) }, modifier = Modifier.size(36.dp)) {
+                        Icon(Icons.Default.Delete, "Remove account", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.error)
+                    }
+                }
+            }
+            HorizontalDivider()
+            DropdownMenuItem(
+                text = { Text("Add account") },
+                leadingIcon = { Icon(Icons.Default.PersonAdd, null) },
+                onClick = { open = false; core.addAccount() },
+            )
+            DropdownMenuItem(
+                text = { Text("Sign out") },
+                leadingIcon = { Icon(Icons.Default.ExitToApp, null) },
+                onClick = { open = false; core.signOut() },
+            )
+        }
     }
 }
 

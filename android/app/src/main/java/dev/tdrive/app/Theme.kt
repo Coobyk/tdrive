@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -390,6 +391,7 @@ fun TransferBadge(count: Int) {
 fun AuthScaffold(
     title: String,
     subtitle: String,
+    actions: (@Composable () -> Unit)? = null,
     content: @Composable () -> Unit,
 ) {
     Box(Modifier.fillMaxWidth()) {
@@ -435,6 +437,9 @@ fun AuthScaffold(
                     content()
                 }
             }
+        }
+        if (actions != null) {
+            Box(Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(12.dp)) { actions() }
         }
     }
 }

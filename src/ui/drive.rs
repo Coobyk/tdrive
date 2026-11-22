@@ -1624,6 +1624,15 @@ impl Root {
                     })
                     .child(tool_button("drives", "Drives", Tone::Ghost, back))
                     .child(tool_button(
+                        "person",
+                        "Accounts",
+                        Tone::Ghost,
+                        cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                            this.screen = Screen::Accounts;
+                            cx.notify();
+                        }),
+                    ))
+                    .child(tool_button(
                         if self.trash { "folder" } else { "trash" },
                         if self.trash { "Files" } else { "Trash" },
                         Tone::Ghost,

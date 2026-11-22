@@ -30,6 +30,8 @@ enum Screen {
     AuthPassword,
     Picker,
     Drive,
+    /// Account list — switch, add, remove Telegram logins.
+    Accounts,
 }
 
 enum Modal {
@@ -262,6 +264,9 @@ pub struct Root {
     transfers: BTreeMap<String, TransferUpdate>,
     modal: Option<Modal>,
     signed_in_as: String,
+    /// Account registry mirrored from the worker's Accounts event.
+    accounts: Vec<crate::config::AccountMeta>,
+    active_account: Option<String>,
     f_search: Entity<TextField>,
     f_invite: Entity<TextField>,
     /// Optional 7z password — shown in the review's archive mode.
@@ -362,6 +367,8 @@ impl Root {
             transfers: BTreeMap::new(),
             modal: None,
             signed_in_as: String::new(),
+            accounts: Vec::new(),
+            active_account: None,
             f_search,
             f_invite,
             f_archpw,
@@ -399,6 +406,7 @@ impl Root {
                     api_id: cfg.api_id,
                     api_hash: cfg.api_hash,
                 });
+                let _ = root.tg.send(Command::ListAccounts);
                 root.status = "connecting…".into();
             }
             _ => {
@@ -469,6 +477,14 @@ impl Root {
     fn on_event(&mut self, ev: Event, cx: &mut Context<Self>) {
         match ev {
             Event::Connected { authorized } => {
+                // A (re)connect can follow an account switch — drop the
+                // old account's drive view so nothing stale lingers.
+                self.channel = None;
+                self.namespace = Arc::new(Namespace::new());
+                self.cwd.clear();
+                self.selected.clear();
+                self.transfers.clear();
+                self.auto_open_done = false;
                 if authorized {
                     self.status = "signed in".into();
                     self.screen = Screen::Picker;
@@ -676,8 +692,12 @@ impl Root {
             Event::SignedOut => {
                 self.channel = None;
                 self.namespace = Arc::new(Namespace::new());
-                self.screen = Screen::AuthPhone;
+                self.screen = Screen::Accounts;
                 self.status = "signed out".into();
+            }
+            Event::Accounts { accounts, active } => {
+                self.accounts = accounts;
+                self.active_account = active;
             }
         }
         cx.notify();
@@ -1184,6 +1204,7 @@ impl Render for Root {
                 self.render_auth(window, cx).into_any_element()
             }
             Screen::Picker => self.render_picker(window, cx).into_any_element(),
+            Screen::Accounts => self.render_accounts(window, cx).into_any_element(),
             Screen::Drive => {
                 if self.modal.is_none()
                     && !self.drive_focus.is_focused(window)

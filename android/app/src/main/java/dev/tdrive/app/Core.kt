@@ -35,6 +35,8 @@ data class Transfer(
 
 data class Vault(val configured: Boolean, val unlocked: Boolean, val hint: String)
 
+data class Account(val id: String, val label: String, val active: Boolean)
+
 sealed class Screen {
     data object Setup : Screen()
     data object Phone : Screen()
@@ -87,6 +89,9 @@ class Core private constructor(private val scope: CoroutineScope) {
 
     private val _connecting = MutableStateFlow(false)
     val connecting = _connecting.asStateFlow()
+
+    private val _accounts = MutableStateFlow<List<Account>>(emptyList())
+    val accounts = _accounts.asStateFlow()
 
     @Volatile
     private var running = true
@@ -155,6 +160,10 @@ class Core private constructor(private val scope: CoroutineScope) {
     fun fetchThumbnail(fileId: String) = send("FetchThumbnail", JSONObject().put("file_id", fileId))
     fun fetchPreview(fileId: String) = send("FetchPreview", JSONObject().put("file_id", fileId))
     fun signOut() = send("SignOut")
+    fun listAccounts() = send("ListAccounts")
+    fun switchAccount(id: String) = send("SwitchAccount", JSONObject().put("id", id))
+    fun addAccount() = send("AddAccount")
+    fun removeAccount(id: String) = send("RemoveAccount", JSONObject().put("id", id))
     fun resumeUploads() = send("ResumeUploads")
     fun liveSync() = send("LiveSync")
     fun setTrashMode(v: Boolean) { _trashMode.value = v }
@@ -181,6 +190,9 @@ class Core private constructor(private val scope: CoroutineScope) {
                 _connecting.value = false
                 val authorized = ev.getJSONObject("args").getBoolean("authorized")
                 _screen.value = if (authorized) Screen.Channels else Screen.Phone
+                _entries.value = emptyList()
+                _cwd.value = ""
+                _transfers.value = emptyMap()
                 if (authorized) listChannels()
             }
             "CodeSent" -> _screen.value = Screen.Code
@@ -229,6 +241,18 @@ class Core private constructor(private val scope: CoroutineScope) {
             "VaultState" -> {
                 val v = ev.getJSONObject("args")
                 _vault.value = Vault(v.getBoolean("configured"), v.getBoolean("unlocked"), v.optString("hint"))
+            }
+            "Accounts" -> {
+                val args = ev.getJSONObject("args")
+                val active = args.optString("active")
+                val arr = args.getJSONArray("accounts")
+                val list = mutableListOf<Account>()
+                for (i in 0 until arr.length()) {
+                    val a = arr.getJSONObject(i)
+                    val id = a.getString("id")
+                    list.add(Account(id, a.getString("label"), id == active))
+                }
+                _accounts.value = list
             }
             "Status" -> _status.value = ev.getJSONObject("args").getString("message")
             "Error" -> _status.value = ev.getJSONObject("args").optString("message")

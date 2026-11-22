@@ -201,6 +201,18 @@ pub enum Command {
     AddSyncPair { local: PathBuf, remote: String },
     LiveSync,
     SignOut,
+    /// Emit the account registry to the UI.
+    ListAccounts,
+    /// Tear down the session, repoint the active slot, reconnect.
+    SwitchAccount {
+        id: String,
+    },
+    /// Fresh empty slot → phone-login flow; labelled after sign-in.
+    AddAccount,
+    /// Drop `id`'s registry entry and wipe its data dir.
+    RemoveAccount {
+        id: String,
+    },
     // Internal task→worker messages — spawned transfers report journal
     // and namespace mutations through the loop so state stays owned here.
     /// A locally-emitted op that must be folded into the namespace.
@@ -316,6 +328,12 @@ pub enum Event {
         dead: usize,
         scanned: usize,
     },
+    /// Account registry + the active slot — emitted on spawn, login,
+    /// switch and removal.
+    Accounts {
+        accounts: Vec<crate::paths::AccountMeta>,
+        active: Option<String>,
+    },
     SignedOut,
 }
 
@@ -393,6 +411,14 @@ pub fn spawn() -> Handle {
             .build()
             .expect("tokio runtime");
         rt.block_on(async move {
+            // Registry + legacy-layout migration must finish before any
+            // path fn resolves — they all hang off the active slot.
+            if let Err(e) = crate::paths::init_accounts() {
+                let _ = ev_tx.try_send(Event::Error {
+                    context: "accounts",
+                    message: e.to_string(),
+                });
+            }
             // Periodic backup watcher — the poll loop TDrive runs for its
             // photo-backup lifecycle.
             {
@@ -557,6 +583,7 @@ impl Worker {
     }
 
     async fn run(&mut self) {
+        self.emit_accounts();
         while let Some(cmd) = self.rx.recv().await {
             // Panics inside grammers (min entities, malformed TL) must not
             // unwind through the loop — a dead worker leaves the UI dumb.
@@ -656,6 +683,13 @@ impl Worker {
             }
             Command::LiveSync => self.live_sync().await,
             Command::SignOut => self.sign_out().await,
+            Command::ListAccounts => {
+                self.emit_accounts();
+                Ok(())
+            }
+            Command::SwitchAccount { id } => self.switch_account(&id).await,
+            Command::AddAccount => self.add_account().await,
+            Command::RemoveAccount { id } => self.remove_account(&id).await,
             Command::OpApplied { header, msg_id } => {
                 let mut ns = (*self.namespace).clone();
                 if !ns.apply_message(msg_id, &header) {

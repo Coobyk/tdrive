@@ -145,8 +145,103 @@ impl Worker {
         self.password_token = None;
         if let Ok(me) = self.client()?.get_me().await {
             self.actor_id = me.id().bare_id_unchecked();
+            let name = me.full_name();
+            if !name.is_empty() {
+                let _ = crate::paths::label_active(&name);
+                self.emit_accounts();
+            }
         }
         self.list_channels().await
+    }
+
+    /// Kill the connection — only for account teardown. Sign-out keeps
+    /// the client + pool: grammers accepts a fresh login on the same
+    /// connection, so dropping it would strand the worker with no path
+    /// back to the phone screen.
+    fn teardown_client(&mut self) {
+        if let Some(h) = self.pool_runner.take() {
+            h.abort();
+        }
+        self.client = None;
+    }
+
+    /// Drop every trace of the live session's drive state — the local
+    /// half of sign_out and of an account switch alike.
+    fn reset_session_state(&mut self) {
+        for (_, token) in self.cancels.drain() {
+            token.cancel();
+        }
+        self.cancelled.clear();
+        self.paused_downloads.clear();
+        self.pending_optimize.clear();
+        self.reserved_names.clear();
+        *self.peer_cell.lock().unwrap() = None;
+        *self.ns_shared.lock().unwrap() = Arc::new(Namespace::new());
+        self.channel_id = 0;
+        self.channel_kind = DriveKind::Personal;
+        self.login_token = None;
+        self.password_token = None;
+        self.actor_id = 0;
+        *self.master_key.lock().unwrap() = None;
+        self.namespace = Arc::new(Namespace::new());
+    }
+
+    /// Swap the journal for the slot the active dir now points at —
+    /// call only after `reset_session_state` + activate.
+    fn reload_account_state(&mut self) {
+        if let Ok(p) = crate::paths::journal_path() {
+            self.journal_path = p;
+            self.journal = Journal::load(&self.journal_path);
+        }
+    }
+
+    pub(super) fn emit_accounts(&self) {
+        match crate::paths::Accounts::load() {
+            Ok(acc) => self.emit(Event::Accounts {
+                accounts: acc.accounts,
+                active: acc.active,
+            }),
+            Err(e) => self.emit(Event::Error {
+                context: "accounts",
+                message: e.to_string(),
+            }),
+        }
+    }
+
+    pub(super) async fn switch_account(&mut self, id: &str) -> Result<()> {
+        self.teardown_client();
+        self.reset_session_state();
+        let mut acc = crate::paths::Accounts::load()?;
+        acc.activate(id)?;
+        self.reload_account_state();
+        self.emit_accounts();
+        self.connect(self.api_id, self.api_hash.clone()).await
+    }
+
+    pub(super) async fn add_account(&mut self) -> Result<()> {
+        self.teardown_client();
+        self.reset_session_state();
+        crate::paths::create_account()?;
+        self.reload_account_state();
+        self.emit_accounts();
+        self.connect(self.api_id, self.api_hash.clone()).await
+    }
+
+    pub(super) async fn remove_account(&mut self, id: &str) -> Result<()> {
+        let was_active = crate::paths::Accounts::load()?.active.as_deref() == Some(id);
+        crate::paths::remove_account(id)?;
+        if was_active {
+            self.teardown_client();
+            self.reset_session_state();
+            // Re-init activates the next slot (or mints a default).
+            crate::paths::init_accounts()?;
+            self.reload_account_state();
+            self.emit_accounts();
+            self.connect(self.api_id, self.api_hash.clone()).await
+        } else {
+            self.emit_accounts();
+            Ok(())
+        }
     }
 
     pub(super) async fn sign_out(&mut self) -> Result<()> {
@@ -155,18 +250,7 @@ impl Worker {
         }
         // Keep the client — grammers supports re-login on the same pool;
         // dropping it strands the worker with no path back.
-        for (_, token) in self.cancels.drain() {
-            token.cancel();
-        }
-        self.paused_downloads.clear();
-        *self.peer_cell.lock().unwrap() = None;
-        *self.ns_shared.lock().unwrap() = Arc::new(Namespace::new());
-        self.channel_id = 0;
-        self.channel_kind = DriveKind::Personal;
-        self.login_token = None;
-        self.password_token = None;
-        *self.master_key.lock().unwrap() = None;
-        self.namespace = Arc::new(Namespace::new());
+        self.reset_session_state();
         self.emit(Event::SignedOut);
         Ok(())
     }
