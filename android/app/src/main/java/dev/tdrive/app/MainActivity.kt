@@ -10,6 +10,7 @@ import androidx.activity.compose.PredictiveBackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -51,6 +52,8 @@ import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.DriveFolderUpload
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOff
 import androidx.compose.material.icons.filled.Info
@@ -87,6 +90,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -636,10 +640,22 @@ fun BrowserScreen(core: Core, ctx: Context) {
                 elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
             ) {
                 Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    var transfersExpanded by rememberSaveable { mutableStateOf(true) }
+                    Row(
+                        Modifier.fillMaxWidth().clickable { transfersExpanded = !transfersExpanded },
+                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
                         Icon(Icons.Default.CloudUpload, null, tint = MaterialTheme.colorScheme.onTertiaryContainer, modifier = Modifier.size(18.dp))
                         Text("${activeTransfers.size} transfer${if (activeTransfers.size == 1) "" else "s"}", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onTertiaryContainer)
+                        Spacer(Modifier.weight(1f))
+                        Icon(
+                            if (transfersExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                            if (transfersExpanded) "Collapse transfers" else "Expand transfers",
+                            tint = MaterialTheme.colorScheme.onTertiaryContainer, modifier = Modifier.size(20.dp),
+                        )
                     }
+                    AnimatedVisibility(transfersExpanded) {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     activeTransfers.take(3).forEach { t ->
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text(t.label, Modifier.weight(1f), maxLines = 1, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onTertiaryContainer)
@@ -651,6 +667,16 @@ fun BrowserScreen(core: Core, ctx: Context) {
                                 Icon(Icons.Default.Close, "Cancel", modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onTertiaryContainer)
                             }
                         }
+                    }
+                    }
+                    }
+                    if (!transfersExpanded) {
+                        val sent = activeTransfers.sumOf { it.sent }
+                        val total = activeTransfers.sumOf { it.total }
+                        LinearProgressIndicator(
+                            progress = { if (total > 0) (sent.toFloat() / total).coerceIn(0f, 1f) else 0f },
+                            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(50)),
+                        )
                     }
                 }
             }
