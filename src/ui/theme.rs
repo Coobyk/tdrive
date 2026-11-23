@@ -2,7 +2,7 @@
 //! the app is single-window, so the current window's appearance is
 //! the theme.
 
-use gpui::{Hsla, WindowAppearance, hsla, rgb, rgba};
+use gpui::{Hsla, WindowAppearance, rgb, rgba};
 
 #[derive(Clone, Copy)]
 pub(crate) struct Theme {
@@ -37,49 +37,49 @@ fn c(v: u32) -> Hsla {
     rgb(v).into()
 }
 
-/// One Dark — the palette the app shipped with.
+/// Neutral dark — zinc greys, near-white accent, muted semantics.
 fn dark() -> Theme {
     Theme {
-        bg: c(0x282c34),
-        panel: c(0x21252b),
-        panel2: c(0x2c313a),
-        border: c(0x3e4451),
-        text: c(0xabb2bf),
-        dim: c(0x5c6370),
-        ghost: c(0x9ea8ba),
-        accent: c(0x61afef),
-        accent_hover: c(0x7db9f2),
-        on_accent: c(0x1e222a),
-        selected: c(0x3e4452),
-        accent_soft: hsla(207. / 360., 0.82, 0.66, 0.13),
-        danger: c(0xe06c75),
-        danger_soft: rgba(0xe06c751f).into(),
-        ok: c(0x98c379),
-        file_icon: c(0x4d5666),
-        field: c(0x1e222a),
+        bg: c(0x18191b),
+        panel: c(0x131416),
+        panel2: c(0x1f2124),
+        border: c(0x2c2f33),
+        text: c(0xd6d6d6),
+        dim: c(0x74767a),
+        ghost: c(0xa5a7ab),
+        accent: c(0xe4e4e6),
+        accent_hover: c(0xf2f2f3),
+        on_accent: c(0x17181a),
+        selected: c(0x2a2d31),
+        accent_soft: rgba(0xffffff17).into(),
+        danger: c(0xc96a6a),
+        danger_soft: rgba(0xc96a6a1f).into(),
+        ok: c(0x86a986),
+        file_icon: c(0x53565a),
+        field: c(0x0f1012),
     }
 }
 
-/// One Light — the matching light variant.
+/// Neutral light — same greys inverted, near-black accent.
 fn light() -> Theme {
     Theme {
-        bg: c(0xfafafa),
-        panel: c(0xf0f0f2),
-        panel2: c(0xe5e6ea),
-        border: c(0xd4d6dc),
-        text: c(0x383a42),
-        dim: c(0x8a8f9e),
-        ghost: c(0x5c6172),
-        accent: c(0x2f6fdf),
-        accent_hover: c(0x4a86e8),
-        on_accent: c(0xffffff),
-        selected: c(0xdde2ea),
-        accent_soft: hsla(222. / 360., 0.80, 0.55, 0.12),
-        danger: c(0xcf4436),
-        danger_soft: rgba(0xcf44361f).into(),
-        ok: c(0x4c9e4f),
-        file_icon: c(0xb0b3bc),
-        field: c(0xeaeaee),
+        bg: c(0xf7f7f6),
+        panel: c(0xeeeeec),
+        panel2: c(0xe4e4e1),
+        border: c(0xd8d8d5),
+        text: c(0x2b2b2b),
+        dim: c(0x8b8b8b),
+        ghost: c(0x595959),
+        accent: c(0x232323),
+        accent_hover: c(0x383838),
+        on_accent: c(0xfafafa),
+        selected: c(0xdededa),
+        accent_soft: rgba(0x00000017).into(),
+        danger: c(0xa8443f),
+        danger_soft: rgba(0xa8443f1a).into(),
+        ok: c(0x5e8a5e),
+        file_icon: c(0xa3a3a0),
+        field: c(0xececea),
     }
 }
 

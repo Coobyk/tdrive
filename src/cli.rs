@@ -176,6 +176,9 @@ impl Cli {
             bail!("not signed in — run `tdrive login` first");
         }
         self.send(Command::ListChannels)?;
+        // Absorbing other events resets next_event's clock, so bound
+        // the wait on Channels by a hard deadline instead.
+        let deadline = std::time::Instant::now() + Duration::from_secs(180);
         let channels = loop {
             let ev = self.next_event(Duration::from_secs(60)).await?;
             self.absorb(&ev);
@@ -183,6 +186,9 @@ impl Cli {
                 Event::Channels(list) => break list,
                 Event::Error { context, message } => eprintln!("{context}: {message}"),
                 _ => {}
+            }
+            if std::time::Instant::now() > deadline {
+                bail!("timed out waiting for the drive list");
             }
         };
         let info = pick_drive(&channels, sel, cfg)?;
@@ -300,6 +306,7 @@ impl Cli {
             bail!("not signed in — run `tdrive login` first");
         }
         self.send(Command::ListChannels)?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(180);
         loop {
             match self.next_event(Duration::from_secs(60)).await? {
                 Event::Channels(list) => {
@@ -310,6 +317,9 @@ impl Cli {
                 }
                 Event::Error { context, message } => eprintln!("{context}: {message}"),
                 _ => {}
+            }
+            if std::time::Instant::now() > deadline {
+                bail!("timed out waiting for the drive list");
             }
         }
     }

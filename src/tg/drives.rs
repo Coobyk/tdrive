@@ -17,6 +17,14 @@ impl Worker {
                     }
                     match ch.kind() {
                         Some(ChannelKind::Broadcast) => {
+                            // A read-only subscription can't hold drive
+                            // ops — only creators and admins can post —
+                            // so it can never be a drive. On a big
+                            // channel list this skips the remote
+                            // verify for almost every entry.
+                            if !ch.raw.creator && ch.raw.admin_rights.is_none() {
+                                continue;
+                            }
                             (DriveKind::Personal, ch.title().to_string())
                         }
                         _ => continue,
@@ -43,14 +51,40 @@ impl Worker {
         // sniff for TDX1 ops (covers upstream-created drives on a new
         // install and shared drives joined by invite).
         let mut out = Vec::new();
+        let mut unknown = Vec::new();
         for (peer_ref, info) in candidates {
-            if self.is_known_drive(info.id)
-                || Self::history_has_tdx(&client, peer_ref).await
-            {
-                // Positive identifications persist — later listings skip
-                // the history round-trip for channels already proven.
-                let _ = config::mark_drive(info.id, &info.title);
+            if self.is_known_drive(info.id) {
                 out.push(info);
+            } else {
+                unknown.push((peer_ref, info));
+            }
+        }
+        // Remote verification is bounded and concurrent: a flood-waited
+        // getHistory blocks inside grammers' retry for minutes, and
+        // sequential 15s waits compound. Timing out fails open —
+        // showing a non-drive is far better than hiding a real one —
+        // but it doesn't persist to the registry, so the guess gets
+        // re-checked next launch.
+        let checks = futures_util::future::join_all(unknown.iter().map(|(peer_ref, _)| {
+            let client = client.clone();
+            let peer = *peer_ref;
+            async move {
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(15),
+                    Self::verify_remote(&client, peer),
+                )
+                .await
+            }
+        }))
+        .await;
+        for ((_, info), verdict) in unknown.into_iter().zip(checks) {
+            match verdict {
+                Ok(true) => {
+                    let _ = config::mark_drive(info.id, &info.title);
+                    out.push(info);
+                }
+                Ok(false) => {}
+                Err(_) => out.push(info),
             }
         }
         out.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
@@ -79,6 +113,16 @@ impl Worker {
                 .any(|j| j.channel_id == channel_id)
     }
 
+    /// History sniff, then the about marker — always bounded by the
+    /// caller's timeout since either request can stall on flood waits.
+    async fn verify_remote(
+        client: &grammers_client::Client,
+        peer: PeerRef,
+    ) -> bool {
+        Self::history_has_tdx(client, peer).await
+            || Self::about_is_tdrive(client, peer).await
+    }
+
     /// Scan recent history for a TDX1 op — a drive's namespace ops are
     /// all `TDX1|…` text messages. 25 msgs ≈ one getHistory page.
     async fn history_has_tdx(
@@ -94,12 +138,38 @@ impl Worker {
                         return true;
                     }
                     seen += 1;
-                    if seen >= 25 {
+                    if seen >= 50 {
                         return false;
                     }
                 }
                 _ => return false,
             }
+        }
+    }
+
+    /// Last resort for drives with no content yet — create_channel
+    /// stamps `about: "TDrive storage"` on every drive it makes, so a
+    /// fresh or never-used drive is still identifiable. One
+    /// GetFullChannel RTT, only reached when every cheaper signal
+    /// already failed.
+    async fn about_is_tdrive(
+        client: &grammers_client::Client,
+        peer: PeerRef,
+    ) -> bool {
+        use grammers_client::tl;
+        let Ok(tl::enums::messages::ChatFull::Full(full)) = client
+            .invoke(&tl::functions::channels::GetFullChannel {
+                channel: peer.into(),
+            })
+            .await
+        else {
+            return false;
+        };
+        match full.full_chat {
+            tl::enums::ChatFull::ChannelFull(cf) => {
+                cf.about.to_lowercase().contains("tdrive")
+            }
+            _ => false,
         }
     }
 
