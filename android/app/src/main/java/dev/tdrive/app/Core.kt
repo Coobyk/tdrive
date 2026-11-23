@@ -218,6 +218,7 @@ class Core private constructor(private val scope: CoroutineScope) {
                 _cwd.value = ""
                 _trashMode.value = false
                 _screen.value = Screen.Browser
+                if (args.optInt("pending_uploads") > 0) resumeUploads()
             }
             "Namespace" -> {
                 val snap = ev.getJSONObject("args")

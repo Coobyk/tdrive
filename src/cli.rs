@@ -195,17 +195,27 @@ impl Cli {
         // ChannelOpened and the first post-sync projection arrive in
         // either order; sync pushes a namespace event unconditionally.
         let mut opened = false;
+        let mut pending = 0usize;
         loop {
             let ev = self.next_event(Duration::from_secs(120)).await?;
             self.absorb(&ev);
             match ev {
-                Event::ChannelOpened { .. } => opened = true,
+                Event::ChannelOpened { pending_uploads, .. } => {
+                    opened = true;
+                    pending = pending_uploads;
+                }
                 Event::Error { context, message } => eprintln!("{context}: {message}"),
                 _ => {}
             }
             if opened && self.ns.is_some() {
                 break;
             }
+        }
+        // The GUI auto-resumes journaled uploads on open — the CLI
+        // matches it so a crashed `tdrive upload` picks back up.
+        if pending > 0 {
+            eprintln!("resuming {pending} interrupted upload(s)");
+            self.send(Command::ResumeUploads)?;
         }
         Ok(info)
     }
