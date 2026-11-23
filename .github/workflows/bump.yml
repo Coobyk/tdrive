@@ -50,8 +50,10 @@ jobs:
           AUTO=false; PART=${PART:-patch}
           if [ "${{ github.event_name }}" = "push" ]; then
             AUTO=true
-            if git rev-parse -q --verify "refs/tags/v$HEADVER" >/dev/null; then
-              echo "v$HEADVER already tagged — nothing to do"; exit 0
+            # A bare "vX.Y.Z" commit is a manual/bot version bump — the
+            # release for it is handled elsewhere; never double-bump.
+            if git log -1 --pretty=%s | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "version-only commit — nothing to do"; exit 0
             fi
             # A push that already raised the version gets tagged as-is;
             # otherwise patch-bump on top of the latest release tag.
