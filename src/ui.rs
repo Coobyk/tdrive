@@ -267,6 +267,8 @@ pub struct Root {
     /// Account registry mirrored from the worker's Accounts event.
     accounts: Vec<crate::config::AccountMeta>,
     active_account: Option<String>,
+    /// Where the accounts screen returns to — set on every entry.
+    accounts_from: Screen,
     f_search: Entity<TextField>,
     f_invite: Entity<TextField>,
     /// Optional 7z password — shown in the review's archive mode.
@@ -369,6 +371,7 @@ impl Root {
             signed_in_as: String::new(),
             accounts: Vec::new(),
             active_account: None,
+            accounts_from: Screen::Picker,
             f_search,
             f_invite,
             f_archpw,
@@ -692,6 +695,7 @@ impl Root {
             Event::SignedOut => {
                 self.channel = None;
                 self.namespace = Arc::new(Namespace::new());
+                self.accounts_from = Screen::Picker;
                 self.screen = Screen::Accounts;
                 self.status = "signed out".into();
             }
@@ -700,6 +704,27 @@ impl Root {
                 self.active_account = active;
             }
         }
+        cx.notify();
+    }
+
+    /// Active account's display label for account-button chrome —
+    /// "Accounts" until the registry arrives or the slot is unnamed.
+    fn account_label(&self) -> String {
+        self.active_account
+            .as_deref()
+            .and_then(|id| self.accounts.iter().find(|a| a.id == id))
+            .map(|a| a.label.clone())
+            .filter(|l| !l.is_empty())
+            .unwrap_or_else(|| "Accounts".into())
+    }
+
+    /// Navigate to the accounts screen, remembering where to return.
+    fn open_accounts(&mut self, cx: &mut Context<Self>) {
+        self.accounts_from = match self.screen {
+            Screen::Drive => Screen::Drive,
+            _ => Screen::Picker,
+        };
+        self.screen = Screen::Accounts;
         cx.notify();
     }
 

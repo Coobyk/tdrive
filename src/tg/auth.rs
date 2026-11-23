@@ -201,10 +201,24 @@ impl Worker {
 
     pub(super) fn emit_accounts(&self) {
         match config::Accounts::load() {
-            Ok(acc) => self.emit(Event::Accounts {
-                accounts: acc.accounts,
-                active: acc.active,
-            }),
+            Ok(mut acc) => {
+                // Attach each slot's known drive titles so the UI can
+                // show what every login holds, not only the active one.
+                for m in &mut acc.accounts {
+                    m.drives = {
+                        let mut d: Vec<String> = config::known_drives_for(&m.id)
+                            .into_values()
+                            .filter(|t| !t.is_empty())
+                            .collect();
+                        d.sort_by_key(|s| s.to_lowercase());
+                        d
+                    };
+                }
+                self.emit(Event::Accounts {
+                    accounts: acc.accounts,
+                    active: acc.active,
+                });
+            }
             Err(e) => self.emit(Event::Error {
                 context: "accounts",
                 message: e.to_string(),

@@ -702,10 +702,6 @@ impl Root {
             this.send(Command::ListChannels);
             cx.notify();
         });
-        let sign_out = cx.listener(|this, _: &MouseDownEvent, _, cx| {
-            this.send(Command::SignOut);
-            cx.notify();
-        });
         let trash_toggle = cx.listener(|this, _: &MouseDownEvent, _, cx| {
             this.trash = !this.trash;
             this.selected.clear();
@@ -1625,11 +1621,10 @@ impl Root {
                     .child(tool_button("drives", "Drives", Tone::Ghost, back))
                     .child(tool_button(
                         "person",
-                        "Accounts",
+                        &self.account_label(),
                         Tone::Ghost,
                         cx.listener(|this, _: &MouseDownEvent, _, cx| {
-                            this.screen = Screen::Accounts;
-                            cx.notify();
+                            this.open_accounts(cx);
                         }),
                     ))
                     .child(tool_button(
@@ -1637,8 +1632,7 @@ impl Root {
                         if self.trash { "Files" } else { "Trash" },
                         Tone::Ghost,
                         trash_toggle,
-                    ))
-                    .child(tool_button("log_out", "Sign out", Tone::Ghost, sign_out)),
+                    )),
             )
             .child(actions)
             .child(

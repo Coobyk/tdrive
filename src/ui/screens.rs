@@ -166,18 +166,29 @@ impl Root {
         for acc in &self.accounts {
             let id = acc.id.clone();
             let active = self.active_account.as_deref() == Some(&*acc.id);
+            let drives = if acc.drives.is_empty() {
+                "no drives yet".to_string()
+            } else {
+                acc.drives.join("  ·  ")
+            };
+            let row = div()
+                .id(SharedString::from(format!("acct-{}", acc.id)))
+                .flex()
+                .items_center()
+                .justify_between()
+                .w_full()
+                .px_3()
+                .py_2()
+                .rounded_md();
+            // Active row reads selected and isn't clickable; inactive
+            // rows hover and switch on click.
+            let row = if active {
+                row.bg(theme().panel2)
+            } else {
+                row.hover(|s| s.bg(theme().panel2)).cursor_pointer()
+            };
             list = list.child(
-                div()
-                    .id(SharedString::from(format!("acct-{}", acc.id)))
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .w_full()
-                    .px_3()
-                    .py_2()
-                    .rounded_md()
-                    .hover(|s| s.bg(theme().panel2))
-                    .cursor_pointer()
+                row
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _, _, cx| {
@@ -193,37 +204,100 @@ impl Root {
                             .flex()
                             .items_center()
                             .gap_2()
-                            .child(super::controls::icon_sized("person", 15., theme().accent))
-                            .child(div().text_color(theme().text).child(acc.label.clone()))
-                            .child(if active {
+                            .child(super::controls::icon_sized(
+                                "person",
+                                15.,
+                                theme().accent,
+                            ))
+                            .child(
                                 div()
-                                    .text_xs()
-                                    .text_color(theme().accent)
-                                    .child("active")
-                                    .into_any_element()
-                            } else {
-                                div().into_any_element()
-                            }),
+                                    .flex()
+                                    .flex_col()
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap_2()
+                                            .child(
+                                                div()
+                                                    .text_color(theme().text)
+                                                    .child(acc.label.clone()),
+                                            )
+                                            .child(if active {
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(theme().accent)
+                                                    .child("active")
+                                                    .into_any_element()
+                                            } else {
+                                                div().into_any_element()
+                                            }),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(theme().dim)
+                                            .child(drives),
+                                    ),
+                            ),
                     )
                     .child(
                         div()
-                            .id(SharedString::from(format!("acct-rm-{}", acc.id)))
-                            .cursor_pointer()
-                            .px_1()
-                            .rounded_sm()
-                            .hover(|s| s.bg(theme().danger.opacity(0.2)))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener({
-                                    let id = acc.id.clone();
-                                    move |this, _, _, cx| {
-                                        cx.stop_propagation();
-                                        this.send(Command::RemoveAccount { id: id.clone() });
-                                        cx.notify();
-                                    }
-                                }),
-                            )
-                            .child(super::controls::icon_sized("trash", 13., theme().danger)),
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .child(if active {
+                                div()
+                                    .id(SharedString::from(format!("acct-out-{}", acc.id)))
+                                    .cursor_pointer()
+                                    .px_1()
+                                    .py(px(1.))
+                                    .rounded_sm()
+                                    .hover(|s| s.bg(theme().danger.opacity(0.2)))
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(move |this, _, _, cx| {
+                                            cx.stop_propagation();
+                                            this.send(Command::SignOut);
+                                            cx.notify();
+                                        }),
+                                    )
+                                    .child(super::controls::icon_sized(
+                                        "log_out",
+                                        13.,
+                                        theme().dim,
+                                    ))
+                                    .into_any_element()
+                            } else {
+                                div().into_any_element()
+                            })
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!("acct-rm-{}", acc.id)))
+                                    .cursor_pointer()
+                                    .px_1()
+                                    .py(px(1.))
+                                    .rounded_sm()
+                                    .hover(|s| s.bg(theme().danger.opacity(0.2)))
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener({
+                                            let id = acc.id.clone();
+                                            move |this, _, _, cx| {
+                                                cx.stop_propagation();
+                                                this.send(Command::RemoveAccount {
+                                                    id: id.clone(),
+                                                });
+                                                cx.notify();
+                                            }
+                                        }),
+                                    )
+                                    .child(super::controls::icon_sized(
+                                        "trash",
+                                        13.,
+                                        theme().danger,
+                                    )),
+                            ),
                     ),
             );
         }
@@ -273,10 +347,16 @@ impl Root {
                     }),
                 ))
                 .child(button_secondary(
-                    "Back to drives",
+                    if self.accounts_from == Screen::Drive {
+                        "Back to files"
+                    } else {
+                        "Back to drives"
+                    },
                     cx.listener(|this, _: &MouseDownEvent, _, cx| {
-                        this.screen = Screen::Picker;
-                        this.send(Command::ListChannels);
+                        this.screen = this.accounts_from.clone();
+                        if this.screen == Screen::Picker {
+                            this.send(Command::ListChannels);
+                        }
                         cx.notify();
                     }),
                 )),
@@ -390,10 +470,9 @@ impl Root {
                     }),
                 ))
                 .child(button_secondary(
-                    "Accounts",
+                    &self.account_label(),
                     cx.listener(|this, _: &MouseDownEvent, _, cx| {
-                        this.screen = Screen::Accounts;
-                        cx.notify();
+                        this.open_accounts(cx);
                     }),
                 )),
         )

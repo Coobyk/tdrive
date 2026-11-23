@@ -32,6 +32,10 @@ fn data_dir() -> Result<PathBuf> {
 pub struct AccountMeta {
     pub id: String,
     pub label: String,
+    /// Drive titles known for this account — runtime-only, filled by
+    /// the worker from that account's drives.json when emitting.
+    #[serde(default, skip_serializing)]
+    pub drives: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -137,6 +141,7 @@ pub fn init_accounts() -> Result<Accounts> {
         acc.accounts.push(AccountMeta {
             id: "default".into(),
             label: "Telegram".into(),
+            drives: Vec::new(),
         });
         acc.active = Some("default".into());
         acc.save()?;
@@ -162,6 +167,7 @@ pub fn init_accounts() -> Result<Accounts> {
         acc.accounts.push(AccountMeta {
             id: "default".into(),
             label: "Telegram".into(),
+            drives: Vec::new(),
         });
     }
     let active = acc
@@ -189,6 +195,7 @@ pub fn create_account() -> Result<AccountMeta> {
     let meta = AccountMeta {
         id: id.clone(),
         label: "New account".into(),
+        drives: Vec::new(),
     };
     acc.accounts.push(meta.clone());
     acc.activate(&id)?;
@@ -264,24 +271,45 @@ pub fn namespace_path(channel_id: i64) -> Result<PathBuf> {
     Ok(active_dir()?.join(format!("namespace-{channel_id}.json")))
 }
 
-/// Channels confirmed as drives — persists sniff results so drive
-/// listing doesn't re-scan history on every launch.
+/// Channels confirmed as drives, id → last-seen title. Titles let the
+/// UI say what each login holds without a connection; they're
+/// refreshed on every identification.
 fn drives_path() -> Result<PathBuf> {
     Ok(active_dir()?.join("drives.json"))
 }
 
-pub fn known_drives() -> std::collections::HashSet<i64> {
-    drives_path()
-        .ok()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+fn load_drives_map(path: PathBuf) -> std::collections::HashMap<i64, String> {
+    let Ok(s) = std::fs::read_to_string(path) else {
+        return Default::default();
+    };
+    // Old registry was a bare id array — titles fill in on next listing.
+    if let Ok(ids) = serde_json::from_str::<Vec<i64>>(&s) {
+        return ids.into_iter().map(|id| (id, String::new())).collect();
+    }
+    serde_json::from_str(&s).unwrap_or_default()
 }
 
-pub fn mark_drive(channel_id: i64) -> Result<()> {
-    let mut set = known_drives();
-    if set.insert(channel_id) {
-        std::fs::write(drives_path()?, serde_json::to_string(&set)?)?;
+pub fn known_drives() -> std::collections::HashMap<i64, String> {
+    load_drives_map(drives_path().unwrap_or_default())
+}
+
+pub fn known_drives_for(account_id: &str) -> std::collections::HashMap<i64, String> {
+    load_drives_map(
+        account_dir(account_id)
+            .unwrap_or_default()
+            .join("drives.json"),
+    )
+}
+
+pub fn mark_drive(channel_id: i64, title: &str) -> Result<()> {
+    let mut map = known_drives();
+    let dirty = match map.get(&channel_id) {
+        Some(old) => !title.is_empty() && old != title,
+        None => true,
+    };
+    if dirty {
+        map.insert(channel_id, title.to_string());
+        std::fs::write(drives_path()?, serde_json::to_string(&map)?)?;
     }
     Ok(())
 }

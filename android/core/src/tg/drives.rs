@@ -49,7 +49,7 @@ impl Worker {
             {
                 // Positive identifications persist — later listings skip
                 // the history round-trip for channels already proven.
-                let _ = paths::mark_drive(info.id);
+                let _ = paths::mark_drive(info.id, &info.title);
                 out.push(info);
             }
         }
@@ -63,7 +63,7 @@ impl Worker {
     /// snapshot *existence* doesn't count: the old picker let any
     /// channel be opened, leaving empty snapshots behind.
     fn is_known_drive(&self, channel_id: i64) -> bool {
-        if paths::known_drives().contains(&channel_id)
+        if paths::known_drives().contains_key(&channel_id)
             || paths::snapshot_has_entries(channel_id)
         {
             return true;
@@ -125,7 +125,7 @@ impl Worker {
             .await?;
         let chats = chats_from(updates)?;
         for c in chats {
-            let _ = paths::mark_drive(c.id);
+            let _ = paths::mark_drive(c.id, &c.title);
             self.open_channel(
                 c.id,
                 c.access_hash.unwrap_or(0),

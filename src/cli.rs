@@ -244,10 +244,15 @@ impl Cli {
                 Event::Accounts { accounts, active } => {
                     for a in accounts {
                         println!(
-                            "{}{}\t{}",
+                            "{}{}\t{}{}",
                             a.id,
                             if active.as_deref() == Some(&*a.id) { " *" } else { "" },
-                            a.label
+                            a.label,
+                            if a.drives.is_empty() {
+                                String::new()
+                            } else {
+                                format!("\t{}", a.drives.join(", "))
+                            }
                         );
                     }
                     return Ok(());
