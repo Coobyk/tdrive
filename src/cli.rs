@@ -14,19 +14,19 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-const USAGE: &str = "tdrive-rs — terminal interface
+const USAGE: &str = "tdrive — terminal interface
 
-  tdrive-rs                 launch the GUI
-  tdrive-rs drives          list drives (channels)
-  tdrive-rs ls [path]       list remote entries (default: root)
-  tdrive-rs upload <paths>… [--to folder] [--wrap name]
-  tdrive-rs download <file> [--out path]
-  tdrive-rs rm <id|path>    move an object to trash (--hard deletes)
-  tdrive-rs restore <id|path>
-  tdrive-rs mkdir <name> [--in folder]
-  tdrive-rs sync            force a resync
-  tdrive-rs accounts        list accounts (--switch ID, --remove ID)
-  tdrive-rs login           interactive Telegram sign-in
+  tdrive                 launch the GUI
+  tdrive drives          list drives (channels)
+  tdrive ls [path]       list remote entries (default: root)
+  tdrive upload <paths>… [--to folder] [--wrap name]
+  tdrive download <file> [--out path]
+  tdrive rm <id|path>    move an object to trash (--hard deletes)
+  tdrive restore <id|path>
+  tdrive mkdir <name> [--in folder]
+  tdrive sync            force a resync
+  tdrive accounts        list accounts (--switch ID, --remove ID)
+  tdrive login           interactive Telegram sign-in
 
 Drive selection: --drive <id|title>, else the last-opened drive,
 else the only drive when there's exactly one.";
@@ -35,7 +35,7 @@ pub fn run(argv: Vec<String>) -> i32 {
     match run_inner(argv) {
         Ok(()) => 0,
         Err(e) => {
-            eprintln!("tdrive-rs: {e:#}");
+            eprintln!("tdrive: {e:#}");
             1
         }
     }
@@ -45,7 +45,7 @@ fn run_inner(argv: Vec<String>) -> Result<()> {
     // Same lock the GUI takes — sharing a live session.db across two
     // processes mints a duplicate auth key server-side.
     let _lock = config::instance_lock().context(
-        "another tdrive-rs instance is running — close the GUI first",
+        "another tdrive instance is running — close the GUI first",
     )?;
 
     let mut positional = Vec::new();
@@ -84,7 +84,7 @@ fn run_inner(argv: Vec<String>) -> Result<()> {
     }
 
     let cfg = AppConfig::load()?.context(
-        "no config — run the GUI once to enter api_id/api_hash, or tdrive-rs login",
+        "no config — run the GUI once to enter api_id/api_hash, or tdrive login",
     )?;
     let handle = crate::tg::spawn();
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -173,7 +173,7 @@ impl Cli {
     /// drive-scoped command.
     async fn open_drive(&mut self, cfg: &AppConfig, sel: Option<String>) -> Result<ChannelInfo> {
         if !self.connect(cfg).await? {
-            bail!("not signed in — run `tdrive-rs login` first");
+            bail!("not signed in — run `tdrive login` first");
         }
         self.send(Command::ListChannels)?;
         let channels = loop {
@@ -282,7 +282,7 @@ impl Cli {
 
     async fn drives(&mut self, cfg: &AppConfig) -> Result<()> {
         if !self.connect(cfg).await? {
-            bail!("not signed in — run `tdrive-rs login` first");
+            bail!("not signed in — run `tdrive login` first");
         }
         self.send(Command::ListChannels)?;
         loop {

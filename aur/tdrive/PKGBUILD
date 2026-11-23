@@ -28,7 +28,7 @@ build() {
 
 package() {
     cd "tdrive-rs-$pkgver"
-    install -Dm755 "target/release/tdrive-rs" "$pkgdir/usr/bin/tdrive"
+    install -Dm755 "target/release/tdrive" "$pkgdir/usr/bin/tdrive"
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
     install -Dm644 packaging/tdrive.desktop "$pkgdir/usr/share/applications/tdrive.desktop"
     install -Dm644 assets/icon.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/tdrive.svg"

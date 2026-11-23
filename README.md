@@ -76,6 +76,10 @@ cargo build
 cargo run
 ```
 
+The binary is `tdrive` — run it bare for the GUI, or with a subcommand
+for headless terminal use (`tdrive ls`, `upload`, `download`, `rm`,
+`mkdir`, `sync`, `accounts`, `login`; see `tdrive --help`).
+
 On first launch you will be asked for an `api_id` / `api_hash` — create an app
 at <https://my.telegram.org>. Config, session and transfer journal live under
 `~/.local/share/tdrive-rs/`.

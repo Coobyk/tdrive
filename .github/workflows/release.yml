@@ -13,7 +13,7 @@ permissions:
   contents: write
 
 env:
-  BIN: tdrive-rs
+  BIN: tdrive
 
 jobs:
   build:

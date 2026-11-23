@@ -32,7 +32,7 @@ fn main() {
     let _instance = match config::instance_lock() {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("tdrive-rs: {e}");
+            eprintln!("tdrive: {e}");
             std::process::exit(1);
         }
     };
