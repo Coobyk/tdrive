@@ -1,10 +1,17 @@
 name: bump
 
-# One click in Actions → bumps semver, syncs Cargo.toml + gradle
-# versionCode/versionName, tags, and fires the release workflow.
-# (Tag pushes made with GITHUB_TOKEN don't trigger workflows, so the
-# release run is dispatched explicitly with the new tag.)
+# Releases track main automatically.
+#
+# - Push to main: if HEAD's Cargo.toml version is already tagged, no-op.
+#   If the version was raised but never tagged, tag it as-is.
+#   Otherwise bump patch, commit, tag, release.
+# - Manual (Actions → bump): explicit patch/minor/major bump.
+#
+# Tag pushes made with GITHUB_TOKEN don't trigger workflows, so the
+# release run is always dispatched explicitly with the new tag.
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       part:
@@ -17,6 +24,10 @@ on:
 permissions:
   contents: write
   actions: write
+
+concurrency:
+  group: bump-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   bump:
@@ -35,22 +46,41 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           LATEST=$(git tag -l 'v*' | sort -V | tail -1); LATEST=${LATEST:-v0.0.0}
+          HEADVER=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          AUTO=false; PART=${PART:-patch}
+          if [ "${{ github.event_name }}" = "push" ]; then
+            AUTO=true
+            if git rev-parse -q --verify "refs/tags/v$HEADVER" >/dev/null; then
+              echo "v$HEADVER already tagged — nothing to do"; exit 0
+            fi
+            # A push that already raised the version gets tagged as-is;
+            # otherwise patch-bump on top of the latest release tag.
+            if [ "$(printf '%s\n%s\n' "${LATEST#v}" "$HEADVER" | sort -V | tail -1)" = "$HEADVER" ] \
+               && [ "$HEADVER" != "${LATEST#v}" ]; then
+              PART=none
+            else
+              PART=patch
+            fi
+          fi
           IFS=. read -r MA MI PA <<< "${LATEST#v}"
           case "$PART" in
-            patch) PA=$((PA+1));;
-            minor) MI=$((MI+1)); PA=0;;
-            major) MA=$((MA+1)); MI=0; PA=0;;
+            none)   NEW=$HEADVER;;
+            patch)  PA=$((PA+1));;
+            minor)  MI=$((MI+1)); PA=0;;
+            major)  MA=$((MA+1)); MI=0; PA=0;;
           esac
-          NEW="$MA.$MI.$PA"
-          echo "Bumping $LATEST -> v$NEW"
-          sed -i "s/^version = \".*\"/version = \"$NEW\"/" Cargo.toml
-          # Cargo.lock carries the root package's own version — keep
-          # it in step or --locked builds fail.
-          sed -i "/^name = \"tdrive\"/,/^version = /s/^version = \".*\"/version = \"$NEW\"/" Cargo.lock
-          VC=$((MA * 10000 + MI * 100 + PA))
-          sed -i "s/versionCode = .*/versionCode = $VC/; s/versionName = \".*\"/versionName = \"$NEW\"/" android/app/build.gradle.kts
-          git add Cargo.toml Cargo.lock android/app/build.gradle.kts
-          git commit -qm "v$NEW"
+          NEW=${NEW:-$MA.$MI.$PA}
+          echo "Bumping $LATEST -> v$NEW (auto=$AUTO)"
+          if [ "$PART" != none ]; then
+            sed -i "s/^version = \".*\"/version = \"$NEW\"/" Cargo.toml
+            # Cargo.lock carries the root package's own version — keep
+            # it in step or --locked builds fail.
+            sed -i "/^name = \"tdrive\"/,/^version = /s/^version = \".*\"/version = \"$NEW\"/" Cargo.lock
+            VC=$((MA * 10000 + MI * 100 + PA))
+            sed -i "s/versionCode = .*/versionCode = $VC/; s/versionName = \".*\"/versionName = \"$NEW\"/" android/app/build.gradle.kts
+            git add Cargo.toml Cargo.lock android/app/build.gradle.kts
+            git commit -qm "v$NEW"
+          fi
           git tag "v$NEW"
           git push origin main "v$NEW"
           gh workflow run release.yml -f "tag=v$NEW" --repo "${{ github.repository }}"
