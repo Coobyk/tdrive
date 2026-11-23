@@ -505,7 +505,7 @@ pub fn spawn() -> Handle {
                 cancels: HashMap::new(),
                 last_live_sync: std::time::Instant::now() - std::time::Duration::from_secs(10),
                 journal_path: config::journal_path()
-                    .unwrap_or_else(|_| std::env::temp_dir().join("tdrive-rs-journal.json")),
+                    .unwrap_or_else(|_| std::env::temp_dir().join("tdrive-journal.json")),
                 journal: Journal::default(),
                 rx: cmd_rx,
                 tx: ev_tx,

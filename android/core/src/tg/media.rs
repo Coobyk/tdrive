@@ -198,8 +198,8 @@ impl Worker {
             };
         };
         let (dir, ext) = match kind {
-            FetchKind::Thumb => ("tdrive-rs/thumbs", "bin"),
-            FetchKind::Preview => ("tdrive-rs/previews", "img"),
+            FetchKind::Thumb => ("tdrive/thumbs", "bin"),
+            FetchKind::Preview => ("tdrive/previews", "img"),
         };
         let dir = crate::paths::staging_dir()?.join(dir);
         std::fs::create_dir_all(&dir)?;

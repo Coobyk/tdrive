@@ -44,7 +44,7 @@ fn main() {
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 window_min_size: Some(size(px(640.), px(420.))),
-                app_id: Some("tdrive-rs".into()),
+                app_id: Some("tdrive".into()),
                 ..Default::default()
             },
             |window, cx| {

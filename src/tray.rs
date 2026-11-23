@@ -17,7 +17,7 @@ struct TdriveTray {
 
 impl ksni::Tray for TdriveTray {
     fn id(&self) -> String {
-        "tdrive-rs".into()
+        "tdrive".into()
     }
 
     fn title(&self) -> String {

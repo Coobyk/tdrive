@@ -9,5 +9,5 @@ Terminal=false
 Categories=Network;FileTransfer;
 Keywords=cloud;drive;telegram;backup;sync;
 StartupNotify=true
-StartupWMClass=tdrive-rs
+StartupWMClass=tdrive
 SingleMainWindow=true

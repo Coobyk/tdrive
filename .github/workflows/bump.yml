@@ -46,7 +46,7 @@ jobs:
           sed -i "s/^version = \".*\"/version = \"$NEW\"/" Cargo.toml
           # Cargo.lock carries the root package's own version — keep
           # it in step or --locked builds fail.
-          sed -i "/^name = \"tdrive-rs\"/,/^version = /s/^version = \".*\"/version = \"$NEW\"/" Cargo.lock
+          sed -i "/^name = \"tdrive\"/,/^version = /s/^version = \".*\"/version = \"$NEW\"/" Cargo.lock
           VC=$((MA * 10000 + MI * 100 + PA))
           sed -i "s/versionCode = .*/versionCode = $VC/; s/versionName = \".*\"/versionName = \"$NEW\"/" android/app/build.gradle.kts
           git add Cargo.toml Cargo.lock android/app/build.gradle.kts

@@ -23,16 +23,16 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact: tdrive-rs-linux-x86_64
+            artifact: tdrive-linux-x86_64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact: tdrive-rs-windows-x86_64
+            artifact: tdrive-windows-x86_64
           - os: macos-latest
             target: aarch64-apple-darwin
-            artifact: tdrive-rs-macos-aarch64
+            artifact: tdrive-macos-aarch64
           - os: macos-latest
             target: x86_64-apple-darwin
-            artifact: tdrive-rs-macos-x86_64
+            artifact: tdrive-macos-x86_64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -130,7 +130,7 @@ jobs:
           TAG="${{ inputs.tag || github.ref_name }}"
           gh release create "$TAG" tdrive-* \
             --repo "${{ github.repository }}" \
-            --title "tdrive-rs $TAG" --generate-notes --verify-tag || \
+            --title "tdrive $TAG" --generate-notes --verify-tag || \
           gh release upload "$TAG" tdrive-* --clobber --repo "${{ github.repository }}"
 
   aur:
@@ -158,7 +158,7 @@ jobs:
           set -euo pipefail
           VER="${{ inputs.tag || github.ref_name }}"; VER="${VER#v}"
           SHA_SRC=$(curl -sL "https://github.com/${{ github.repository }}/archive/v$VER.tar.gz" | sha256sum | cut -d' ' -f1)
-          SHA_BIN=$(gh release download "v$VER" -p 'tdrive-rs-linux-x86_64-*' --repo "${{ github.repository }}" -O- --clobber 2>/dev/null | sha256sum | cut -d' ' -f1)
+          SHA_BIN=$(gh release download "v$VER" -p 'tdrive-linux-x86_64-*' --repo "${{ github.repository }}" -O- --clobber 2>/dev/null | sha256sum | cut -d' ' -f1)
           publish_pkg() {
             pkg=$1 sha=$2
             work=$(mktemp -d)

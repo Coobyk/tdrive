@@ -198,11 +198,11 @@ impl Worker {
             };
         };
         let (dir, ext) = match kind {
-            FetchKind::Thumb => ("tdrive-rs/thumbs", "bin"),
-            FetchKind::Preview => ("tdrive-rs/previews", "img"),
+            FetchKind::Thumb => ("tdrive/thumbs", "bin"),
+            FetchKind::Preview => ("tdrive/previews", "img"),
         };
         let dir = dirs::cache_dir()
-            .unwrap_or_else(|| std::env::temp_dir().join("tdrive-rs-staging"))
+            .unwrap_or_else(|| std::env::temp_dir().join("tdrive-staging"))
             .join(dir);
         std::fs::create_dir_all(&dir)?;
         let out = dir.join(format!("{body_id}.{ext}"));

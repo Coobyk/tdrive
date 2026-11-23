@@ -33,7 +33,15 @@ fn data_dir() -> Result<PathBuf> {
     let dir = dirs::data_dir()
         .or_else(dirs::config_dir)
         .context("no data directory")?
-        .join("tdrive-rs");
+        .join("tdrive");
+    // Pre-rename installs stored everything under tdrive-rs/ — move the
+    // whole tree over so sessions, journals and accounts survive.
+    if !dir.exists() {
+        let old = dir.with_file_name("tdrive-rs");
+        if old.exists() {
+            let _ = std::fs::rename(&old, &dir);
+        }
+    }
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
 }
@@ -275,14 +283,14 @@ pub fn styles_path() -> Result<PathBuf> {
 pub struct InstanceLock(std::fs::File);
 
 pub fn instance_lock() -> Result<InstanceLock> {
-    let path = data_dir()?.join("tdrive-rs.lock");
+    let path = data_dir()?.join("tdrive.lock");
     let f = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .open(path)?;
     f.try_lock()
-        .context("another tdrive-rs instance is already running")?;
+        .context("another tdrive instance is already running")?;
     Ok(InstanceLock(f))
 }
 

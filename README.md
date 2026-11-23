@@ -1,6 +1,6 @@
 <img src="assets/icon.svg" width="64" height="64" alt="">
 
-# tdrive-rs
+# tdrive
 
 An alternative client for [TDrive](https://github.com/jeetrex17/TDrive) —
 desktop in the root crate, Android in [`android/`](android).
@@ -8,7 +8,7 @@ written in Rust and [GPUI](https://gpui.rs) (Zed's UI framework).
 
 Like TDrive, it stores your files in a private Telegram channel: file contents
 are ordinary channel documents, and the folder structure lives in `TDX1`
-control messages. tdrive-rs speaks the same TDX1 wire format, so drives created
+control messages. tdrive speaks the same TDX1 wire format, so drives created
 with either client are readable by the other.
 
 ## Status
@@ -63,7 +63,7 @@ interop test against a real TDrive channel.
 - `src/tg.rs` — [grammers](https://github.com/Lonami/grammers) client on a
   dedicated tokio thread; the UI sends commands and receives events.
 - `src/project.rs` — folds ordered ops into a namespace; persisted per
-  channel under `~/.local/share/tdrive-rs/namespaces/` for incremental sync.
+  channel under `~/.local/share/tdrive/namespaces/` for incremental sync.
 - `src/journal.rs` — persists part receipts / confirmed download blocks /
   sync watermarks so transfers and scans survive restarts.
 - `src/crypto.rs`, `src/wire.rs` — format ports (see above).
@@ -82,7 +82,7 @@ for headless terminal use (`tdrive ls`, `upload`, `download`, `rm`,
 
 On first launch you will be asked for an `api_id` / `api_hash` — create an app
 at <https://my.telegram.org>. Config, session and transfer journal live under
-`~/.local/share/tdrive-rs/`.
+`~/.local/share/tdrive/`.
 
 Requires the usual GPUI system deps on Linux (vulkan, wayland/xcb, libxkbcommon,
 fontconfig, alsa).

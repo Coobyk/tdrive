@@ -1,12 +1,7 @@
 [package]
-name = "tdrive-rs"
+name = "tdrive"
 version = "0.2.0"
 edition = "2024"
-
-# Crate stays tdrive-rs (data dir, lockfile); the shipped binary is tdrive.
-[[bin]]
-name = "tdrive"
-path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.104"
