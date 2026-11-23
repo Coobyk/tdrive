@@ -1,4 +1,5 @@
 mod assets;
+mod cli;
 mod config;
 mod crypto;
 mod dav;
@@ -20,6 +21,12 @@ mod wire;
 use gpui::*;
 
 fn main() {
+    // Any argv → headless CLI; none → GPUI. The instance lock lives in
+    // cli::run for the headless path, so both paths gate on it exactly once.
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    if !argv.is_empty() {
+        std::process::exit(cli::run(argv));
+    }
     // One instance per session.db — a second process sharing the
     // Telegram auth key gets AUTH_KEY_DUPLICATED from the server.
     let _instance = match config::instance_lock() {
