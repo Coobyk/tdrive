@@ -264,6 +264,40 @@ pub fn namespace_path(channel_id: i64) -> Result<PathBuf> {
     Ok(active_dir()?.join(format!("namespace-{channel_id}.json")))
 }
 
+/// Channels confirmed as drives — persists sniff results so drive
+/// listing doesn't re-scan history on every launch.
+fn drives_path() -> Result<PathBuf> {
+    Ok(active_dir()?.join("drives.json"))
+}
+
+pub fn known_drives() -> std::collections::HashSet<i64> {
+    drives_path()
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+pub fn mark_drive(channel_id: i64) -> Result<()> {
+    let mut set = known_drives();
+    if set.insert(channel_id) {
+        std::fs::write(drives_path()?, serde_json::to_string(&set)?)?;
+    }
+    Ok(())
+}
+
+/// A namespace snapshot only counts as drive evidence when it holds
+/// entries — the old picker let users open any channel, which wrote
+/// empty snapshots for plain groups and channels.
+pub fn snapshot_has_entries(channel_id: i64) -> bool {
+    namespace_path(channel_id)
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str::<crate::project::NamespaceSnapshot>(&s).ok())
+        .map(|s| !s.folders.is_empty() || !s.files.is_empty() || !s.trash.is_empty())
+        .unwrap_or(false)
+}
+
 pub fn journal_path() -> Result<PathBuf> {
     Ok(active_dir()?.join("journal.json"))
 }

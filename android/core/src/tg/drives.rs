@@ -6,7 +6,7 @@ impl Worker {
     pub(super) async fn list_channels(&mut self) -> Result<()> {
         let client = self.client()?.clone();
         let mut dialogs = client.iter_dialogs();
-        let mut out = Vec::new();
+        let mut candidates = Vec::new();
         while let Some(dialog) = dialogs.next().await? {
             // Min/incomplete entities yield None from to_ref — never call
             // Dialog::peer_ref (it unwraps and kills the worker thread).
@@ -30,16 +30,77 @@ impl Worker {
             let Ok(Some(peer_ref)) = dialog.peer().to_ref().await else {
                 continue;
             };
-            out.push(ChannelInfo {
+            candidates.push((peer_ref, ChannelInfo {
                 id: peer_ref.id.bare_id_unchecked(),
                 access_hash: peer_ref.auth.hash(),
                 title,
                 kind,
-            });
+            }));
+        }
+        // The dialog list alone can't tell a drive from any other
+        // channel. Local evidence first (snapshot or journal ⇒ we've
+        // used it as a drive, covers fresh empty ones), then a history
+        // sniff for TDX1 ops (covers upstream-created drives on a new
+        // install and shared drives joined by invite).
+        let mut out = Vec::new();
+        for (peer_ref, info) in candidates {
+            if self.is_known_drive(info.id)
+                || Self::history_has_tdx(&client, peer_ref).await
+            {
+                // Positive identifications persist — later listings skip
+                // the history round-trip for channels already proven.
+                let _ = paths::mark_drive(info.id);
+                out.push(info);
+            }
         }
         out.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
         self.emit(Event::Channels(out));
         Ok(())
+    }
+
+    /// Registry, non-empty snapshot, or journal entry — any is local
+    /// proof the channel was used as a drive, no fetch needed. Bare
+    /// snapshot *existence* doesn't count: the old picker let any
+    /// channel be opened, leaving empty snapshots behind.
+    fn is_known_drive(&self, channel_id: i64) -> bool {
+        if paths::known_drives().contains(&channel_id)
+            || paths::snapshot_has_entries(channel_id)
+        {
+            return true;
+        }
+        self.journal
+            .uploads
+            .iter()
+            .any(|j| j.channel_id == channel_id)
+            || self
+                .journal
+                .downloads
+                .iter()
+                .any(|j| j.channel_id == channel_id)
+    }
+
+    /// Scan recent history for a TDX1 op — a drive's namespace ops are
+    /// all `TDX1|…` text messages. 25 msgs ≈ one getHistory page.
+    async fn history_has_tdx(
+        client: &grammers_client::Client,
+        peer: PeerRef,
+    ) -> bool {
+        let mut iter = client.iter_messages(peer);
+        let mut seen = 0;
+        loop {
+            match iter.next().await {
+                Ok(Some(msg)) => {
+                    if msg.text().starts_with(&format!("{}|", wire::WIRE_PREFIX)) {
+                        return true;
+                    }
+                    seen += 1;
+                    if seen >= 25 {
+                        return false;
+                    }
+                }
+                _ => return false,
+            }
+        }
     }
 
     pub(super) async fn create_channel(&mut self, title: String) -> Result<()> {
@@ -64,6 +125,7 @@ impl Worker {
             .await?;
         let chats = chats_from(updates)?;
         for c in chats {
+            let _ = paths::mark_drive(c.id);
             self.open_channel(
                 c.id,
                 c.access_hash.unwrap_or(0),
