@@ -1177,8 +1177,8 @@ impl Root {
                         .text_color(theme().dim)
                         .child(format!(
                             "Transfers · {active_count} active · {}",
-                            if self.expected_uploads > total {
-                                format!("{total} of ~{} planned", self.expected_uploads)
+                            if self.expected_uploads > self.uploads_done {
+                                format!("{} of {}", self.uploads_done, self.expected_uploads)
                             } else {
                                 format!("{total} total")
                             }

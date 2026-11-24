@@ -236,9 +236,12 @@ pub struct Root {
     sort_key: SortKey,
     sort_desc: bool,
     /// Files the last upload batch will produce — the picker counts
-    /// them up front so the pane can show "x of ~N" instead of a
+    /// them up front so the pane can show "x of N" instead of a
     /// total that grows as the walker discovers entries.
     expected_uploads: usize,
+    /// Uploads from the current batch that reached Done — counted
+    /// here because finished rows leave `transfers` after the fade.
+    uploads_done: usize,
     /// Left press on an already-selected row, armed to become a
     /// drag-move once the pointer travels past the threshold.
     pending_move: Option<(String, Point<Pixels>)>,
@@ -358,6 +361,7 @@ impl Root {
             sort_key: SortKey::Name,
             sort_desc: false,
             expected_uploads: 0,
+            uploads_done: 0,
             pending_move: None,
             drag_moving: false,
             drop_hover: None,
@@ -595,6 +599,11 @@ impl Root {
                 self.rubber = None;
             }
             Event::Transfer(t) => {
+                if t.state == crate::tg::TransferState::Done
+                    && t.id.starts_with("up:")
+                {
+                    self.uploads_done += 1;
+                }
                 self.transfers.insert(t.id.clone(), t.clone());
                 if t.state == crate::tg::TransferState::Done {
                     // One notification per batch — only when nothing
@@ -1154,6 +1163,7 @@ impl Root {
                     } else {
                         plan.items.iter().map(|i| i.files as usize).sum()
                     };
+                    self.uploads_done = 0;
                     match plan.mode {
                         PlanMode::Files => self.send(Command::UploadItems {
                             items,
