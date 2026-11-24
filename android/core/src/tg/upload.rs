@@ -82,6 +82,18 @@ impl Worker {
     }
 
     pub(super) async fn upload(&mut self, path: PathBuf, parent: String) -> Result<()> {
+        self.upload_keyed(path, parent, uuid::Uuid::new_v4().to_string())
+            .await
+    }
+
+    /// `key` drives the transfer id — a resumed single upload re-runs
+    /// under its original id so the row continues in place.
+    pub(super) async fn upload_keyed(
+        &mut self,
+        path: PathBuf,
+        parent: String,
+        key: String,
+    ) -> Result<()> {
         let plaintext_size = std::fs::metadata(&path).context("stat upload")?.len() as i64;
         // TDrive rejects empty plaintext only when unencrypted — the TDE1
         // header makes the stored ciphertext non-empty.
@@ -104,7 +116,11 @@ impl Worker {
         }
 
         let res: Result<()> = if size <= MAX_PART_BYTES {
-            let id = upload_transfer_id(&uuid::Uuid::new_v4().to_string());
+            let id = upload_transfer_id(&key);
+            // Single-part uploads carry no journal row — keep the
+            // intent so pause can suspend and resume can restart.
+            self.single_uploads
+                .insert(key.clone(), (path.clone(), parent.clone(), name.clone()));
             let name2 = name.clone();
             let id2 = id.clone();
             self.spawn_cancellable(&id, &name, move |ctx| async move {
@@ -138,7 +154,7 @@ impl Worker {
                 })
                 .collect();
             let job = UploadJob {
-                upload_uuid: uuid::Uuid::new_v4().to_string(),
+                upload_uuid: key,
                 channel_id,
                 local_path: path.clone(),
                 source_path: path.clone(),
@@ -325,6 +341,7 @@ impl Worker {
         match res {
             Ok((msg_id, header)) => {
                 ctx.op_applied(header, msg_id);
+                ctx.journal(Command::TransferDone { id: id.clone() });
                 ctx.update(&id, &name, size, size, TransferState::Done);
                 drop(permit);
                 Self::publish_renditions(ctx, &path, &name, msg_id, msg_id, "", encrypted).await;

@@ -486,6 +486,8 @@ pub fn spawn() -> Handle {
                 actor_id: 0,
                 channel_kind: DriveKind::Personal,
                 paused_downloads: std::collections::HashSet::new(),
+                paused_uploads: std::collections::HashSet::new(),
+                single_uploads: std::collections::HashMap::new(),
                 cancelled: std::collections::HashSet::new(),
                 pending_optimize: Vec::new(),
                 reserved_names: std::collections::HashSet::new(),
@@ -582,6 +584,14 @@ struct Worker {
     /// Paused downloads (transfer ids) — resume looks the job up
     /// in the journal, which still holds the destination.
     paused_downloads: std::collections::HashSet<String>,
+    /// Paused uploads (transfer ids) — suppress the unwind's failure
+    /// report; journaled ones restart from the journal, singles from
+    /// `single_uploads`.
+    paused_uploads: std::collections::HashSet<String>,
+    /// uuid → (path, parent, picked name) for single-part uploads —
+    /// they're unjournaled, so pause keeps the restart intent here
+    /// for the session.
+    single_uploads: std::collections::HashMap<String, (PathBuf, String, String)>,
     /// User-cancelled ids — suppress the unwind's failure report the
     /// same way paused ids do.
     cancelled: std::collections::HashSet<String>,
@@ -824,7 +834,9 @@ impl Worker {
                 self.cancels.remove(&id);
                 match parse_transfer_id(&id) {
                     Some(TransferTarget::Upload(uuid)) => {
-                        self.journal.uploads.retain(|j| j.upload_uuid != uuid)
+                        self.journal.uploads.retain(|j| j.upload_uuid != uuid);
+                        self.single_uploads.remove(&uuid);
+                        self.paused_uploads.remove(&id);
                     }
                     Some(TransferTarget::Download(fid)) => {
                         self.journal.downloads.retain(|j| j.file_id != fid)
@@ -838,7 +850,12 @@ impl Worker {
                 self.cancels.remove(&id);
                 // A pause also unwinds as an error — don't overwrite the
                 // Paused state the pause() handler already set.
-                if !self.paused_downloads.contains(&id) && !self.cancelled.remove(&id) {
+                let suspended = self.paused_downloads.contains(&id)
+                    || self.paused_uploads.contains(&id);
+                if !suspended && !self.cancelled.remove(&id) {
+                    if let Some(TransferTarget::Upload(uuid)) = parse_transfer_id(&id) {
+                        self.single_uploads.remove(&uuid);
+                    }
                     self.emit(Event::Error {
                         context: "transfer",
                         message: format!("{label}: {err}"),
@@ -964,11 +981,26 @@ impl Worker {
     /// Pause suspends the transfer but keeps journal state, unlike cancel
     /// which discards it — the same distinction TDrive makes.
     async fn pause(&mut self, id: &str) -> Result<()> {
-        // Single uploads aren't journaled — they can't resume, so pause
-        // degrades to cancel rather than offering a dead button.
+        // Singles aren't journaled — restart intent lives in
+        // single_uploads. Only an upload with neither handle degrades
+        // to cancel.
         if let Some(TransferTarget::Upload(uuid)) = parse_transfer_id(id) {
-            if !self.journal.uploads.iter().any(|j| j.upload_uuid == uuid) {
+            let resumable = self
+                .journal
+                .uploads
+                .iter()
+                .any(|j| j.upload_uuid == uuid)
+                || self.single_uploads.contains_key(&uuid);
+            if !resumable {
                 return self.cancel(id);
+            }
+            self.paused_uploads.insert(id.to_string());
+            // Free the picked name — the task died before its op
+            // could publish, so resume should land the same name
+            // instead of "name (1)".
+            if let Some((_, parent, name)) = self.single_uploads.get(&uuid) {
+                let key = format!("{parent}\0{name}");
+                self.reserved_names.remove(&key);
             }
         }
         if let Some(token) = self.cancels.remove(id) {
@@ -991,7 +1023,14 @@ impl Worker {
 
     async fn resume(&mut self, id: &str) -> Result<()> {
         match parse_transfer_id(id) {
-            Some(TransferTarget::Upload(_)) => self.resume_uploads().await,
+            Some(TransferTarget::Upload(uuid)) => {
+                if self.paused_uploads.remove(id) {
+                    if let Some((path, parent, _)) = self.single_uploads.remove(&uuid) {
+                        return self.upload_keyed(path, parent, uuid).await;
+                    }
+                }
+                self.resume_uploads().await
+            }
             Some(TransferTarget::Download(file_id)) => {
                 if !self.paused_downloads.remove(id) {
                     return Err(anyhow!("nothing to resume"));
@@ -1021,7 +1060,14 @@ impl Worker {
             token.cancel();
         }
         if let Some(TransferTarget::Upload(uuid)) = parse_transfer_id(id) {
+            if let Some(job) = self.journal.uploads.iter().find(|j| j.upload_uuid == uuid) {
+                self.reserved_names.remove(&format!("{}\0{}", job.parent, job.name));
+            }
             self.journal.uploads.retain(|j| j.upload_uuid != uuid);
+            if let Some((_, parent, name)) = self.single_uploads.remove(&uuid) {
+                self.reserved_names.remove(&format!("{parent}\0{name}"));
+            }
+            self.paused_uploads.remove(id);
             self.save_journal();
         }
         if let Some(TransferTarget::Download(fid)) = parse_transfer_id(id) {
