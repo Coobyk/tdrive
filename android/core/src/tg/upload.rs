@@ -374,7 +374,7 @@ impl Worker {
                 0,
                 size as u64,
                 name.to_string(),
-                2,
+                4,
                 move |sent| {
                     let _ = tx.try_send(Event::Transfer(TransferUpdate {
                         id: id.clone(),
@@ -558,7 +558,7 @@ impl Worker {
                 offset as u64,
                 size as u64,
                 part_name,
-                2,
+                4,
                 move |sent| {
                     let _ = tx.try_send(Event::Transfer(TransferUpdate {
                         id: id.clone(),
