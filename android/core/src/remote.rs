@@ -307,6 +307,10 @@ pub async fn upload_parallel(
         set.spawn(async move {
             let mut file = tokio::fs::File::open(&path).await?;
             loop {
+                // tdesktop's uploader spaces part requests ~250ms apart
+                // per session (kUploadRequestInterval) — the rate cap
+                // that keeps saveFilePart out of the flood limiter.
+                let t0 = std::time::Instant::now();
                 let part = next.fetch_add(1, Ordering::Relaxed) as i32;
                 if part >= total_parts {
                     return Ok(());
@@ -338,6 +342,11 @@ pub async fn upload_parallel(
                     anyhow::bail!("server failed to store uploaded part {part}");
                 }
                 progress(sent.fetch_add(len as i64, Ordering::Relaxed) + len as i64);
+                let rest = std::time::Duration::from_millis(250)
+                    .saturating_sub(t0.elapsed());
+                if !rest.is_zero() {
+                    tokio::time::sleep(rest).await;
+                }
             }
         });
     }
