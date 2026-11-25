@@ -21,6 +21,11 @@ pub struct Remote {
     peer: Arc<Mutex<Option<PeerRef>>>,
     master: Arc<Mutex<Option<[u8; MASTER_KEY_LEN]>>>,
     ns: Arc<Mutex<Arc<Namespace>>>,
+    /// Serializes op sends and enforces a minimum gap between them —
+    /// every stored file is also a sendMessage call, and bursts are
+    /// what earn minutes-long FLOOD_WAITs the official client never
+    /// sees (it paces everything through one queued session).
+    op_pace: Arc<tokio::sync::Mutex<Option<std::time::Instant>>>,
 }
 
 /// Telegram download granularity — resume offsets and range reads must
@@ -33,12 +38,14 @@ impl Remote {
         peer: Arc<Mutex<Option<PeerRef>>>,
         master: Arc<Mutex<Option<[u8; MASTER_KEY_LEN]>>>,
         ns: Arc<Mutex<Arc<Namespace>>>,
+        op_pace: Arc<tokio::sync::Mutex<Option<std::time::Instant>>>,
     ) -> Self {
         Self {
             client,
             peer,
             master,
             ns,
+            op_pace,
         }
     }
 
@@ -55,13 +62,32 @@ impl Remote {
         self.ns.lock().unwrap().clone()
     }
 
+    /// Take the pacing gate for a message send: serializes op sends
+    /// and waits out the minimum gap since the previous one finished.
+    /// Stamp the returned guard after the send completes.
+    async fn pace_op(&self) -> tokio::sync::MutexGuard<'_, Option<std::time::Instant>> {
+        const OP_GAP: std::time::Duration = std::time::Duration::from_millis(300);
+        let mut last = self.op_pace.lock().await;
+        if let Some(t) = *last {
+            let wait = OP_GAP.saturating_sub(t.elapsed());
+            if !wait.is_zero() {
+                tokio::time::sleep(wait).await;
+            }
+        }
+        last
+    }
+
     /// Send a TDX1 op to `peer` and return the message id, recovering it
     /// by scan when grammers reports `Empty{id:0}`.
     pub async fn send_op(&self, peer: PeerRef, header: &str) -> Result<i64> {
+        let mut pace = self.pace_op().await;
         let msg = self
             .client
             .send_message(peer, InputMessage::new().text(header))
-            .await?;
+            .await;
+        *pace = Some(std::time::Instant::now());
+        drop(pace);
+        let msg = msg?;
         let id = msg.id() as i64;
         if id > 0 {
             return Ok(id);
@@ -79,6 +105,7 @@ impl Remote {
         uploaded: grammers_client::media::Uploaded,
         caption: &str,
     ) -> Result<i64> {
+        let mut pace = self.pace_op().await;
         let msg = self
             .client
             .send_message(
@@ -87,7 +114,10 @@ impl Remote {
                     .document(uploaded)
                     .text(caption.to_string()),
             )
-            .await?;
+            .await;
+        *pace = Some(std::time::Instant::now());
+        drop(pace);
+        let msg = msg?;
         let id = msg.id() as i64;
         if id > 0 {
             return Ok(id);

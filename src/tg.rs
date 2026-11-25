@@ -491,6 +491,7 @@ pub fn spawn() -> Handle {
                 cancelled: std::collections::HashSet::new(),
                 pending_optimize: Vec::new(),
                 reserved_names: std::collections::HashSet::new(),
+                op_pace: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
                 live_sync_queued: Default::default(),
                 ns_shared: Arc::new(Mutex::new(Arc::new(Namespace::new()))),
                 #[cfg(target_os = "linux")]
@@ -601,6 +602,9 @@ struct Worker {
     /// "parent\0name" already claimed this session — same-batch uploads
     /// would all pass a namespace check before the projection catches up.
     reserved_names: std::collections::HashSet<String>,
+    /// Shared pacing gate for op sends — lives here because Remote is
+    /// rebuilt per call.
+    op_pace: std::sync::Arc<tokio::sync::Mutex<Option<std::time::Instant>>>,
     live_sync_queued: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Latest namespace snapshot shared with the WebDAV server.
     ns_shared: Arc<Mutex<Arc<Namespace>>>,
@@ -942,6 +946,7 @@ impl Worker {
             self.peer_cell.clone(),
             self.master_key.clone(),
             self.ns_shared.clone(),
+            self.op_pace.clone(),
         ))
     }
 

@@ -471,6 +471,7 @@ pub fn spawn() -> Handle {
                 pool_runner: None,
                 api_id: 0,
                 reserved_names: std::collections::HashSet::new(),
+                op_pace: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
             };
             worker.journal = Journal::load(&worker.journal_path);
             worker.run().await;
@@ -576,6 +577,9 @@ struct Worker {
     /// "parent\0name" already claimed this session — same-batch uploads
     /// would all pass a namespace check before the projection catches up.
     reserved_names: std::collections::HashSet<String>,
+    /// Shared pacing gate for op sends — lives here because Remote is
+    /// rebuilt per call.
+    op_pace: std::sync::Arc<tokio::sync::Mutex<Option<std::time::Instant>>>,
 }
 
 impl Worker {
@@ -879,6 +883,7 @@ impl Worker {
             self.peer_cell.clone(),
             self.master_key.clone(),
             self.ns_shared.clone(),
+            self.op_pace.clone(),
         ))
     }
 
