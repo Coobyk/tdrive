@@ -38,7 +38,8 @@ impl Worker {
             let Ok(Some(peer_ref)) = dialog.peer().to_ref().await else {
                 continue;
             };
-            candidates.push((peer_ref, ChannelInfo {
+            let top = dialog.last_message.as_ref().map(|m| m.id() as i64);
+            candidates.push((peer_ref, top, ChannelInfo {
                 id: peer_ref.id.bare_id_unchecked(),
                 access_hash: peer_ref.auth.hash(),
                 title,
@@ -52,20 +53,29 @@ impl Worker {
         // install and shared drives joined by invite).
         let mut out = Vec::new();
         let mut unknown = Vec::new();
-        for (peer_ref, info) in candidates {
+        let mut marks = config::drive_check_marks();
+        for (peer_ref, top, info) in candidates {
             if self.is_known_drive(info.id) {
                 out.push(info);
             } else {
-                unknown.push((peer_ref, info));
+                // Rejected before and the channel's top message hasn't
+                // moved — ops only arrive as new messages, so it still
+                // can't be a drive. Skipping re-verifies is what keeps
+                // a large channel list from flooding the API.
+                let top = top.unwrap_or(-1);
+                if marks.get(&info.id) != Some(&top) {
+                    unknown.push((peer_ref, top, info));
+                }
             }
         }
-        // Remote verification is bounded and concurrent: a flood-waited
-        // getHistory blocks inside grammers' retry for minutes, and
-        // sequential 15s waits compound. Timing out fails open —
-        // showing a non-drive is far better than hiding a real one —
-        // but it doesn't persist to the registry, so the guess gets
-        // re-checked next launch.
-        let checks = futures_util::future::join_all(unknown.iter().map(|(peer_ref, _)| {
+        // Remote verification is bounded and throttled: a flood-waited
+        // getHistory blocks inside grammers' retry for minutes, and a
+        // dozen concurrent RPCs is what trips the limiter in the first
+        // place. Timing out fails open — showing a non-drive is far
+        // better than hiding a real one — but it doesn't persist to
+        // the registry, so the guess gets re-checked next launch.
+        use futures_util::StreamExt;
+        let checks: Vec<_> = futures_util::stream::iter(unknown.iter().map(|(peer_ref, _, _)| {
             let client = client.clone();
             let peer = *peer_ref;
             async move {
@@ -76,17 +86,22 @@ impl Worker {
                 .await
             }
         }))
+        .buffer_unordered(8)
+        .collect()
         .await;
-        for ((_, info), verdict) in unknown.into_iter().zip(checks) {
+        for ((_, top, info), verdict) in unknown.into_iter().zip(checks) {
             match verdict {
                 Ok(true) => {
                     let _ = config::mark_drive(info.id, &info.title);
                     out.push(info);
                 }
-                Ok(false) => {}
+                Ok(false) => {
+                    marks.insert(info.id, top);
+                }
                 Err(_) => out.push(info),
             }
         }
+        let _ = config::save_drive_check_marks(&marks);
         out.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
         self.emit(Event::Channels(out));
         Ok(())
@@ -272,6 +287,10 @@ impl Worker {
             ns.drop_zero_ids();
             ns
         });
+        // Paint the cached projection now — the incremental sync below
+        // can sit behind a flood-wait for minutes, and an empty pane
+        // for that long reads as broken.
+        self.push_namespace();
         let pending = self.journal.resumable_uploads(id).len();
         self.emit(Event::ChannelOpened {
             info: ChannelInfo {

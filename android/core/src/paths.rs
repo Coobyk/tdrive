@@ -314,6 +314,28 @@ pub fn mark_drive(channel_id: i64, title: &str) -> Result<()> {
     Ok(())
 }
 
+/// Channels verified as NOT drives, keyed to the top message id seen
+/// at check time. A channel's ops only ever arrive as new messages, so
+/// an unchanged top id proves nothing new could be a drive op — the
+/// remote re-check can be skipped entirely. The moment history moves,
+/// the mark goes stale and the channel is checked again.
+pub fn drive_check_marks() -> std::collections::HashMap<i64, i64> {
+    active_dir()
+        .map(|d| d.join("checked.json"))
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_drive_check_marks(marks: &std::collections::HashMap<i64, i64>) -> Result<()> {
+    std::fs::write(
+        active_dir()?.join("checked.json"),
+        serde_json::to_string(marks)?,
+    )?;
+    Ok(())
+}
+
 /// A namespace snapshot only counts as drive evidence when it holds
 /// entries — the old picker let users open any channel, which wrote
 /// empty snapshots for plain groups and channels.
