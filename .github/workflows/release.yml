@@ -8,6 +8,11 @@ on:
       tag:
         description: "Tag to release (must exist)"
         required: true
+      publish:
+        description: "Create or update the GitHub release"
+        type: boolean
+        default: true
+        required: true
 
 permissions:
   contents: write
@@ -45,30 +50,47 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
-      - name: Package (unix)
-        if: runner.os != 'Windows'
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          VER="${{ inputs.tag || github.ref_name }}"; VER="${VER#v}"
+          echo "ver=$VER" >> "$GITHUB_OUTPUT"
+      - name: Package (linux)
+        if: runner.os == 'Linux'
         run: |
           mkdir -p dist
           cp "target/${{ matrix.target }}/release/${BIN}" dist/
-          if [ "${{ matrix.target }}" = "x86_64-unknown-linux-gnu" ]; then cp -r packaging dist/; fi
-          VER="${{ inputs.tag || github.ref_name }}"; VER="${VER#v}"
-          ART="${{ matrix.artifact }}-$VER.tar.gz"
-          echo "ART=$ART" >> "$GITHUB_ENV"
-          tar -czf "$ART" -C dist .
-      - name: Package (windows)
-        if: runner.os == 'Windows'
-        shell: bash
+          mkdir -p dist/packaging
+          cp packaging/tdrive.desktop packaging/tdrive.svg dist/packaging/
+          cp -r packaging/hicolor dist/packaging/
+          VER="${{ steps.version.outputs.ver }}"
+          tar -czf "${{ matrix.artifact }}-$VER.tar.gz" -C dist .
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
         run: |
           mkdir -p dist
-          cp "target/${{ matrix.target }}/release/${BIN}.exe" dist/
-          VER="${{ inputs.tag || github.ref_name }}"; VER="${VER#v}"
-          ART="${{ matrix.artifact }}-$VER.zip"
-          echo "ART=$ART" >> "$GITHUB_ENV"
-          (cd dist && 7z a "../$ART" "${BIN}.exe")
+          cp "target/${{ matrix.target }}/release/${BIN}" dist/
+          VER="${{ steps.version.outputs.ver }}"
+          tar -czf "${{ matrix.artifact }}-$VER.tar.gz" -C dist .
+          bash packaging/macos/make-dmg.sh "$VER" "target/${{ matrix.target }}/release/${BIN}" "${{ matrix.artifact }}-$VER.dmg"
+      - name: Install Windows installer tooling
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install nsis --version 3.13.0 --no-progress -y
+          dotnet tool install --global wix --version 4.0.6
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -ExecutionPolicy Bypass -File packaging/windows/build-windows-packages.ps1 -Version "${{ steps.version.outputs.ver }}"
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.ART }}
-          path: ${{ env.ART }}
+          name: ${{ matrix.artifact }}-${{ steps.version.outputs.ver }}
+          path: |
+            ${{ matrix.artifact }}-*
+          if-no-files-found: error
 
   android:
     runs-on: ubuntu-latest
@@ -115,6 +137,7 @@ jobs:
           path: android/tdrive-android-*.apk
 
   publish:
+    if: ${{ github.event_name == 'push' || inputs.publish }}
     needs: [build, android]
     runs-on: ubuntu-latest
     steps:

@@ -1,0 +1,50 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="TDrive"
+           Language="1033"
+           Version="@VERSION@"
+           Manufacturer="Coobyk"
+           UpgradeCode="6E3181D6-2D33-4E1D-8A7B-825D924E9B65"
+           Scope="perMachine">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." Schedule="afterInstallInitialize" />
+    <MediaTemplate CompressionLevel="high" EmbedCab="yes" />
+
+    <Component Id="TdriveShortcuts" Directory="INSTALLFOLDER">
+      <Shortcut Id="StartMenuShortcut"
+                Name="TDrive"
+                Description="Telegram-backed cloud drive"
+                Target="[#TdriveExe]"
+                Directory="ApplicationProgramsFolder"
+                WorkingDirectory="INSTALLFOLDER" />
+      <RemoveFolder Id="CleanupStartMenuShortcut"
+                    Directory="ApplicationProgramsFolder"
+                    On="uninstall" />
+      <RegistryValue Root="HKLM"
+                     Key="Software\Coobyk\TDrive"
+                     Name="Installed"
+                     Type="integer"
+                     Value="1"
+                     KeyPath="yes" />
+    </Component>
+
+    <DirectoryRef Id="INSTALLFOLDER">
+      <Component Id="TdriveExecutable">
+        <File Id="TdriveExe"
+              KeyPath="yes"
+              Checksum="yes"
+              Source="payload\tdrive.exe" />
+      </Component>
+    </DirectoryRef>
+
+    <Feature Id="ProductFeature" Title="TDrive" Level="1" ConfigurableDirectory="INSTALLFOLDER">
+      <ComponentRef Id="TdriveExecutable" />
+      <ComponentRef Id="TdriveShortcuts" />
+    </Feature>
+
+    <StandardDirectory Id="ProgramFiles6432Folder">
+      <Directory Id="INSTALLFOLDER" Name="TDrive" />
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationProgramsFolder" Name="TDrive" />
+    </StandardDirectory>
+  </Package>
+</Wix>
