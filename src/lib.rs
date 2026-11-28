@@ -19,6 +19,7 @@ pub mod tg;
 mod tray;
 #[cfg(feature = "gui")]
 mod ui;
+pub mod updater;
 mod wire;
 
 #[cfg(feature = "gui")]

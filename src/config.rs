@@ -20,6 +20,13 @@ pub struct AppConfig {
     /// Last file-browser view mode — false list, true grid.
     #[serde(default)]
     pub grid_view: bool,
+    /// Automatically check GitHub Releases for newer versions on startup.
+    #[serde(default = "default_auto_check_updates")]
+    pub auto_check_updates: bool,
+}
+
+fn default_auto_check_updates() -> bool {
+    true
 }
 
 /// TDrive's upload concurrency bounds — 3 concurrent, 16 max.

@@ -314,6 +314,8 @@ pub struct Root {
     /// Folder navigation history — M4/M5 (browser back/forward).
     nav_back: Vec<String>,
     nav_fwd: Vec<String>,
+    available_update: Option<crate::updater::UpdateInfo>,
+    updating: bool,
 }
 
 impl Root {
@@ -403,7 +405,30 @@ impl Root {
             syncing: false,
             nav_back: Vec::new(),
             nav_fwd: Vec::new(),
+            available_update: None,
+            updating: false,
         };
+
+        let auto_check = AppConfig::load()
+            .ok()
+            .flatten()
+            .map(|c| c.auto_check_updates)
+            .unwrap_or(true);
+        if auto_check {
+            cx.spawn(async move |this, cx| {
+                let res = cx
+                    .background_executor()
+                    .spawn(async { crate::updater::check_for_update().ok().flatten() })
+                    .await;
+                if let Some(info) = res {
+                    let _ = this.update(cx, |this: &mut Self, cx| {
+                        this.available_update = Some(info);
+                        cx.notify();
+                    });
+                }
+            })
+            .detach();
+        }
 
         match AppConfig::load() {
             Ok(Some(cfg)) => {
@@ -761,6 +786,7 @@ impl Root {
             download_dir: None,
             upload_limit: crate::config::default_upload_limit(),
             grid_view: false,
+            auto_check_updates: true,
         };
         if let Err(e) = cfg.save() {
             self.status = format!("cannot save config: {e}");
@@ -1251,12 +1277,115 @@ impl Render for Root {
             }
         };
 
+        let update_banner: AnyElement = if let Some(info) = self.available_update.clone() {
+            let label = if self.updating {
+                format!("Downloading TDrive v{}…", info.version)
+            } else {
+                format!(
+                    "Update available: TDrive v{} (current v{})",
+                    info.version,
+                    crate::updater::CURRENT_VERSION
+                )
+            };
+            let updating = self.updating;
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .w_full()
+                .px_4()
+                .py_1()
+                .bg(theme().panel2)
+                .border_b_1()
+                .border_color(theme().border)
+                .child(div().text_sm().text_color(theme().text).child(label))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(if !updating {
+                            div()
+                                .id("update-install-btn")
+                                .px_2()
+                                .py(px(2.))
+                                .rounded_sm()
+                                .bg(theme().accent)
+                                .text_xs()
+                                .text_color(theme().bg)
+                                .cursor_pointer()
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |this, _, _, cx| {
+                                        let Some(upd) = this.available_update.clone() else {
+                                            return;
+                                        };
+                                        this.updating = true;
+                                        this.status = format!("downloading v{}…", upd.version);
+                                        cx.notify();
+                                        cx.spawn(async move |this, cx| {
+                                            let res = cx
+                                                .background_executor()
+                                                .spawn(async move {
+                                                    crate::updater::download_and_launch(&upd)
+                                                })
+                                                .await;
+                                            let _ = this.update(cx, |this: &mut Self, cx| {
+                                                this.updating = false;
+                                                match res {
+                                                    Ok(Some(_)) => {
+                                                        cx.quit();
+                                                    }
+                                                    Ok(None) => {
+                                                        this.available_update = None;
+                                                        this.status = "opened release page".into();
+                                                    }
+                                                    Err(e) => {
+                                                        this.status = format!("update failed: {e}");
+                                                    }
+                                                }
+                                                cx.notify();
+                                            });
+                                        })
+                                        .detach();
+                                    }),
+                                )
+                                .child("Update")
+                                .into_any_element()
+                        } else {
+                            div().into_any_element()
+                        })
+                        .child(
+                            div()
+                                .id("update-dismiss-btn")
+                                .px_2()
+                                .py(px(2.))
+                                .rounded_sm()
+                                .text_xs()
+                                .text_color(theme().dim)
+                                .cursor_pointer()
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| {
+                                        this.available_update = None;
+                                        cx.notify();
+                                    }),
+                                )
+                                .child("Dismiss"),
+                        ),
+                )
+                .into_any_element()
+        } else {
+            div().into_any_element()
+        };
+
         div()
             .size_full()
             .bg(theme().bg)
             .text_color(theme().text)
             .flex()
             .flex_col()
+            .child(update_banner)
             .child(if self.screen != Screen::Drive {
                 div()
                     .flex()

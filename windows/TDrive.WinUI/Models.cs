@@ -25,6 +25,9 @@ public sealed class AppConfigDto
 
     [JsonPropertyName("grid_view")]
     public bool GridView { get; set; }
+
+    [JsonPropertyName("auto_check_updates")]
+    public bool AutoCheckUpdates { get; set; } = true;
 }
 
 public sealed class ChannelDto

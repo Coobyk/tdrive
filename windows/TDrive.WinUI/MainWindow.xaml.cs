@@ -45,6 +45,7 @@ public sealed partial class MainWindow : Window
     private string _vaultHint = string.Empty;
     private string? _davUrl;
     private string? _pendingCopyText;
+    private ReleaseUpdateInfo? _pendingUpdate;
 
     public MainWindow()
     {
@@ -65,6 +66,7 @@ public sealed partial class MainWindow : Window
         Closed += (_, _) => _core.Dispose();
 
         BootstrapCore();
+        _ = CheckForUpdatesOnStartupAsync();
     }
 
     [DllImport("user32.dll")]
@@ -1091,13 +1093,26 @@ public sealed partial class MainWindow : Window
             SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Inline
         };
 
+        var autoUpdateToggle = new ToggleSwitch
+        {
+            Header = "Automatic updates",
+            OnContent = "Check GitHub Releases on startup",
+            OffContent = "Manual check only",
+            IsOn = _config?.AutoCheckUpdates ?? true
+        };
+
+        var updateStatusText = new TextBlock
+        {
+            Text = $"Installed version: v{AutoUpdater.CurrentVersion()} ({(AutoUpdater.IsInstalledCopy() ? "Installed" : "Portable")})",
+            FontSize = 12
+        };
+
+        var checkBtn = new Button { Content = "Check for updates now" };
         var stack = new StackPanel { Spacing = 12 };
         stack.Children.Add(limitBox);
-        stack.Children.Add(new TextBlock
-        {
-            Text = $"Rust core version: {NativeCore.Version()}",
-            FontSize = 12
-        });
+        stack.Children.Add(autoUpdateToggle);
+        stack.Children.Add(updateStatusText);
+        stack.Children.Add(checkBtn);
         if (!string.IsNullOrEmpty(_davUrl))
         {
             stack.Children.Add(new TextBox
@@ -1118,13 +1133,180 @@ public sealed partial class MainWindow : Window
             XamlRoot = Content.XamlRoot
         };
 
-        if (await dialog.ShowAsync() == ContentDialogResult.Primary && _config is not null)
+        ReleaseUpdateInfo? foundInDialog = null;
+        checkBtn.Click += async (_, _) =>
+        {
+            checkBtn.IsEnabled = false;
+            updateStatusText.Text = "Checking GitHub Releases...";
+            try
+            {
+                var upd = await AutoUpdater.CheckForUpdateAsync();
+                if (upd is null)
+                {
+                    updateStatusText.Text = $"You are up to date (v{AutoUpdater.CurrentVersion()}).";
+                }
+                else
+                {
+                    foundInDialog = upd;
+                    _pendingUpdate = upd;
+                    ShowUpdateBanner(upd);
+                    updateStatusText.Text = $"Update available: v{upd.Version}";
+                    dialog.Hide();
+                }
+            }
+            catch (Exception ex)
+            {
+                updateStatusText.Text = $"Update check failed: {ex.Message}";
+            }
+            finally
+            {
+                checkBtn.IsEnabled = true;
+            }
+        };
+
+        var result = await dialog.ShowAsync();
+        if (result == ContentDialogResult.Primary && _config is not null)
         {
             var n = Math.Clamp((int)Math.Round(limitBox.Value), 1, 16);
             _config.UploadLimit = n;
+            _config.AutoCheckUpdates = autoUpdateToggle.IsOn;
             NativeCore.SaveConfig(_config);
             _core.SetUploadLimit(n);
         }
+
+        if (foundInDialog is not null)
+        {
+            await PromptAndInstallUpdateAsync(foundInDialog);
+        }
+    }
+
+    // ── Auto-updater ──────────────────────────────────────────────────────
+
+    private async Task CheckForUpdatesOnStartupAsync()
+    {
+        if (_config is not null && !_config.AutoCheckUpdates) return;
+        try
+        {
+            await Task.Delay(2000);
+            var update = await AutoUpdater.CheckForUpdateAsync();
+            if (update is not null)
+            {
+                _pendingUpdate = update;
+                ShowUpdateBanner(update);
+            }
+        }
+        catch
+        {
+            // Silent on startup when offline or rate-limited.
+        }
+    }
+
+    private void ShowUpdateBanner(ReleaseUpdateInfo update)
+    {
+        UpdateInfoBar.Title = $"Update available: TDrive v{update.Version}";
+        UpdateInfoBar.Message = $"You are currently running v{AutoUpdater.CurrentVersion()}.";
+        UpdateInfoBar.IsOpen = true;
+    }
+
+    private async void UpdateNowBtn_Click(object sender, RoutedEventArgs e)
+    {
+        if (_pendingUpdate is not null)
+        {
+            await PromptAndInstallUpdateAsync(_pendingUpdate);
+        }
+    }
+
+    private async Task PromptAndInstallUpdateAsync(ReleaseUpdateInfo update)
+    {
+        if (update.Asset is null)
+        {
+            Process.Start(new ProcessStartInfo(update.HtmlUrl) { UseShellExecute = true });
+            return;
+        }
+
+        var statusLabel = new TextBlock
+        {
+            Text = $"Download and install TDrive v{update.Version} ({UnadoptedDto.FormatBytes(update.Asset.Size)})?",
+            TextWrapping = TextWrapping.Wrap
+        };
+        var progressBar = new ProgressBar
+        {
+            Minimum = 0,
+            Maximum = 100,
+            Visibility = Visibility.Collapsed
+        };
+        var notesBox = new TextBox
+        {
+            Text = string.IsNullOrWhiteSpace(update.ReleaseNotes) ? "No release notes provided." : update.ReleaseNotes.Trim(),
+            IsReadOnly = true,
+            AcceptsReturn = true,
+            TextWrapping = TextWrapping.Wrap,
+            MaxHeight = 160,
+            Visibility = string.IsNullOrWhiteSpace(update.ReleaseNotes) ? Visibility.Collapsed : Visibility.Visible
+        };
+
+        var stack = new StackPanel { Spacing = 10, MinWidth = 380 };
+        stack.Children.Add(statusLabel);
+        stack.Children.Add(progressBar);
+        stack.Children.Add(notesBox);
+
+        using var cts = new CancellationTokenSource();
+        var dialog = new ContentDialog
+        {
+            Title = $"Update to v{update.Version}",
+            Content = stack,
+            PrimaryButtonText = "Download & restart",
+            CloseButtonText = "Later",
+            DefaultButton = ContentDialogButton.Primary,
+            XamlRoot = Content.XamlRoot
+        };
+
+        dialog.PrimaryButtonClick += async (s, args) =>
+        {
+            var deferral = args.GetDeferral();
+            try
+            {
+                s.IsPrimaryButtonEnabled = false;
+                s.CloseButtonText = "Cancel";
+                progressBar.Visibility = Visibility.Visible;
+                progressBar.IsIndeterminate = false;
+                statusLabel.Text = $"Downloading {update.Asset.Name}...";
+
+                var progress = new Progress<(long Downloaded, long Total)>(p =>
+                {
+                    if (p.Total > 0)
+                    {
+                        progressBar.Value = Math.Clamp(p.Downloaded * 100.0 / p.Total, 0, 100);
+                        statusLabel.Text = $"Downloading {UnadoptedDto.FormatBytes(p.Downloaded)} / {UnadoptedDto.FormatBytes(p.Total)}...";
+                    }
+                });
+
+                var path = await AutoUpdater.DownloadUpdateAsync(update, progress, cts.Token);
+                statusLabel.Text = "Applying update and restarting...";
+                _core.Dispose();
+                AutoUpdater.LaunchInstallerAndRelaunch(path, update);
+                Application.Current.Exit();
+            }
+            catch (OperationCanceledException)
+            {
+                args.Cancel = false;
+            }
+            catch (Exception ex)
+            {
+                args.Cancel = true;
+                s.IsPrimaryButtonEnabled = true;
+                s.CloseButtonText = "Later";
+                progressBar.Visibility = Visibility.Collapsed;
+                statusLabel.Text = $"Update failed: {ex.Message}";
+            }
+            finally
+            {
+                deferral.Complete();
+            }
+        };
+
+        dialog.CloseButtonClick += (_, _) => cts.Cancel();
+        await dialog.ShowAsync();
     }
 
     // ── Drives, Trash, Unadopted, Accounts, Transfers handlers ────────────

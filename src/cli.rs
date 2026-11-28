@@ -27,6 +27,7 @@ const USAGE: &str = "tdrive — terminal interface
   tdrive sync            force a resync
   tdrive accounts        list accounts (--switch ID, --remove ID)
   tdrive login           interactive Telegram sign-in
+  tdrive update          check for updates and launch installer (--check only checks)
 
 Drive selection: --drive <id|title>, else the last-opened drive,
 else the only drive when there's exactly one.";
@@ -42,6 +43,11 @@ pub fn run(argv: Vec<String>) -> i32 {
 }
 
 fn run_inner(argv: Vec<String>) -> Result<()> {
+    if argv.first().map(String::as_str) == Some("update") {
+        let check_only = argv.iter().any(|a| a == "--check");
+        return run_update_cli(check_only);
+    }
+
     // Same lock the GUI takes — sharing a live session.db across two
     // processes mints a duplicate auth key server-side.
     let _lock = config::instance_lock().context(
@@ -116,6 +122,29 @@ fn take(it: &mut std::iter::Peekable<std::slice::Iter<String>>, flag: &str) -> R
     it.next()
         .map(|s| s.to_string())
         .ok_or_else(|| anyhow!("{flag} needs a value"))
+}
+
+fn run_update_cli(check_only: bool) -> Result<()> {
+    println!("tdrive v{} — checking for updates…", crate::updater::CURRENT_VERSION);
+    match crate::updater::check_for_update()? {
+        None => {
+            println!("already up to date (v{})", crate::updater::CURRENT_VERSION);
+        }
+        Some(info) => {
+            println!("update available: v{} ({})", info.version, info.html_url);
+            if check_only {
+                return Ok(());
+            }
+            if let Some(asset) = &info.asset {
+                println!("downloading {}…", asset.name);
+            }
+            match crate::updater::download_and_launch(&info)? {
+                Some(path) => println!("launched installer: {}", path.display()),
+                None => println!("opened release page in browser"),
+            }
+        }
+    }
+    Ok(())
 }
 
 struct Cli {
