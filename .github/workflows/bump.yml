@@ -78,9 +78,12 @@ jobs:
             # Cargo.lock carries the root package's own version — keep
             # it in step or --locked builds fail.
             sed -i "/^name = \"tdrive\"/,/^version = /s/^version = \".*\"/version = \"$NEW\"/" Cargo.lock
+            sed -i "s/^version = \".*\"/version = \"$NEW\"/" windows/core/Cargo.toml
+            sed -i "/^name = \"tdrive\"/,/^version = /s/^version = \".*\"/version = \"$NEW\"/" windows/core/Cargo.lock
+            sed -i "/^name = \"tdrive-core\"/,/^version = /s/^version = \".*\"/version = \"$NEW\"/" windows/core/Cargo.lock
             VC=$((MA * 10000 + MI * 100 + PA))
             sed -i "s/versionCode = .*/versionCode = $VC/; s/versionName = \".*\"/versionName = \"$NEW\"/" android/app/build.gradle.kts
-            git add Cargo.toml Cargo.lock android/app/build.gradle.kts
+            git add Cargo.toml Cargo.lock windows/core/Cargo.toml windows/core/Cargo.lock android/app/build.gradle.kts
             git commit -qm "v$NEW"
           fi
           git tag "v$NEW"

@@ -74,6 +74,14 @@ jobs:
           VER="${{ steps.version.outputs.ver }}"
           tar -czf "${{ matrix.artifact }}-$VER.tar.gz" -C dist .
           bash packaging/macos/make-dmg.sh "$VER" "target/${{ matrix.target }}/release/${BIN}" "${{ matrix.artifact }}-$VER.dmg"
+      - name: Setup .NET for WinUI 3
+        if: runner.os == 'Windows'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Build Windows core DLL (WinUI 3)
+        if: runner.os == 'Windows'
+        run: cargo build --release --locked --manifest-path windows/core/Cargo.toml
       - name: Install Windows installer tooling
         if: runner.os == 'Windows'
         shell: pwsh
@@ -85,6 +93,7 @@ jobs:
         shell: pwsh
         run: |
           pwsh -NoProfile -ExecutionPolicy Bypass -File packaging/windows/build-windows-packages.ps1 -Version "${{ steps.version.outputs.ver }}"
+          pwsh -NoProfile -ExecutionPolicy Bypass -File packaging/windows/build-windows-winui-packages.ps1 -Version "${{ steps.version.outputs.ver }}"
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}-${{ steps.version.outputs.ver }}

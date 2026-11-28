@@ -8,17 +8,22 @@ $ErrorActionPreference = 'Stop'
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $targetExe = Join-Path $repoRoot 'target\x86_64-pc-windows-msvc\release\tdrive.exe'
-if (-not (Test-Path -LiteralPath $targetExe)) {
-    throw "Built executable not found: $targetExe"
+$targetGuiExe = Join-Path $repoRoot 'target\x86_64-pc-windows-msvc\release\tdrive-gui.exe'
+foreach ($builtExe in @($targetExe, $targetGuiExe)) {
+    if (-not (Test-Path -LiteralPath $builtExe)) {
+        throw "Built executable not found: $builtExe"
+    }
 }
 
 $stage = Join-Path $repoRoot 'dist\windows-packaging'
 $payload = Join-Path $stage 'payload'
 New-Item -ItemType Directory -Force -Path $payload | Out-Null
 Copy-Item -LiteralPath $targetExe -Destination (Join-Path $payload 'tdrive.exe') -Force
+Copy-Item -LiteralPath $targetGuiExe -Destination (Join-Path $payload 'tdrive-gui.exe') -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'tdrive.ico') -Destination (Join-Path $stage 'tdrive.ico') -Force
 
 $zipPath = Join-Path $repoRoot "tdrive-windows-x86_64-$Version.zip"
-Compress-Archive -LiteralPath (Join-Path $payload 'tdrive.exe') -DestinationPath $zipPath -Force
+Compress-Archive -LiteralPath @((Join-Path $payload 'tdrive.exe'), (Join-Path $payload 'tdrive-gui.exe')) -DestinationPath $zipPath -Force
 
 $wxsTemplate = Join-Path $PSScriptRoot 'tdrive.wxs'
 $wxsPath = Join-Path $stage 'tdrive.wxs'

@@ -3,6 +3,10 @@ name = "tdrive"
 version = "0.3.8"
 edition = "2024"
 
+[features]
+default = ["gui"]
+gui = ["dep:gpui"]
+
 [dependencies]
 anyhow = "1.0.104"
 argon2 = "0.6.0"
@@ -11,7 +15,7 @@ base64 = "0.23.1"
 chacha20poly1305 = "0.11.0"
 dirs = "7.0.0"
 futures-util = "0.3.34"
-gpui = "0.2.2"
+gpui = { version = "0.2.2", optional = true }
 grammers-client = "0.12.0"
 grammers-session = { version = "0.12.0", features = ["sqlite-storage"] }
 hkdf = "0.13.0"
@@ -28,6 +32,9 @@ tokio-stream = "0.1.19"
 tokio-util = "0.7.20"
 urlencoding = "2.1.3"
 uuid = { version = "1.29.2", features = ["v4"] }
+
+[build-dependencies]
+embed-resource = "3.0.12"
 
 [patch.crates-io]
 # xattr 0.2.3 fails on libc >= 0.2.191: ENOATTR was removed on Linux, where
